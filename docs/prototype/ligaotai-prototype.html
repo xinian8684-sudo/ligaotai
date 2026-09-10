@@ -1,0 +1,594 @@
+<title>理稿台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --ground:#EEF0EC; --panel:#F9FAF7; --sunk:#E5E8E2;
+  --ink:#1B2130; --ink-2:#4A5163; --ink-3:#7A8192;
+  --line:#D6D9D1; --line-2:#E4E6E0;
+  --accent:#33508C; --accent-soft:#DFE5F2; --on-accent:#FFFFFF;
+  --red:#B5372A; --red-soft:#F5DFDA;
+  --green:#3A7866; --green-soft:#DAEBE4;
+  --amber:#A26F1C; --amber-soft:#F2E5CD;
+  --w1:#5A7BB5; --w2:#3A8A80; --w3:#9468A4;
+  --serif:"Noto Serif SC","Songti SC","SimSun",serif;
+  --sans:"Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#13161C; --panel:#1A1E26; --sunk:#10131862;
+    --ink:#E3E5EA; --ink-2:#AEB4C0; --ink-3:#7D8494;
+    --line:#2D323D; --line-2:#232832;
+    --accent:#8FA7DB; --accent-soft:#243049; --on-accent:#10131A;
+    --red:#E26C5D; --red-soft:#3A2225;
+    --green:#6CB19D; --green-soft:#1D322C;
+    --amber:#D9A650; --amber-soft:#382E1B;
+    --w1:#7E9ED6; --w2:#5DB2A6; --w3:#B68BC6;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#13161C; --panel:#1A1E26; --sunk:#10131862;
+  --ink:#E3E5EA; --ink-2:#AEB4C0; --ink-3:#7D8494;
+  --line:#2D323D; --line-2:#232832;
+  --accent:#8FA7DB; --accent-soft:#243049; --on-accent:#10131A;
+  --red:#E26C5D; --red-soft:#3A2225;
+  --green:#6CB19D; --green-soft:#1D322C;
+  --amber:#D9A650; --amber-soft:#382E1B;
+  --w1:#7E9ED6; --w2:#5DB2A6; --w3:#B68BC6;
+}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.6;margin:0}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.num{font-variant-numeric:tabular-nums}
+
+.app{display:grid;grid-template-columns:188px minmax(0,1fr);min-height:100vh}
+.rail{border-right:1px solid var(--line);padding:20px 12px;display:flex;flex-direction:column;gap:18px;background:var(--panel)}
+.brand{padding:0 8px}
+.brand b{font-family:var(--serif);font-size:22px;letter-spacing:.08em;display:block;line-height:1.2}
+.brand small{color:var(--ink-3);font-size:12px}
+.book{padding:10px 8px;border-top:1px solid var(--line-2);border-bottom:1px solid var(--line-2)}
+.book .t{font-family:var(--serif);font-size:15px}
+.book .m{color:var(--ink-3);font-size:12px}
+nav{display:flex;flex-direction:column;gap:2px}
+.tab{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border:0;background:none;border-radius:6px;cursor:pointer;text-align:left;color:var(--ink-2)}
+.tab:hover{background:var(--sunk);color:var(--ink)}
+.tab[aria-selected="true"]{background:var(--accent-soft);color:var(--accent);font-weight:500}
+.tab .n{font-family:var(--mono);font-size:11px;padding:0 6px;border-radius:9px;background:var(--red-soft);color:var(--red)}
+.tab .step{font-family:var(--mono);font-size:11px;color:var(--ink-3)}
+.rail .foot{margin-top:auto;font-size:12px;color:var(--ink-3);padding:0 8px}
+
+main{padding-block:22px 48px;padding-inline:28px;min-width:0}
+.proto{display:inline-flex;gap:6px;align-items:center;font-size:12px;color:var(--amber);background:var(--amber-soft);padding:3px 10px;border-radius:4px;margin-bottom:14px}
+h1{font-family:var(--serif);font-size:24px;font-weight:700;margin:0 0 4px;text-wrap:balance}
+.sub{color:var(--ink-2);margin:0 0 18px;max-width:68ch}
+h2{font-family:var(--serif);font-size:17px;margin:0 0 10px}
+.page[hidden]{display:none}
+
+/* summary strip */
+.strip{display:flex;flex-wrap:wrap;gap:6px 22px;padding:12px 16px;background:var(--panel);border:1px solid var(--line);border-radius:8px;margin-bottom:16px}
+.strip div{display:flex;flex-direction:column}
+.strip .v{font-family:var(--mono);font-size:18px;font-weight:500;line-height:1.3}
+.strip .k{font-size:12px;color:var(--ink-3)}
+.strip .v.red{color:var(--red)}
+
+/* panorama */
+.pano{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;align-items:start}
+.chart{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px}
+.scroll{overflow-x:auto}
+.lanes{min-width:760px}
+.row{display:grid;grid-template-columns:168px minmax(0,1fr);align-items:center}
+.axis{height:26px;border-bottom:1px solid var(--line);margin-bottom:4px}
+.axis .track{height:100%}
+.tick{position:absolute;bottom:4px;transform:translateX(-50%);font-family:var(--mono);font-size:11px;color:var(--ink-3)}
+.tick::after{content:"";position:absolute;left:50%;top:18px;height:6px;border-left:1px solid var(--line)}
+.world{font-size:12px;color:var(--ink-3);letter-spacing:.06em;padding:10px 0 2px;display:flex;align-items:center;gap:6px}
+.world i{width:8px;height:8px;border-radius:2px;display:inline-block}
+.lane{height:38px;border-radius:6px;cursor:pointer}
+.lane:hover .lab{color:var(--accent)}
+.lane.sel{background:var(--accent-soft)}
+.lab{padding-left:10px;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lab small{color:var(--ink-3);font-family:var(--mono);font-size:11px;margin-left:4px}
+.track{position:relative;height:38px}
+.grid{position:absolute;top:0;bottom:0;border-left:1px dashed var(--line-2)}
+.seg{position:absolute;top:12px;height:14px;border-radius:3px}
+.seg.solid{background:var(--c)}
+.seg.sketch{background:repeating-linear-gradient(90deg,var(--c) 0 3px,transparent 3px 7px);opacity:.75}
+.seg.gap{border:1.5px dashed var(--red);background:var(--red-soft);opacity:.9}
+.mark{position:absolute;top:8px;width:22px;height:22px;transform:translateX(-50%);display:grid;place-items:center;font-family:var(--serif);font-size:12px;font-weight:700;border-radius:3px}
+.mark.brk{background:var(--red);color:var(--panel);transform:translateX(-30%) rotate(-4deg)}
+.mark.end{background:var(--green-soft);color:var(--green);border:1px solid var(--green)}
+.mark.tbd{background:var(--amber-soft);color:var(--amber);border:1px solid var(--amber)}
+.ver{position:absolute;top:-1px;transform:translateX(-50%);font-family:var(--mono);font-size:10px;color:var(--ink-2);background:var(--panel);border:1px solid var(--line);border-radius:3px;padding:0 3px;line-height:14px}
+.meet{position:absolute;top:13px;width:12px;height:12px;border-radius:50%;border:2px solid var(--ink);background:var(--panel);transform:translateX(-50%)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:12px;padding-top:10px;border-top:1px solid var(--line-2);font-size:12px;color:var(--ink-2)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{display:inline-block;width:22px;height:10px;border-radius:2px}
+.sw.solid{background:var(--w1)}
+.sw.sketch{background:repeating-linear-gradient(90deg,var(--w1) 0 3px,transparent 3px 7px)}
+.sw.gap{border:1.5px dashed var(--red);background:var(--red-soft)}
+.legend .mark,.legend .meet{position:static;transform:none;width:16px;height:16px;font-size:10px}
+.legend .meet{width:11px;height:11px}
+
+.detail{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px}
+.detail .w{font-size:12px;color:var(--ink-3)}
+.detail h3{font-family:var(--serif);font-size:18px;margin:2px 0 10px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:13px;margin-bottom:14px}
+.kv dt{color:var(--ink-3)}
+.kv dd{margin:0}
+.pill{display:inline-block;font-size:12px;padding:0 8px;border-radius:10px;line-height:20px}
+.pill.red{background:var(--red-soft);color:var(--red)}
+.pill.green{background:var(--green-soft);color:var(--green)}
+.pill.amber{background:var(--amber-soft);color:var(--amber)}
+.pill.blue{background:var(--accent-soft);color:var(--accent)}
+.note{font-size:13px;border-top:1px solid var(--line-2);padding-top:10px;margin-top:10px}
+.note b{display:block;font-size:12px;color:var(--ink-3);font-weight:500;margin-bottom:4px;letter-spacing:.04em}
+.note ul{margin:0;padding-left:18px}
+.note li{margin:2px 0}
+.sid{font-family:var(--mono);font-size:11.5px;color:var(--accent);background:var(--accent-soft);padding:0 4px;border-radius:3px;white-space:nowrap}
+
+/* pipeline */
+.steps{background:var(--panel);border:1px solid var(--line);border-radius:8px}
+.stp{display:grid;grid-template-columns:36px 120px minmax(0,1fr) 150px;gap:14px;align-items:center;padding:14px 16px;border-top:1px solid var(--line-2)}
+.stp:first-child{border-top:0}
+.stp .i{font-family:var(--mono);color:var(--ink-3);font-size:13px}
+.stp .nm{font-weight:500}
+.stp .d{color:var(--ink-2);font-size:13px}
+.bar{height:6px;border-radius:3px;background:var(--sunk);overflow:hidden;margin-top:6px}
+.bar i{display:block;height:100%;background:var(--green)}
+.bar.wait i{background:var(--amber)}
+.stp .r{text-align:right}
+.btn{border:1px solid var(--line);background:var(--panel);border-radius:6px;padding:5px 12px;cursor:pointer;font-size:13px}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.btn.pri:hover{color:var(--on-accent);filter:brightness(1.08)}
+.cfg{display:flex;flex-wrap:wrap;gap:8px 24px;margin-top:14px;font-size:13px;color:var(--ink-2)}
+.cfg code{font-family:var(--mono);font-size:12px;color:var(--ink)}
+
+/* conflicts */
+.filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.chip{border:1px solid var(--line);background:var(--panel);border-radius:14px;padding:2px 12px;font-size:13px;cursor:pointer;color:var(--ink-2)}
+.chip[aria-pressed="true"]{background:var(--ink);color:var(--ground);border-color:var(--ink)}
+.cf{display:grid;grid-template-columns:4px minmax(0,1fr);background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:10px}
+.cf .sev{background:var(--amber)}
+.cf .sev.hi{background:var(--red)}
+.cf .sev.lo{background:var(--line)}
+.cf .body{padding:12px 16px}
+.cf .hd{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline;margin-bottom:8px}
+.cf .hd b{font-family:var(--serif);font-size:15px}
+.cf .hd .k{font-size:12px;color:var(--ink-3)}
+.vs{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.q{border:1px solid var(--line-2);border-radius:6px;padding:8px 10px;font-family:var(--serif);font-size:14px;line-height:1.7;background:var(--ground)}
+.q .sid{font-family:var(--mono)}
+.q.win{border-color:var(--green);box-shadow:inset 0 0 0 1px var(--green)}
+.q.lose{opacity:.45;text-decoration:line-through;text-decoration-color:var(--ink-3)}
+.ai{font-size:13px;color:var(--ink-2);margin-top:8px}
+.ai::before{content:"AI 判断";font-size:11px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:0 4px;margin-right:6px}
+.acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.done{font-size:12px;color:var(--green);align-self:center}
+
+/* triage */
+.board{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:18px}
+.col{background:var(--sunk);border-radius:8px;padding:10px;min-height:180px;display:flex;flex-direction:column;gap:8px}
+.col.over{outline:2px dashed var(--accent);outline-offset:-2px}
+.col h4{margin:0;font-size:13px;font-weight:500;display:flex;justify-content:space-between;color:var(--ink-2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px;cursor:grab}
+.card:active{cursor:grabbing}
+.card .t{font-weight:500;font-size:13.5px;display:flex;align-items:center;gap:6px}
+.card .t i{width:8px;height:8px;border-radius:2px;display:inline-block;flex:none}
+.card .m{font-family:var(--mono);font-size:11px;color:var(--ink-3);margin:2px 0 6px}
+.card .bar i{background:var(--c)}
+.card .sg{font-size:12px;color:var(--ink-2);margin-top:6px;line-height:1.5}
+.card .sg em{font-style:normal;color:var(--accent);font-weight:500}
+.impact{background:var(--panel);border:1px solid var(--red);border-radius:8px;padding:12px 16px;margin-bottom:18px;font-size:13px}
+.impact b{color:var(--red)}
+.impact ul{margin:6px 0 0;padding-left:18px}
+.skel{background:var(--panel);border:1px solid var(--line);border-radius:8px}
+.vol{display:grid;grid-template-columns:130px minmax(0,1fr);gap:12px;padding:12px 16px;border-top:1px solid var(--line-2)}
+.vol:first-child{border-top:0}
+.vol .vn{font-family:var(--serif);font-weight:700}
+.vol .vn small{display:block;font-family:var(--mono);font-weight:400;font-size:11px;color:var(--ink-3)}
+.chs{display:flex;flex-wrap:wrap;gap:4px}
+.ch{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:3px;background:var(--sunk);color:var(--ink-2)}
+.ch.hole{background:var(--red-soft);color:var(--red);border:1px dashed var(--red);cursor:pointer}
+
+/* write */
+.write{display:grid;grid-template-columns:300px minmax(0,1fr);gap:16px;align-items:start}
+.pack{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}
+.pack label{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:8px;align-items:start;padding:6px 0;border-top:1px solid var(--line-2);font-size:13px;cursor:pointer}
+.pack label:first-of-type{border-top:0}
+.pack label small{display:block;color:var(--ink-3);font-size:12px}
+.pack .sz{font-family:var(--mono);font-size:11.5px;color:var(--ink-2)}
+.pack input{margin:3px 0 0;accent-color:var(--accent)}
+.meter{margin-top:10px;padding-top:10px;border-top:1px solid var(--line);font-size:12.5px;color:var(--ink-2)}
+.meter .bar i{background:var(--accent)}
+.task{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 18px;margin-bottom:12px}
+.task .k{font-size:12px;color:var(--ink-3)}
+.task p{margin:4px 0 0;font-size:13.5px}
+.vtabs{display:flex;gap:4px;margin-bottom:-1px;position:relative}
+.vt{border:1px solid var(--line);border-bottom-color:transparent;background:var(--sunk);border-radius:6px 6px 0 0;padding:5px 14px;cursor:pointer;font-size:13px;color:var(--ink-2)}
+.vt[aria-selected="true"]{background:var(--panel);color:var(--ink);font-weight:500}
+.paper{background:var(--panel);border:1px solid var(--line);border-radius:0 8px 8px 8px;padding:22px 26px}
+.prose{font-family:var(--serif);font-size:16px;line-height:2;max-width:38em;margin:0}
+.prose p{margin:0 0 .6em;text-indent:2em}
+.check{margin-top:14px;padding-top:12px;border-top:1px solid var(--line-2);font-size:13px;display:flex;flex-direction:column;gap:4px}
+.check .ok{color:var(--green)}
+.check .warn{color:var(--red)}
+
+@media (max-width:1100px){
+  .pano{grid-template-columns:1fr}
+  .write{grid-template-columns:1fr}
+}
+@media (max-width:820px){
+  .app{grid-template-columns:1fr}
+  .rail{border-right:0;border-bottom:1px solid var(--line);padding:12px 16px;gap:10px}
+  .book,.rail .foot{display:none}
+  nav{flex-direction:row;overflow-x:auto;gap:4px}
+  .tab{white-space:nowrap}
+  main{padding-inline:16px}
+  .board{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .stp{grid-template-columns:28px minmax(0,1fr);}
+  .stp .nm{grid-column:2}
+  .stp .d{grid-column:2}
+  .stp .r{grid-column:2;text-align:left}
+  .vs{grid-template-columns:1fr}
+  .vol{grid-template-columns:1fr}
+}
+@media (max-width:480px){ .board{grid-template-columns:1fr} }
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="app">
+  <aside class="rail">
+    <div class="brand"><b>理稿台</b><small>长篇手稿整理与成书</small></div>
+    <div class="book"><div class="t">《归墟》</div><div class="m">示例书稿 · 2,013,400 字</div></div>
+    <nav role="tablist" aria-label="工作区">
+      <button class="tab" role="tab" id="t-pipe" data-p="pipe" aria-selected="false"><span>理稿流水线</span><span class="step">1–7</span></button>
+      <button class="tab" role="tab" id="t-pano" data-p="pano" aria-selected="true"><span>全景</span></button>
+      <button class="tab" role="tab" id="t-conf" data-p="conf" aria-selected="false"><span>矛盾</span><span class="n">58</span></button>
+      <button class="tab" role="tab" id="t-tri" data-p="tri" aria-selected="false"><span>取舍与骨架</span></button>
+      <button class="tab" role="tab" id="t-write" data-p="write" aria-selected="false"><span>补写</span><span class="n">14</span></button>
+    </nav>
+    <div class="foot">模型 deepseek-flash<br>数据都在本地文件夹</div>
+  </aside>
+
+  <main>
+    <div class="proto">界面原型 · 书名、数字、正文全是虚构的示例</div>
+
+    <!-- 全景 -->
+    <section class="page" id="p-pano">
+      <h1>全景：七条线，断了四条</h1>
+      <p class="sub">横轴是故事内的时间，AI 按场景卡推出来。每条线都能看出写到哪、中间缺哪、断在哪。点一条线看它的档案。</p>
+      <div class="strip">
+        <div><span class="v">2,013,400</span><span class="k">总字数</span></div>
+        <div><span class="v">1,086</span><span class="k">场景</span></div>
+        <div><span class="v">3</span><span class="k">个世界</span></div>
+        <div><span class="v">2 · <span style="color:var(--red)">4</span> · 1</span><span class="k">完结 · 断在半路 · 待定</span></div>
+        <div><span class="v">41</span><span class="k">组多版本场景</span></div>
+        <div><span class="v red">58</span><span class="k">处前后矛盾</span></div>
+      </div>
+      <div class="pano">
+        <div class="chart">
+          <div class="scroll"><div class="lanes" id="lanes"></div></div>
+          <div class="legend">
+            <span><i class="sw solid"></i>写完的正文</span>
+            <span><i class="sw sketch"></i>只有提纲或碎片</span>
+            <span><i class="sw gap"></i>大纲提到、正文没写</span>
+            <span><i class="mark brk">断</i>写到这里停了</span>
+            <span><i class="mark end">完</i>完结</span>
+            <span><i class="meet"></i>和主线交汇</span>
+            <span><i class="ver" style="position:static;transform:none">3版</i>同一场景写了几版</span>
+          </div>
+        </div>
+        <aside class="detail" id="detail" aria-live="polite"></aside>
+      </div>
+    </section>
+
+    <!-- 流水线 -->
+    <section class="page" id="p-pipe" hidden>
+      <h1>理稿流水线</h1>
+      <p class="sub">导入一次，七步走完。每一步做完都有记录，中途断网、关机，下次从断的地方接着跑。第 5、6 步只是 AI 的提议，要你确认才算数。</p>
+      <div class="steps">
+        <div class="stp"><span class="i">1</span><span class="nm">导入</span><div class="d">214 个文件（txt 151 · docx 49 · md 14），37 个 GBK 编码已转换<div class="bar"><i style="width:100%"></i></div></div><span class="r"><span class="pill green">完成</span></span></div>
+        <div class="stp"><span class="i">2</span><span class="nm">切场景</span><div class="d">切成 1,086 块，平均每块 1,854 字<div class="bar"><i style="width:100%"></i></div></div><span class="r"><span class="pill green">完成</span></span></div>
+        <div class="stp"><span class="i">3</span><span class="nm">查重</span><div class="d">找到 41 组「同一场景写了好几版」，每组 2–4 版<div class="bar"><i style="width:100%"></i></div></div><span class="r"><span class="pill green">完成</span></span></div>
+        <div class="stp"><span class="i">4</span><span class="nm">场景卡</span><div class="d">1,086 / 1,086，其中 9 块第一次抽取格式不对，重试后通过<div class="bar"><i style="width:100%"></i></div></div><span class="r"><span class="pill green">完成</span></span></div>
+        <div class="stp"><span class="i">5</span><span class="nm">人物合并</span><div class="d">AI 提出 27 组「同一个人的不同叫法」，你已确认 23 组。例：林清 / 清儿 / 林姑娘<div class="bar wait"><i style="width:85%"></i></div></div><span class="r"><button class="btn pri" id="b-merge">看剩下 4 组</button></span></div>
+        <div class="stp"><span class="i">6</span><span class="nm">归线排序</span><div class="d">7 条线、3 个世界，时间顺序已排好，你改过 2 处<div class="bar"><i style="width:100%"></i></div></div><span class="r"><span class="pill green">已确认</span></span></div>
+        <div class="stp"><span class="i">7</span><span class="nm">扫矛盾 · 出地图</span><div class="d">找到 58 处矛盾，全书地图 1.8 万字<div class="bar"><i style="width:100%"></i></div></div><span class="r"><span class="pill green">完成</span></span></div>
+      </div>
+      <div class="cfg">
+        <span>接口 <code>https://api.deepseek.com</code></span>
+        <span>模型 <code>deepseek-flash</code></span>
+        <span>并发 <code>8</code></span>
+        <span>本书累计 AI 费用 <code>$2.40</code>（示例数字）</span>
+      </div>
+    </section>
+
+    <!-- 矛盾 -->
+    <section class="page" id="p-conf" hidden>
+      <h1>矛盾清单</h1>
+      <p class="sub">同一个人、同一条设定前后说法对不上的，都列在这里，两边原文并排给你看。你定哪边算数，这条就记进「定稿设定」，以后补写都照它来。</p>
+      <div class="filters" role="group" aria-label="筛选">
+        <button class="chip" aria-pressed="true">全部 58</button>
+        <button class="chip" aria-pressed="false">人物 24</button>
+        <button class="chip" aria-pressed="false">设定 19</button>
+        <button class="chip" aria-pressed="false">时间 11</button>
+        <button class="chip" aria-pressed="false">称谓 4</button>
+      </div>
+      <div id="conflicts"></div>
+    </section>
+
+    <!-- 取舍 -->
+    <section class="page" id="p-tri" hidden>
+      <h1>取舍与成书骨架</h1>
+      <p class="sub">每条线一张卡，AI 给出建议和理由，拖到哪一列由你定。放进「砍掉」或「合并」时，会先告诉你这么做会断掉哪些东西。</p>
+      <div class="board" id="board">
+        <div class="col" data-col="keep"><h4>保留</h4></div>
+        <div class="col" data-col="merge"><h4>合并</h4></div>
+        <div class="col" data-col="cut"><h4>砍掉</h4></div>
+        <div class="col" data-col="tbd"><h4>还没想好</h4></div>
+      </div>
+      <div class="impact" id="impact"></div>
+      <h2>成书骨架</h2>
+      <div class="skel">
+        <div class="vol"><div class="vn">卷一 · 青州<small>S-0001–0240</small></div><div class="chs" id="v1"></div></div>
+        <div class="vol"><div class="vn">卷二 · 药王谷<small>S-0241–0470</small></div><div class="chs" id="v2"></div></div>
+        <div class="vol"><div class="vn">卷三 · 城破<small>S-0366–0702</small></div><div class="chs" id="v3"></div></div>
+        <div class="vol"><div class="vn">卷四 · 归墟<small>S-0703–1086</small></div><div class="chs" id="v4"></div></div>
+      </div>
+      <p class="sub" style="margin-top:10px">红框是「空洞」：骨架里需要、正文还没有的章节，一共 14 个。点一个进入补写。</p>
+    </section>
+
+    <!-- 补写 -->
+    <section class="page" id="p-write" hidden>
+      <h1>补写：卷三 第 41 章「青州城破」</h1>
+      <p class="sub">AI 读不了整本书，所以每次只挑这一章用得上的材料打成一个包，你能看到包里有什么，也能自己增减。</p>
+      <div class="write">
+        <div class="pack">
+          <h2>这次喂给 AI 的材料</h2>
+          <div id="pack"></div>
+          <div class="meter"><span id="meterText"></span><div class="bar"><i id="meterBar"></i></div></div>
+        </div>
+        <div>
+          <div class="task">
+            <div class="k">任务说明（从骨架自动生成，可改）</div>
+            <p>接在 <span class="sid">S-0371</span> 沈砚离开药王谷之后、<span class="sid">S-0402</span> 他在废墟里找到父亲旧宅之前。大纲写过「天阙叛军夜袭青州，北门先破」，正文没写。目标 6,000–8,000 字，视角跟前后文一致，用沈砚。</p>
+          </div>
+          <div class="vtabs" role="tablist" aria-label="版本">
+            <button class="vt" role="tab" id="vt0" data-v="0" aria-selected="true">版本一</button>
+            <button class="vt" role="tab" id="vt1" data-v="1" aria-selected="false">版本二</button>
+            <button class="vt" role="tab" id="vt2" data-v="2" aria-selected="false">版本三</button>
+          </div>
+          <div class="paper">
+            <div class="prose" id="prose"></div>
+            <div class="check" id="check"></div>
+            <div class="acts">
+              <button class="btn pri">采纳为草稿</button>
+              <button class="btn">在编辑器里改</button>
+              <button class="btn">换个写法重来</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+(function(){
+  // ---------- tabs ----------
+  const tabs=[...document.querySelectorAll('.tab')];
+  function show(p){
+    tabs.forEach(t=>t.setAttribute('aria-selected', t.dataset.p===p?'true':'false'));
+    document.querySelectorAll('.page').forEach(s=>s.hidden = s.id!=='p-'+p);
+  }
+  tabs.forEach(t=>t.addEventListener('click',()=>show(t.dataset.p)));
+
+  // ---------- panorama ----------
+  const MIN=1, MAX=12;
+  const x=v=>((v-MIN)/(MAX-MIN)*100)+'%';
+  const worlds=[
+    {name:'人间 · 青州', c:'--w1', threads:['main','lin','pre']},
+    {name:'归墟 · 海底', c:'--w2', threads:['yimin','haitu']},
+    {name:'天阙 · 云上', c:'--w3', threads:['pan','baiyi']},
+  ];
+  const T={
+    main:{name:'主线 · 沈砚寻父', words:812400, scenes:431, status:'brk',
+      segs:[[1,4.5,'solid'],[4.5,6,'gap'],[6,9.5,'solid']], ver:[[1.2,3],[7.1,2]], meets:[],
+      stop:['断在 <span class="sid">S-0998</span>：沈砚跌进归墟入口昏迷，之后再没写。'],
+      gap:'第 4.5–6 年缺一段：<span class="sid">S-0371</span> 和 <span class="sid">S-0402</span> 之间跳过了一年半，大纲写过「青州城破」，正文没有。',
+      hooks:['父亲留下的半张海图（<span class="sid">S-0044</span> 埋下，没收）','白衣客的身份（<span class="sid">S-0520</span> 埋下，没收）','第一章写了 3 版，开头各不相同']},
+    lin:{name:'支线 · 林清与药王谷', words:214000, scenes:118, status:'end',
+      segs:[[2,7,'solid']], ver:[], meets:[2.2,4.8,6.4],
+      stop:['完结于 <span class="sid">S-0690</span>：林清接任谷主。'],
+      hooks:['和主线交汇 3 次，是连得最紧的一条支线','「孙谷主 / 宋谷主」叫法不统一，见矛盾清单']},
+    pre:{name:'前传 · 少年沈砚', words:96300, scenes:52, status:'end',
+      segs:[[1,2.5,'solid']], ver:[], meets:[2.4],
+      stop:['完结，独立成篇。'],
+      hooks:['正文里只有 1 处回头引用它（<span class="sid">S-0388</span> 回忆师父教剑）']},
+    yimin:{name:'支线 · 归墟遗民', words:301700, scenes:163, status:'brk',
+      segs:[[5,8,'solid']], ver:[[6,2]], meets:[5.5],
+      stop:['断在 <span class="sid">S-0931</span>：遗民长老要开「海门」，之后没写。'],
+      hooks:['整条线有 2 个版本，入口位置设定不同（东海尽头 / 青州古井）','和「海图之谜」人物重叠八成']},
+    haitu:{name:'支线 · 海图之谜', words:58900, scenes:34, status:'tbd',
+      segs:[[7,8.2,'sketch']], ver:[], meets:[],
+      stop:['全是碎片，34 块里 29 块不足一千字。AI 排不出它的先后，标为待定。'],
+      hooks:['很可能就是主线「半张海图」的答案']},
+    pan:{name:'支线 · 天阙叛乱', words:402600, scenes:201, status:'brk',
+      segs:[[3,6,'solid'],[8,11,'sketch']], ver:[[4,2]], meets:[6],
+      stop:['第 6 年后只剩提纲级片段，正文断在 <span class="sid">S-0702</span>。'],
+      hooks:['叛军首领和「白衣客」共用一个反派，两条线互相打架']},
+    baiyi:{name:'支线 · 白衣客', words:127500, scenes:87, status:'brk',
+      segs:[[9,12,'sketch']], ver:[], meets:[],
+      stop:['只有片段，最后一块是 <span class="sid">S-1079</span>。'],
+      hooks:['身份没交代，主线里埋的钩子等着它收']},
+  };
+  const lanes=document.getElementById('lanes');
+  let html='<div class="row axis"><div></div><div class="track">';
+  for(let y=MIN;y<=MAX;y++) html+=`<span class="tick" style="left:${x(y)}">${y}年</span>`;
+  html+='</div></div>';
+  const grid=()=>{let g='';for(let y=MIN;y<=MAX;y+=1)g+=`<span class="grid" style="left:${x(y)}"></span>`;return g;};
+  worlds.forEach(w=>{
+    html+=`<div class="world"><i style="background:var(${w.c})"></i>${w.name}</div>`;
+    w.threads.forEach(id=>{
+      const t=T[id]; t.world=w.name; t.c=w.c;
+      let tr=grid();
+      t.segs.forEach(([a,b,k])=>{tr+=`<span class="seg ${k}" style="--c:var(${w.c});left:${x(a)};width:calc(${x(b)} - ${x(a)})"></span>`;});
+      t.meets.forEach(m=>{tr+=`<span class="meet" style="left:${x(m)}" title="和主线交汇"></span>`;});
+      t.ver.forEach(([p,n])=>{tr+=`<span class="ver" style="left:${x(p)}">${n}版</span>`;});
+      const end=t.segs[t.segs.length-1][1];
+      const mk={brk:['brk','断'],end:['end','完'],tbd:['tbd','?']}[t.status];
+      tr+=`<span class="mark ${mk[0]}" style="left:${x(end)}">${mk[1]}</span>`;
+      html+=`<div class="row lane" data-id="${id}" tabindex="0" role="button" aria-label="${t.name}"><div class="lab">${t.name.split(' · ')[1]}<small>${(t.words/10000).toFixed(1)}万</small></div><div class="track">${tr}</div></div>`;
+    });
+  });
+  lanes.innerHTML=html;
+  const detail=document.getElementById('detail');
+  const stat={brk:'<span class="pill red">断在半路</span>',end:'<span class="pill green">完结</span>',tbd:'<span class="pill amber">待定</span>'};
+  function pick(id){
+    const t=T[id];
+    lanes.querySelectorAll('.lane').forEach(l=>l.classList.toggle('sel',l.dataset.id===id));
+    detail.innerHTML=`<div class="w">${t.world}</div><h3>${t.name}</h3>
+      <dl class="kv"><dt>状态</dt><dd>${stat[t.status]}</dd><dt>字数</dt><dd class="mono">${t.words.toLocaleString()}</dd><dt>场景</dt><dd class="mono">${t.scenes} 块</dd></dl>
+      <div class="note"><b>写到哪</b>${t.stop.join('')}</div>
+      ${t.gap?`<div class="note"><b>中间缺口</b>${t.gap}</div>`:''}
+      <div class="note"><b>要注意</b><ul>${t.hooks.map(h=>`<li>${h}</li>`).join('')}</ul></div>`;
+  }
+  lanes.querySelectorAll('.lane').forEach(l=>{
+    l.addEventListener('click',()=>pick(l.dataset.id));
+    l.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();pick(l.dataset.id);}});
+  });
+  pick('main');
+
+  // ---------- conflicts ----------
+  const C=[
+    {sev:'hi',kind:'人物',title:'林清的年龄',a:['S-0102','林清年方十六，随师父入谷采药。'],b:['S-0655','二十岁的林清站在丹房门口，比谁都镇定。'],ai:'两处按故事时间只隔一年，照 A 算她这时该是十七岁。'},
+    {sev:'hi',kind:'设定',title:'归墟入口在哪',a:['S-0561','归墟之门，在东海的尽头。'],b:['S-0930','青州城下那口古井，便是归墟的入口。'],ai:'两个版本的「归墟遗民」各用了一种说法，选定后另一版要跟着改 12 处。'},
+    {sev:'md',kind:'时间',title:'青州城破是哪一年',a:['S-0402','开春，青州城已破了三个月。'],b:['S-0788','那年城破，他才十九。'],ai:'按沈砚的生年推，B 对应第 5 年，A 对应第 6 年初。'},
+    {sev:'md',kind:'人物',title:'白衣客的佩剑',a:['S-0520','那人背后一柄无鞘长剑。'],b:['S-1041','青鞘长剑斜挂在他腰间。'],ai:'也可能中间换过剑，但正文里没交代。'},
+    {sev:'lo',kind:'称谓',title:'药王谷谷主姓什么',a:['S-0133','孙谷主捻着胡须笑了。'],b:['S-0467','宋谷主已经三天没出丹房。'],ai:'两人没有同时出场过，多半是同一个人，也可能是换了谷主。'},
+  ];
+  const cbox=document.getElementById('conflicts');
+  cbox.innerHTML=C.map((c,i)=>`<div class="cf"><div class="sev ${c.sev}"></div><div class="body">
+    <div class="hd"><b>${c.title}</b><span class="k">${c.kind} · ${{hi:'严重',md:'中等',lo:'轻微'}[c.sev]}</span></div>
+    <div class="vs"><div class="q" id="q${i}a"><span class="sid">${c.a[0]}</span> ${c.a[1]}</div><div class="q" id="q${i}b"><span class="sid">${c.b[0]}</span> ${c.b[1]}</div></div>
+    <div class="ai">${c.ai}</div>
+    <div class="acts" id="acts${i}"><button class="btn" data-i="${i}" data-w="a">以左边为准</button><button class="btn" data-i="${i}" data-w="b">以右边为准</button><button class="btn" data-i="${i}" data-w="own">都不对，我自己写</button><button class="btn" data-i="${i}" data-w="skip">先放着</button></div>
+  </div></div>`).join('');
+  cbox.addEventListener('click',e=>{
+    const b=e.target.closest('button[data-i]'); if(!b) return;
+    const i=b.dataset.i, w=b.dataset.w, qa=document.getElementById('q'+i+'a'), qb=document.getElementById('q'+i+'b');
+    qa.className='q'; qb.className='q';
+    const acts=document.getElementById('acts'+i);
+    let msg='';
+    if(w==='a'){qa.classList.add('win');qb.classList.add('lose');msg='已记进定稿设定';}
+    else if(w==='b'){qb.classList.add('win');qa.classList.add('lose');msg='已记进定稿设定';}
+    else if(w==='own'){msg='待你写一句定稿说法';}
+    else {msg='先放着，不影响其他步骤';}
+    let d=acts.querySelector('.done'); if(!d){d=document.createElement('span');d.className='done';acts.appendChild(d);}
+    d.textContent='✓ '+msg;
+  });
+  document.querySelectorAll('.chip').forEach(ch=>ch.addEventListener('click',()=>{
+    document.querySelectorAll('.chip').forEach(o=>o.setAttribute('aria-pressed','false'));
+    ch.setAttribute('aria-pressed','true');
+  }));
+
+  // ---------- triage board ----------
+  const cards=[
+    {id:'main',col:'keep',pct:78,sg:'<em>保留</em>：全书骨干，其他线都往它上面挂。'},
+    {id:'lin',col:'keep',pct:100,sg:'<em>保留</em>：写完了，和主线交汇 3 次。'},
+    {id:'yimin',col:'merge',pct:70,sg:'<em>并入「海图之谜」</em>：两条线人物重叠八成，海图的碎片正好补上遗民线的后半段。'},
+    {id:'pre',col:'cut',pct:100,sg:'<em>改成回忆穿插</em>：9.6 万字自成一篇，但正文只回头引用过它 1 次。'},
+    {id:'pan',col:'tbd',pct:55,sg:'<em>和白衣客二选一当反派线</em>：两条线共用一个反派，同时留着会打架。'},
+    {id:'baiyi',col:'tbd',pct:30,sg:'<em>视天阙叛乱而定</em>：只有片段，它的价值在于收主线的钩子。'},
+    {id:'haitu',col:'merge',pct:20,sg:'<em>并入「归墟遗民」</em>：碎片化，单独成线撑不住。'},
+  ];
+  const board=document.getElementById('board');
+  cards.forEach(c=>{
+    const t=T[c.id];
+    const el=document.createElement('div');
+    el.className='card'; el.draggable=true; el.dataset.id=c.id;
+    el.innerHTML=`<div class="t"><i style="background:var(${t.c})"></i>${t.name.split(' · ')[1]}</div>
+      <div class="m">${(t.words/10000).toFixed(1)} 万字 · 完成度 ${c.pct}%</div>
+      <div class="bar"><i style="width:${c.pct}%;--c:var(${t.c})"></i></div>
+      <div class="sg">AI 建议${c.sg}</div>`;
+    board.querySelector(`[data-col="${c.col}"]`).appendChild(el);
+  });
+  let dragged=null;
+  board.addEventListener('dragstart',e=>{dragged=e.target.closest('.card');});
+  board.querySelectorAll('.col').forEach(col=>{
+    col.addEventListener('dragover',e=>{e.preventDefault();col.classList.add('over');});
+    col.addEventListener('dragleave',()=>col.classList.remove('over'));
+    col.addEventListener('drop',e=>{e.preventDefault();col.classList.remove('over');if(dragged){col.appendChild(dragged);renderImpact(dragged.dataset.id,col.dataset.col);}});
+  });
+  const IMPACT={
+    pre:{cut:['<span class="sid">S-0388</span> 沈砚回忆师父教剑，要改写成独立的回忆段','<span class="sid">S-0610</span> 林清认出他小时候的玉佩，玉佩的来历只在前传里交代过'],fix:'把这两处改成回忆，估计补写约 3,000 字。'},
+    pan:{cut:['主线缺口「青州城破」本来是天阙叛军干的，城破的起因要重写','<span class="sid">S-0520</span> 埋下的白衣客钩子会失去对手'],fix:'砍掉前建议先定下由谁来打破青州。'},
+    baiyi:{cut:['主线 <span class="sid">S-0520</span>「白衣客的身份」这个钩子没人收'],fix:'要么在主线里收掉，要么删掉 S-0520 里的伏笔。'},
+    main:{cut:['其他六条线全部失去挂靠点'],fix:'主线不建议砍。'},
+    lin:{cut:['和主线的 3 个交汇点要重写','主角的伤由谁来治，得换人'],fix:'这条线写完了，砍掉损失最大。'},
+    yimin:{cut:['主线结尾「跌进归墟」之后没有下文'],fix:'砍掉的话主线结局要另想。'},
+    haitu:{cut:['主线「半张海图」这个钩子没人收'],fix:'建议合并，不建议砍。'},
+  };
+  const impact=document.getElementById('impact');
+  function renderImpact(id,col){
+    const t=T[id], im=IMPACT[id];
+    if(col!=='cut'&&col!=='merge'){impact.innerHTML=`已把「${t.name.split(' · ')[1]}」放进${{keep:'保留',tbd:'还没想好'}[col]}。`;impact.style.borderColor='var(--line)';return;}
+    impact.style.borderColor='var(--red)';
+    impact.innerHTML=`<b>${col==='cut'?'砍掉':'合并'}「${t.name.split(' · ')[1]}」会影响：</b><ul>${im.cut.map(s=>`<li>${s}</li>`).join('')}</ul><div style="margin-top:6px;color:var(--ink-2)">${im.fix}</div>`;
+  }
+  renderImpact('pre','cut');
+
+  // skeleton chips
+  function chs(el,from,n,holes){
+    let h='';
+    for(let i=0;i<n;i++){const k=from+i; h+= holes.includes(k)?`<span class="ch hole" data-go="write">第${k}章 · 补写</span>`:`<span class="ch">第${k}章</span>`;}
+    document.getElementById(el).innerHTML=h;
+  }
+  chs('v1',1,12,[7]); chs('v2',13,12,[20,24]); chs('v3',25,18,[33,41,42]); chs('v4',43,16,[49,55,56,57]);
+  document.querySelector('.skel').addEventListener('click',e=>{if(e.target.closest('.hole'))show('write');});
+
+  // ---------- write ----------
+  const P=[
+    ['全书地图','压缩版，每次都带',18000,true],
+    ['主线档案','沈砚寻父',9000,true],
+    ['天阙叛乱档案','城破是叛军干的',6000,true],
+    ['人物卡 × 4','沈砚、林清、孙谷主、叛军首领',4000,true],
+    ['定稿设定','你在矛盾清单里裁过的 12 条',2000,true],
+    ['前文原文','S-0366 – S-0371',12000,true],
+    ['后文原文','S-0402 – S-0404',6000,true],
+    ['文风样本 × 3','你自己写的战乱场面',9000,true],
+    ['白衣客档案','AI 判断这章用不上',5000,false],
+  ];
+  const pack=document.getElementById('pack');
+  pack.innerHTML=P.map((p,i)=>`<label for="pk${i}"><input type="checkbox" id="pk${i}" ${p[3]?'checked':''}><span>${p[0]}<small>${p[1]}</small></span><span class="sz">${(p[2]/10000).toFixed(1)}万字</span></label>`).join('');
+  function meter(){
+    let s=0; P.forEach((p,i)=>{if(document.getElementById('pk'+i).checked)s+=p[2];});
+    const tok=Math.round(s*0.6), pct=tok/1000000*100;
+    document.getElementById('meterText').textContent=`共 ${(s/10000).toFixed(1)} 万字 ≈ ${(tok/10000).toFixed(1)} 万 token，占模型窗口 ${pct.toFixed(1)}%`;
+    document.getElementById('meterBar').style.width=Math.max(pct,1.5)+'%';
+  }
+  pack.addEventListener('change',meter); meter();
+
+  const V=[
+    {txt:['火是从北门先烧起来的。','沈砚被钟声惊醒时，窗纸已经映成了橘红色。街上有人在喊，喊的什么听不清，只听见马蹄一阵紧似一阵，从巷口碾过去。他摸到枕下的短刀，赤脚跳下床，门一推开，热风扑了满脸。','对门的王婶抱着孩子往南跑，边跑边回头冲他喊：“砚哥儿，别往北去！”'],
+     chk:[['ok','和定稿设定没有冲突'],['ok','「北门先破」和大纲、S-0402 一致'],['ok','文风：句长、对话比例和样本接近']]},
+    {txt:['药箱还没合上，林清就听见了第一声炮响。','她抬头看了一眼谷口的方向，那边的天是黑的，可再往北，青州城的上空已经亮得不像夜里。','她把最后一包金疮药塞进箱底，对师弟说：“我进城。”'],
+     chk:[['warn','视角换成了林清，任务要求是沈砚'],['warn','S-0368 里林清这时在药王谷闭关，不该出谷']]},
+    {txt:['青州城破那一夜，后来被说书人讲了很多遍，每一遍都比真的热闹。','沈砚记得的只有冷。东门的火把一排排压过来，他缩在城墙根下，手里攥着父亲那半张海图，攥得纸都湿了。','他那时还不知道，这张纸会把他带到比青州远得多的地方。'],
+     chk:[['warn','写的是「东门」，S-0402 里失守的是北门'],['ok','提到半张海图，接上了主线 S-0044 埋的钩子']]},
+  ];
+  const prose=document.getElementById('prose'), check=document.getElementById('check');
+  function ver(i){
+    document.querySelectorAll('.vt').forEach(t=>t.setAttribute('aria-selected',t.dataset.v==i?'true':'false'));
+    prose.innerHTML=V[i].txt.map(p=>`<p>${p}</p>`).join('')+'<p style="color:var(--ink-3);text-indent:0;font-family:var(--sans);font-size:13px">（后面约 6,800 字省略）</p>';
+    check.innerHTML='<b style="font-size:12px;color:var(--ink-3);font-weight:500">一致性检查</b>'+V[i].chk.map(([k,s])=>`<span class="${k}">${k==='ok'?'✓':'✗'} ${s}</span>`).join('');
+  }
+  document.querySelectorAll('.vt').forEach(t=>t.addEventListener('click',()=>ver(+t.dataset.v)));
+  ver(0);
+})();
+</script>
