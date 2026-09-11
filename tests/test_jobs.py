@@ -63,3 +63,32 @@ def test_base_exception_does_not_wedge_runner():
     assert job.status == "failed"
     assert job.error.startswith("CancelledError")
     assert runner.wait(runner.submit("dedup", "测试书", lambda p: {}).id).status == "done"
+
+
+def test_cancel_running_job():
+    from ligaotai.jobs import JobCancelled  # noqa: F401  确认异常类存在
+
+    runner = JobRunner()
+    started, release = threading.Event(), threading.Event()
+
+    def fn(progress):
+        started.set()
+        release.wait(5)
+        progress(1, 2)  # 这里发现已请求暂停
+        return {}
+
+    job = runner.submit("cards", "测试书", fn)
+    started.wait(5)
+    assert runner.cancel(job.id) is job
+    release.set()
+    job = runner.wait(job.id)
+    assert (job.status, job.error) == ("cancelled", "已暂停")
+    assert runner.wait(runner.submit("x", "测试书", lambda p: {}).id).status == "done"
+
+
+def test_cancel_finished_or_unknown_job():
+    runner = JobRunner()
+    job = runner.wait(runner.submit("x", "测试书", lambda p: {}).id)
+    runner.cancel(job.id)
+    assert job.status == "done" and job.cancel_requested is False
+    assert runner.cancel("nope") is None

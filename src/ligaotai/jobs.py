@@ -19,7 +19,7 @@ class Job:
     id: str
     name: str
     book: str
-    status: str = "queued"  # queued / running / done / failed
+    status: str = "queued"  # queued / running / done / failed / cancelled
     done: int = 0
     total: int = 0
     message: str = ""
@@ -27,6 +27,7 @@ class Job:
     result: dict | None = None
     started: str = ""
     finished: str = ""
+    cancel_requested: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -34,6 +35,10 @@ class Job:
 
 class BusyError(RuntimeError):
     pass
+
+
+class JobCancelled(Exception):
+    """作者点了暂停。已经做完的部分都落了盘，重跑会接着做。"""
 
 
 class JobRunner:
@@ -61,6 +66,8 @@ class JobRunner:
         job.started = now_iso()
 
         def progress(done: int, total: int, message: str = "") -> None:
+            if job.cancel_requested:
+                raise JobCancelled("已暂停")
             job.done, job.total = done, total
             if message:
                 job.message = message
@@ -69,11 +76,21 @@ class JobRunner:
             job.result = fn(progress)
             job.finished = now_iso()
             job.status = "done"
+        except JobCancelled:
+            job.error = "已暂停"
+            job.finished = now_iso()
+            job.status = "cancelled"
         except BaseException as e:  # 含 asyncio.CancelledError，漏接会让任务永远卡在 running
             job.error = f"{type(e).__name__}: {e}"
             job.finished = now_iso()
             job.status = "failed"
             log.error("任务失败 %s\n%s", job.name, traceback.format_exc())
+
+    def cancel(self, job_id: str) -> Job | None:
+        job = self._jobs.get(job_id)
+        if job is not None and job.status in ("queued", "running"):
+            job.cancel_requested = True
+        return job
 
     def get(self, job_id: str) -> Job | None:
         return self._jobs.get(job_id)
