@@ -34,3 +34,20 @@ def make_chapters(n: int, seed: int = 0) -> list:
         )
         chapters.append(Chapter(num, f"第{num}回 標題{num}", body))
     return chapters
+
+
+def make_verse_chapter(num: int, seed: int = 0):
+    """合成一回带「诗曰」全角空格缩进诗句的章节（真实古典小说里常见的排版），
+    用来测试 mutate() 删句时不会把缩进诗行变成空白行。"""
+    from tools.scramble import Chapter
+
+    FW = "　"
+    verse_lines = [f"{FW * 2}{gen_text(seed * 7 + i, 10)}。" for i in range(4)]
+    body = (
+        gen_text(seed * 1000 + num * 2, 1000)
+        + "\n\n詩曰：\n"
+        + "\n".join(verse_lines)
+        + "\n\n"
+        + gen_text(seed * 1000 + num * 2 + 1, 1000)
+    )
+    return Chapter(num, f"第{num}回 標題{num}", body)

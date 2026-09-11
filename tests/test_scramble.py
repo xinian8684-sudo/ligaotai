@@ -1,10 +1,19 @@
 import json
+import random
 
 import pytest
-from helpers import make_chapters
+from helpers import gen_text, make_chapters, make_verse_chapter
 
 from ligaotai.readers import read_text
-from tools.scramble import main, parse_chapters, scramble, strip_gutenberg
+from ligaotai.split import split_text
+from tools.scramble import (
+    _pick_excerpt_span,
+    main,
+    mutate,
+    parse_chapters,
+    scramble,
+    strip_gutenberg,
+)
 
 SMALL = dict(n_delete=2, n_truncate=2, n_full=3, n_excerpt=2, alias_chapters=5)
 
@@ -91,6 +100,110 @@ def test_alias_collision_raises(tmp_path):
     chapters[5].body += "金箍郎"
     with pytest.raises(ValueError):
         scramble(chapters, tmp_path / "x", seed=3, **SMALL)
+
+
+def test_alias_candidates_require_term(tmp_path):
+    """别名章节必须真的含有被替换的词，别名候选要在截断之后的正文里挑（Fix 1）。"""
+    chapters = make_chapters(20)
+    for c in chapters:
+        if c.num not in (3, 5, 7):
+            c.body = c.body.replace("八戒", "某人")
+    out = tmp_path / "乱稿"
+    key = scramble(
+        chapters, out, seed=3,
+        n_delete=0, n_truncate=0, n_full=0, n_excerpt=0, alias_chapters=5,
+    )
+    ba = next(a for a in key["aliases"] if a["replaces"] == "八戒")
+    assert set(ba["chapters"]) <= {3, 5, 7}
+    assert ba["chapters"]
+    for num in ba["chapters"]:
+        text = all_text(out, key, chapter=num, kind="original")
+        assert "天蓬郎" in text
+
+
+class FakeRng:
+    """固定 random() 序列，choice 永远取第一个元素。"""
+
+    def __init__(self, values):
+        self.values = list(values)
+        self.i = 0
+
+    def random(self):
+        v = self.values[self.i]
+        self.i += 1
+        return v
+
+    def choice(self, seq):
+        return seq[0]
+
+
+def test_mutate_drop_leaves_no_blank_run():
+    """删掉缩进诗句时不能留下只剩全角空格的行，否则会被 split.py 当成空行制造假场景分隔（Fix 2）。"""
+    FW = "　"
+    text = "前文。\n" + FW * 4 + "甲句。\n" + FW * 4 + "乙句。\n" + FW * 4 + "丙句。\n後文。"
+    # _SENTENCE.split 在这段文本上切出 6 个片段（含结尾一个空片段），每个都要抽一次 random()。
+    rng = FakeRng([0.9, 0.0, 0.0, 0.9, 0.9, 0.9])  # 保留、删、删、保留、保留、（空片段）
+    result = mutate(text, rng)
+    assert result == "前文。\n" + FW * 4 + "丙句。\n後文。"
+
+
+def _blank_line_runs(text: str) -> int:
+    """统计连续 >=2 行「去空白后为空」的行的运行段数（含全角空格）。"""
+    lines = text.split("\n")
+    runs, i, n = 0, 0, len(lines)
+    while i < n:
+        if not lines[i].strip():
+            j = i
+            while j < n and not lines[j].strip():
+                j += 1
+            if j - i >= 2:
+                runs += 1
+            i = j
+        else:
+            i += 1
+    return runs
+
+
+def test_mutate_never_increases_blank_line_runs():
+    """跑 20 个种子：mutate 之后「连续 >=2 空行」的段数不能比原文多（Fix 2）。"""
+    for seed in range(20):
+        chapter = make_verse_chapter(1, seed=seed)
+        rng = random.Random(seed)
+        result = mutate(chapter.body, rng)
+        assert _blank_line_runs(result) <= _blank_line_runs(chapter.body)
+
+
+def test_pick_excerpt_span_within_one_block():
+    """新的选段函数选出的窗口必须落在 split_text 切出的单个场景块里（Fix 3）。"""
+    heading = "第1回 標題1"
+    body = gen_text(1, 2990) + "\n\n悟空說道，八戒和唐僧都在。\n\n" + gen_text(2, 2990)
+    rng = random.Random(5)
+    a, b = _pick_excerpt_span(heading, body, rng)
+    file_text = f"{heading}\n\n{body}"
+    blocks = split_text(file_text)
+    containing = [blk for blk in blocks if blk.start <= a and b <= blk.end]
+    assert containing, f"span [{a},{b}) not inside any single block; blocks={blocks}"
+    assert 1200 <= b - a <= 2400 or (b - a) <= 2000  # 正常窗口或退回兜底截断
+
+
+def test_variant_excerpts_within_single_block(tmp_path, monkeypatch):
+    """整合测试：真跑一次 scramble（关掉 mutate），片段重写版的原文不能横跨两个场景块（Fix 3）。"""
+    import tools.scramble as scr
+
+    monkeypatch.setattr(scr, "mutate", lambda text, rng, *a, **k: text)
+    out = tmp_path / "乱稿"
+    key = scr.scramble(make_chapters(20), out, seed=3, **SMALL)
+    for v in key["variants"]:
+        if v["kind"] != "variant_excerpt":
+            continue
+        orig_text, _ = read_text(out / v["original_file"])
+        excerpt_text, _ = read_text(out / v["file"])
+        start = orig_text.find(excerpt_text)
+        assert start != -1, f"chapter {v['chapter']}: excerpt text not found verbatim in original"
+        end = start + len(excerpt_text)
+        blocks = split_text(orig_text)
+        containing = [blk for blk in blocks if blk.start <= start and end <= blk.end]
+        assert containing, f"chapter {v['chapter']} excerpt spans blocks: {blocks}"
 
 
 def test_cli_writes_key_outside_folder(tmp_path):

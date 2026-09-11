@@ -18,6 +18,8 @@ from pathlib import Path
 
 from docx import Document
 
+from ligaotai.split import split_text
+
 DEFAULT_ALIASES = [
     {"replaces": "悟空", "alias": "金箍郎", "canonical": "孫悟空"},
     {"replaces": "八戒", "alias": "天蓬郎", "canonical": "豬八戒"},
@@ -84,27 +86,76 @@ def split_body(body: str, k: int) -> list[str]:
     return [p for p in pieces if p.strip()]
 
 
-def pick_excerpt(body: str, rng: random.Random) -> str:
-    starts = [0] + para_cuts(body)
-    cands = [(a, b) for a in starts for b in starts if 1200 <= b - a <= 2400 and b <= 2600]
-    a, b = rng.choice(cands) if cands else (0, min(len(body), 2000))
-    return body[a:b].strip()
+def _pick_excerpt_span(heading: str, body: str, rng: random.Random) -> tuple[int, int]:
+    """在这一回「原始单文件」（回目+正文）里选一个 1200-2400 字的整段落窗口，
+    窗口必须落在 split.py 按场景切出的同一个块里，不然片段会横跨两个场景，
+    验收时没法判断它该跟哪个场景块比对。"""
+    file_text = f"{heading}\n\n{body}"
+    body_start = len(heading) + 2  # 跳过回目那一行和它后面的空行
+    blocks = split_text(file_text)
+    first_big = next((blk for blk in blocks if blk.end - blk.start >= 1500), None)
+    if first_big is not None:
+        lo = max(first_big.start, body_start)
+        bounds = sorted(
+            {first_big.start, first_big.end}
+            | {
+                body_start + c
+                for c in para_cuts(body)
+                if first_big.start <= body_start + c <= first_big.end
+            }
+        )
+        cands = sorted(
+            (a, b)
+            for a in bounds
+            for b in bounds
+            if a >= lo and b <= first_big.end and 1200 <= b - a <= 2400
+        )
+        if cands:
+            return rng.choice(cands)
+    # 兜底：没有 >=1500 字的场景块，或者块里凑不出合适的窗口，就退回最长的那个块，
+    # 从回目那行之后开始，最多截前 2000 字。
+    block = max(blocks, key=lambda b: b.end - b.start)
+    lo = max(block.start, body_start)
+    return lo, min(block.end, lo + 2000)
+
+
+def pick_excerpt(heading: str, body: str, rng: random.Random) -> str:
+    a, b = _pick_excerpt_span(heading, body, rng)
+    return f"{heading}\n\n{body}"[a:b].strip()
 
 
 def mutate(text: str, rng: random.Random, drop=0.08, modify=0.08, add=0.04) -> str:
-    """按句子随机删、改、加。删掉的句子保留它开头的换行，段落结构不乱。"""
-    out = []
+    """按句子随机删、改、加。
+
+    删掉一句时不能连它开头的换行一起留下——如果那句本来是缩进诗行（前面是
+    换行 + 全角空格），留下缩进会变成一行「看起来空、实际有全角空格」的行，
+    被 split.py 当成空行，两行这样的就拼成假的场景分隔。规则：删句不留任何
+    痕迹，但记住它开头换行的「强度」（\\n 的个数）；下一句保留时，如果它自己
+    开头的换行强度不如被删句子的强，就用被删句子的换行 + 自己的缩进来补上，
+    这样两句保留下来的句子之间的换行强度，绝不会超过原文里两者之间本来的强度。
+    """
+    out: list[str] = []
+    pending = ""  # 被删句子里最强的那个「换行前缀」，留给下一个保留的句子
     for s in _SENTENCE.split(text):
+        lead = re.match(r"\s*", s).group(0)
+        nl = lead.rfind("\n")
+        brk = lead[: nl + 1] if nl != -1 else ""
+        indent = lead[len(brk):]
+        body = s[len(lead):]
         r = rng.random()
-        if s.strip() and r < drop:
-            out.append(re.match(r"\s*", s).group(0))
-        elif s.strip() and r < drop + modify:
+        if body and r < drop:
+            if brk.count("\n") > pending.count("\n"):
+                pending = brk
+            continue
+        if pending.count("\n") > brk.count("\n"):
+            lead = pending + indent
+        pending = ""
+        if body and r < drop + modify:
             old, new = rng.choice(SUBS)
-            out.append(s.replace(old, new, 1) if old in s else s + rng.choice(FILLERS))
-        elif s.strip() and r < drop + modify + add:
-            out.append(s + rng.choice(FILLERS))
-        else:
-            out.append(s)
+            body = body.replace(old, new, 1) if old in body else body + rng.choice(FILLERS)
+        elif body and r < drop + modify + add:
+            body = body + rng.choice(FILLERS)
+        out.append(lead + body)
     return "".join(out)
 
 
@@ -170,23 +221,33 @@ def scramble(
     full = take(n_full)
     excerpt = take(n_excerpt)
     kept = [c for c in chapters if c.num not in deleted]
-    alias_log = [
-        {**a, "chapters": sorted(rng.sample([c.num for c in kept], min(alias_chapters, len(kept))))}
-        for a in aliases
-    ]
 
-    final: dict[int, tuple[str, str]] = {}
+    # 先把截断做完：别名要挑「截断之后的正文里真的还有这个词」的章节，不然会挑到
+    # 词恰好被切掉了的章节，答案里写着有别名、实际打开文件搜不到（空跑）。
     truncated_log = []
+    after_truncate: dict[int, tuple[str, str]] = {}
     for c in kept:
         heading, body = c.heading, c.body
         if c.num in truncated:
             body = cut_at_ratio(body, rng.uniform(0.4, 0.7))
             truncated_log.append({"chapter": c.num, "kept_ratio": round(len(body) / len(c.body), 3)})
+        after_truncate[c.num] = (heading, body)
+
+    alias_log = []
+    for a in aliases:
+        candidates = [
+            num for num, (heading, body) in after_truncate.items() if a["replaces"] in heading + body
+        ]
+        chosen = sorted(rng.sample(candidates, min(alias_chapters, len(candidates))))
+        alias_log.append({**a, "chapters": chosen})
+
+    final: dict[int, tuple[str, str]] = {}
+    for num, (heading, body) in after_truncate.items():
         for a in alias_log:
-            if c.num in a["chapters"]:
+            if num in a["chapters"]:
                 heading = heading.replace(a["replaces"], a["alias"])
                 body = body.replace(a["replaces"], a["alias"])
-        final[c.num] = (heading, body)
+        final[num] = (heading, body)
 
     files: list[dict] = []
     for c in kept:
@@ -206,7 +267,8 @@ def scramble(
             "pieces": 1, "kind": "variant_full", "heading_first": True,
         })
     for num in excerpt:
-        excerpt_text = mutate(pick_excerpt(final[num][1], rng), rng, 0.03, 0.03, 0.02)
+        heading, body = final[num]
+        excerpt_text = mutate(pick_excerpt(heading, body, rng), rng, 0.03, 0.03, 0.02)
         files.append({
             "text": excerpt_text, "chapter": num, "piece": 1, "pieces": 1,
             "kind": "variant_excerpt", "heading_first": False,
