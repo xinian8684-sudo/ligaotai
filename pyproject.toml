@@ -1,0 +1,27 @@
+[project]
+name = "ligaotai"
+version = "0.1.0"
+description = "理稿台：把乱手稿理清、取舍、补写成书的本地工作台"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+  "pydantic>=2.7",
+  "charset-normalizer>=3.3",
+  "python-docx>=1.1",
+  "pyyaml>=6.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ligaotai"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
