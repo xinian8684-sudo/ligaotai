@@ -36,7 +36,7 @@ HEADING_PATTERNS = [
 HEADING_MAX_LEN = 50
 _SENTENCE_END = "。！？!?，,；;…」”』"
 _SEPARATOR_CHARS = set("*＊-—－_=＝~～·•◇◆○●□■☆★※#＃")
-_WS = " \t　"
+_WS = " \t\u3000"
 
 # 一段：(起, 止, 标题, 章节序号)
 Piece = tuple[int, int, str, int]
@@ -138,7 +138,7 @@ def _merge_heading_only(text: str, pieces: list[Piece]) -> list[Piece]:
     return merged
 
 
-_BLANK_BOUNDARY = re.compile(r"\n[ \t　]*\n")
+_BLANK_BOUNDARY = re.compile(r"\n[ \t\u3000]*\n")
 _NEWLINE = re.compile(r"\n")
 _SENTENCE_CUT = re.compile(r"[。！？!?…][」”』）)]?")
 

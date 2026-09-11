@@ -59,6 +59,6 @@ def read_text(path: Path) -> tuple[str, str]:
     enc = detect_encoding(data)
     text = data.decode(enc, errors="replace")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    if text.startswith("﻿"):
+    if text.startswith("\ufeff"):
         text = text[1:]
     return text, enc
