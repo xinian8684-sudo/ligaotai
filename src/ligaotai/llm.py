@@ -10,12 +10,15 @@ from __future__ import annotations
 import json
 import re
 import asyncio
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Protocol
 
+from openai import AsyncOpenAI
+
 from .book import now_iso
-from .config import AppConfig, TierConfig
+from .config import AppConfig, TierConfig, effective_key
 from .fsutil import write_json
 
 MAX_ATTEMPTS = 3
@@ -31,6 +34,10 @@ class LLMError(RuntimeError):
 
 class FatalLLMError(LLMError):
     """整个步骤都不用再跑了：key 不对、欠费、没权限。"""
+
+
+class NoKeyError(FatalLLMError):
+    """还没配置 API key。"""
 
 
 @dataclass
@@ -147,3 +154,79 @@ class LLMClient:
             self.log_dir / f"{tag}-{attempt}.json",
             {"time": now_iso(), "tier": tier.model_dump(), "messages": messages, "reply": asdict(reply)},
         )
+
+
+def request_extras(tier: TierConfig) -> dict:
+    """思考开关和强度：放进请求体。thinking=default 时什么都不传。"""
+    extra: dict = {}
+    if tier.thinking != "default":
+        extra["thinking"] = {"type": "enabled" if tier.thinking == "on" else "disabled"}
+    if tier.effort:
+        extra["reasoning_effort"] = tier.effort
+    return extra
+
+
+class OpenAIBackend:
+    """真正发请求：OpenAI 官方 SDK，指向配置里的接口地址。429/5xx/超时由 SDK 自动退避重试。"""
+
+    def __init__(self, cfg: AppConfig, http_client=None):
+        key = effective_key(cfg)
+        if not key:
+            raise NoKeyError("还没配置 API key：在设置里填写，或者设置环境变量 LIGAOTAI_API_KEY")
+        self._client = AsyncOpenAI(
+            base_url=cfg.api_base,
+            api_key=key,
+            timeout=cfg.timeout,
+            max_retries=4,
+            http_client=http_client,
+        )
+
+    async def complete(self, tier: TierConfig, messages: list[dict], max_tokens: int) -> Reply:
+        kwargs: dict = {"model": tier.model, "messages": messages, "max_tokens": max_tokens}
+        if tier.json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        extra = request_extras(tier)
+        if extra:
+            kwargs["extra_body"] = extra
+        resp = await self._client.chat.completions.create(**kwargs)
+        choice = resp.choices[0]
+        usage = resp.usage
+        return Reply(
+            content=choice.message.content or "",
+            finish_reason=choice.finish_reason or "",
+            prompt_tokens=usage.prompt_tokens if usage else 0,
+            completion_tokens=usage.completion_tokens if usage else 0,
+        )
+
+
+PING_SYSTEM = "你在做接口连通性测试。只输出一个 json 对象，不要解释。"
+PING_USER = '请原样输出这个 json：{"ok": true}'
+
+
+def _ping_check(data: dict) -> list[str]:
+    return [] if data.get("ok") is True else ['缺少 "ok": true']
+
+
+def check_model(cfg: AppConfig, backend: ChatBackend) -> list[dict]:
+    """两档模型各发一个极小的请求，返回每档是否可用、耗时、出错原因。"""
+
+    async def one(client: LLMClient, tier_name: str) -> dict:
+        start = time.perf_counter()
+        try:
+            await client.chat_json(tier_name, PING_SYSTEM, PING_USER, _ping_check, tag=f"check/{tier_name}", max_attempts=2)
+            ok, error = True, ""
+        except LLMError as e:
+            ok, error = False, str(e)
+        return {
+            "tier": tier_name,
+            "model": client.tier(tier_name).model,
+            "ok": ok,
+            "error": error,
+            "seconds": round(time.perf_counter() - start, 1),
+        }
+
+    async def both() -> list[dict]:
+        client = LLMClient(cfg, backend)
+        return [await one(client, "batch"), await one(client, "synth")]
+
+    return asyncio.run(both())
