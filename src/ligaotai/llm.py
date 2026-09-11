@@ -174,11 +174,16 @@ class LLMClient:
 
 
 def request_extras(tier: TierConfig) -> dict:
-    """思考开关和强度：放进请求体。thinking=default 时什么都不传。"""
+    """思考开关和强度：放进请求体。
+
+    thinking=default 时 thinking 键什么都不传（用接口自己的默认）。
+    thinking=off 时不发 reasoning_effort——关着思考发强度没意义，还可能被别家接口拒绝；
+    thinking 为 on 或 default 时，effort 非空才发（default 下用户明确填了 effort 就尊重它）。
+    """
     extra: dict = {}
     if tier.thinking != "default":
         extra["thinking"] = {"type": "enabled" if tier.thinking == "on" else "disabled"}
-    if tier.effort:
+    if tier.thinking != "off" and tier.effort:
         extra["reasoning_effort"] = tier.effort
     return extra
 
@@ -244,6 +249,6 @@ def check_model(cfg: AppConfig, backend: ChatBackend) -> list[dict]:
 
     async def both() -> list[dict]:
         client = LLMClient(cfg, backend)
-        return [await one(client, "batch"), await one(client, "synth")]
+        return list(await asyncio.gather(one(client, "batch"), one(client, "synth")))
 
     return asyncio.run(both())
