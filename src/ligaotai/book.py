@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -28,7 +29,7 @@ DEFAULT_SETTINGS = {
     "fragment_max_chars": 300,   # 短于这个的块标成「碎片」候选
     "dedup_shingle": 5,          # 查重用几个字一组
     "dedup_jaccard": 0.5,        # 相似度达到这个算同一场景的不同版本
-    "dedup_containment": 0.8,    # 短块有这么多内容出现在长块里，也算同一组
+    "dedup_containment": 0.8,    # 短块有这么多内容出现在长块里，就挂到那个最佳容器上
     "dedup_min_shingles": 100,   # 太短的块（约 100 字以下）不参与查重
     "dedup_common_df": 200,      # 出现在超过这么多块里的字串当套话，不计数（真实文本 21~200 块之间几乎没有套话，调大避免误伤 21+ 份重复场景）
 }
@@ -153,7 +154,12 @@ def list_books(library: Path) -> list[dict]:
         return []
     out = []
     for d in sorted(lib.iterdir(), key=lambda p: natural_key(p.name)):
-        meta = read_json(d / "book.json") if d.is_dir() else None
+        if not d.is_dir():
+            continue
+        try:
+            meta = read_json(d / "book.json")
+        except (json.JSONDecodeError, OSError):
+            continue  # book.json 坏了，跳过这本，别拖垮整个书库
         if meta:
             out.append({"name": d.name, "title": meta["title"], "created": meta["created"]})
     return out

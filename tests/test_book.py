@@ -70,6 +70,14 @@ def test_set_step_rejects_unknown(book):
         book.set_step("split", "weird")
 
 
+def test_list_books_skips_corrupt(library, book):
+    bad = library / "坏书"
+    bad.mkdir()
+    (bad / "book.json").write_text("{", encoding="utf-8")
+    assert [b["name"] for b in list_books(library)] == [book.name]
+    recover_interrupted(library)  # 不该抛异常
+
+
 def test_recover_interrupted(library, book):
     book.set_step("split", "running")
     fixed = recover_interrupted(library)

@@ -96,7 +96,11 @@ def load_scenes(book: Book, with_text: bool = False) -> list[Scene]:
         return []
     out = []
     for p in book.scenes_dir.glob("S-*.md"):
+        if not SCENE_ID_RE.match(p.stem):
+            continue  # 同步冲突/重复副本，如 "S-0001 (1).md"、"S-0001.sync-conflict-x.md"
         sc = read_scene(p)
+        if sc.id != p.stem:
+            continue  # 文件名和头信息里的编号对不上，不是这个场景真正的文件
         if not with_text:
             sc.text = ""
         out.append(sc)

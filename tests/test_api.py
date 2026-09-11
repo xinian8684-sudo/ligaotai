@@ -81,6 +81,13 @@ def test_full_flow(client, src):
     assert r.json()["text"].startswith("第一章 甲")
 
 
+def test_import_own_book_folder_is_400(client, tmp_path):
+    client.post("/api/books", json={"title": "我的书"})
+    own = tmp_path / "书库" / "我的书"
+    r = client.post("/api/books/我的书/import", json={"folder": str(own)})
+    assert r.status_code == 400
+
+
 def test_errors(client, src):
     client.post("/api/books", json={"title": "我的书"})
     assert client.post("/api/books/我的书/steps/cards/run").status_code == 400
@@ -92,6 +99,33 @@ def test_errors(client, src):
     assert client.get("/api/jobs/nope").status_code == 404
 
 
+def test_step_requires_upstream_done(client, src):
+    client.post("/api/books", json={"title": "我的书"})
+
+    r = client.post("/api/books/我的书/steps/split/run")
+    assert r.status_code == 409
+
+    r = client.post("/api/books/我的书/import", json={"folder": str(src)})
+    wait(client, r.json())
+
+    r = client.post("/api/books/我的书/steps/split/run")
+    assert r.status_code == 202
+    wait(client, r.json())
+
+    r = client.post("/api/books/我的书/steps/dedup/run")
+    assert r.status_code == 202
+    wait(client, r.json())
+
+
+def test_dedup_requires_split_done(client, src):
+    client.post("/api/books", json={"title": "我的书"})
+    r = client.post("/api/books/我的书/import", json={"folder": str(src)})
+    wait(client, r.json())
+
+    r = client.post("/api/books/我的书/steps/dedup/run")
+    assert r.status_code == 409
+
+
 def test_busy_returns_409(client):
     client.post("/api/books", json={"title": "我的书"})
     gate = threading.Event()
@@ -100,6 +134,16 @@ def test_busy_returns_409(client):
     assert client.get("/api/jobs/current").json()["id"] == job.id
     gate.set()
     client.app.state.runner.wait(job.id)
+
+
+def test_startup_survives_corrupt_book_json(tmp_path):
+    lib = tmp_path / "书库"
+    lib.mkdir()
+    (lib / "坏书").mkdir()
+    (lib / "坏书" / "book.json").write_text("{", encoding="utf-8")
+    c = TestClient(create_app(app_dir=tmp_path, allowed_hosts=("testserver",)))
+    assert c.get("/api/health").json()["ok"] is True
+    assert c.get("/api/books").json() == []
 
 
 def test_interrupted_step_recovered_on_startup(tmp_path):

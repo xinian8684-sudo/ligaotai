@@ -10,11 +10,11 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel
 
 from . import __version__
-from .book import Book, create_book, list_books, open_book, recover_interrupted
+from .book import STEP_LABELS, STEPS, Book, create_book, list_books, open_book, recover_interrupted
 from .config import APP_DIR, AppConfig, library_path, load_config, save_config
 from .dedup import run_dedup, set_main
 from .fsutil import ensure_within, read_json
-from .importer import run_import
+from .importer import check_import_folder, run_import
 from .jobs import BusyError, JobRunner
 from .readers import read_text
 from .scenes import get_scene, load_scenes, run_split
@@ -108,6 +108,10 @@ def create_app(
         folder = Path(req.folder)
         if not folder.is_dir():
             raise HTTPException(400, f"文件夹不存在：{req.folder}")
+        try:
+            check_import_folder(b, folder)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
         return submit(b, "import", lambda p: run_import(b, folder, p))
 
     @app.post("/api/books/{name}/steps/{step}/run", status_code=202)
@@ -116,6 +120,9 @@ def create_app(
         fn = STEP_RUNNERS.get(step)
         if fn is None:
             raise HTTPException(400, f"这一步现在还不能跑：{step}")
+        for prev in STEPS[: STEPS.index(step)]:
+            if b.step(prev)["status"] != "done":
+                raise HTTPException(409, f"请先完成上一步：{STEP_LABELS[prev]}")
         return submit(b, step, lambda p: fn(b, p))
 
     @app.get("/api/jobs/current")

@@ -127,6 +127,20 @@ def test_get_scene(book, src):
         get_scene(book, "S-9999")
 
 
+def test_stray_copies_are_ignored(book, src):
+    run_import(book, src)
+    run_split(book)
+    real = scene_path(book, "S-0001")
+    content = real.read_text(encoding="utf-8")
+    (book.scenes_dir / "S-0001 (1).md").write_text(content, encoding="utf-8")
+    (book.scenes_dir / "S-0001.sync-conflict-x.md").write_text(content, encoding="utf-8")
+    scenes = load_scenes(book, with_text=True)
+    ids = [s.id for s in scenes]
+    assert ids.count("S-0001") == 1
+    assert sorted(ids) == ["S-0001", "S-0002", "S-0003"]
+    assert by_id(book)["S-0001"].text == parse_scene(content).text
+
+
 def test_corrupt_scene_file_error_names_the_file(book, src):
     run_import(book, src)
     run_split(book)

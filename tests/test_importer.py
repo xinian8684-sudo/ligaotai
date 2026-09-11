@@ -72,3 +72,37 @@ def test_broken_docx_is_reported_not_copied(tmp_path, book):
 def test_not_a_folder(tmp_path, book):
     with pytest.raises(NotADirectoryError):
         run_import(book, tmp_path / "没有")
+
+
+def test_skips_nested_book_library(tmp_path, book):
+    src = tmp_path / "大文件夹"
+    src.mkdir()
+    (src / "a.txt").write_text("正文。", encoding="utf-8")
+    nested = src / "别的书库" / "某本书"
+    nested.mkdir(parents=True)
+    (nested / "book.json").write_text("{}", encoding="utf-8")
+    (nested / "笔记.md").write_text("笔记内容。", encoding="utf-8")
+    summary = run_import(book, src)
+    assert summary["added"] == 1
+    files = read_json(book.manifest_path)["files"]
+    assert set(files) == {"大文件夹/a.txt"}
+    reasons = {s["path"]: s["reason"] for s in summary["skipped"]}
+    assert reasons["别的书库/某本书/book.json"] == "理稿台书库"
+    assert reasons["别的书库/某本书/笔记.md"] == "理稿台书库"
+
+
+def test_import_own_folder_raises(book):
+    book.originals_dir.mkdir(parents=True)
+    with pytest.raises(ValueError):
+        run_import(book, book.root / "原稿")
+
+
+def test_reimport_restores_deleted_copy(tmp_path, book):
+    src = make_src(tmp_path)
+    run_import(book, src)
+    copy = book.originals_dir / "我的稿子" / "a.txt"
+    assert copy.exists()
+    copy.unlink()
+    summary = run_import(book, src)
+    assert copy.exists()
+    assert summary["changed"] == 1
