@@ -6,13 +6,28 @@
 
 from __future__ import annotations
 
-from typing import Literal
+import asyncio
+from pathlib import Path
+from typing import Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from .book import Book, now_iso
 from .dedup import normalize
+from .fsutil import read_json, write_json
+from .jobs import JobCancelled
+from .llm import FatalLLMError, LLMClient, LLMError
+from .prompts import render
+from .scenes import SCENE_ID_RE, Scene, load_scenes
 
 SUMMARY_LIMIT = 200  # 提示词要求 150 字，这里留点余量
+MISSING_LIST_LIMIT = 200
+
+Progress = Callable[..., None]
+
+
+def _noop(*args, **kwargs) -> None:
+    pass
 
 
 class Character(BaseModel):
@@ -102,3 +117,112 @@ def clean_card(card: Card, text: str) -> tuple[Card, dict]:
         }
     )
     return cleaned, dropped
+
+
+def card_path(book: Book, sid: str) -> Path:
+    return book.cards_dir / f"{sid}.json"
+
+
+def load_card(book: Book, sid: str) -> dict | None:
+    return read_json(card_path(book, sid))
+
+
+def load_cards(book: Book) -> dict[str, dict]:
+    if not book.cards_dir.exists():
+        return {}
+    out = {}
+    for p in book.cards_dir.glob("S-*.json"):
+        if not SCENE_ID_RE.match(p.stem):
+            continue  # 同步冲突之类的副本
+        data = read_json(p)
+        if data and data.get("id") == p.stem:
+            out[p.stem] = data
+    return out
+
+
+def is_fresh(record: dict | None, scene: Scene) -> bool:
+    return bool(record) and record.get("scene_hash") == scene.hash
+
+
+async def make_card(book: Book, client: LLMClient, scene: Scene) -> dict:
+    system, user = render(
+        "cards", scene_id=scene.id, source=scene.source, heading=scene.heading or "（无）", text=scene.text
+    )
+    data, problems = await client.chat_json(
+        "batch", system, user, lambda d: check_card(d, scene.text), tag=f"cards/{scene.id}"
+    )
+    try:
+        card = Card.model_validate(data)
+    except ValidationError as e:
+        raise LLMError(f"场景卡格式始终不对：{brief_errors(e)}") from e
+    card, dropped = clean_card(card, scene.text)
+    record = {
+        "id": scene.id,
+        "scene_hash": scene.hash,
+        "model": client.tier("batch").model,
+        "created": now_iso(),
+        "problems": problems,
+        "dropped": dropped,
+        "card": card.model_dump(),
+    }
+    write_json(card_path(book, scene.id), record)
+    return record
+
+
+def run_cards(
+    book: Book, client: LLMClient, progress: Progress = _noop, only: list[str] | None = None
+) -> dict:
+    return asyncio.run(_run_cards(book, client, progress, only))
+
+
+async def _run_cards(book: Book, client: LLMClient, progress: Progress, only: list[str] | None) -> dict:
+    scenes = [s for s in load_scenes(book, with_text=True) if not s.removed]
+    records = load_cards(book)
+    if only is not None:
+        wanted = set(only)
+        todo = [s for s in scenes if s.id in wanted]
+    else:
+        todo = [s for s in scenes if not is_fresh(records.get(s.id), s)]
+    failed: list[dict] = []
+    counts = {"done": 0, "written": 0, "with_problems": 0}
+    progress(0, len(todo))
+
+    async def one(scene: Scene) -> None:
+        try:
+            record = await make_card(book, client, scene)
+        except (JobCancelled, FatalLLMError):
+            raise
+        except Exception as e:  # 单个场景失败不拖垮整步
+            failed.append({"id": scene.id, "error": f"{type(e).__name__}: {e}"})
+        else:
+            records[scene.id] = record
+            counts["written"] += 1
+            if record["problems"] or any(record["dropped"].values()):
+                counts["with_problems"] += 1
+        counts["done"] += 1
+        progress(counts["done"], len(todo))
+
+    try:
+        async with asyncio.TaskGroup() as tg:
+            for scene in todo:
+                tg.create_task(one(scene))
+    except BaseExceptionGroup as eg:
+        raise eg.exceptions[0] from None
+    finally:
+        u = client.usage
+        book.add_usage("cards", u.calls, u.prompt_tokens, u.completion_tokens, u.cost(client.cfg))
+
+    missing = [s.id for s in scenes if not is_fresh(records.get(s.id), s)]
+    summary = {
+        "scenes": len(scenes),
+        "fresh": len(scenes) - len(missing),
+        "missing": missing[:MISSING_LIST_LIMIT],
+        "missing_count": len(missing),
+        "written": counts["written"],
+        "with_problems": counts["with_problems"],
+        "failed": failed,
+        "calls": client.usage.calls,
+        "cost_usd": round(client.usage.cost(client.cfg), 4),
+    }
+    book.set_step("cards", "done", summary, changed=counts["written"] > 0)
+    return summary

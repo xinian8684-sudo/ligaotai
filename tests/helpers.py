@@ -1,6 +1,7 @@
 """测试共用的小工具。"""
 
 import asyncio
+import json
 import random
 
 CHARS = (
@@ -76,8 +77,9 @@ class FakeBackend:
         self.max_active = max(self.max_active, self.active)
         try:
             self.calls.append({"tier": tier, "messages": [dict(m) for m in messages], "max_tokens": max_tokens})
-            if self.delay:
-                await asyncio.sleep(self.delay)
+            # 哪怕 delay=0 也要真正让出一次事件循环：不然整段 await 链一步做完，
+            # TaskGroup 永远来不及在别的任务开工前应用取消/中止。
+            await asyncio.sleep(self.delay)
             out = self.handler(tier, messages) if self.handler else self.replies.pop(0)
             if isinstance(out, Exception):
                 raise out
@@ -86,3 +88,63 @@ class FakeBackend:
             return Reply(content=out, prompt_tokens=100, completion_tokens=20)
         finally:
             self.active -= 1
+
+
+CARD_PERSONS = ["林清", "清儿", "林姑娘", "赵五", "悟空", "八戒", "唐僧", "金箍郎", "天蓬郎", "御弟師父"]
+CARD_PLACES = ["青州城外"]
+CARD_ORGS = ["天机阁"]
+
+
+def scene_text_from(messages) -> str:
+    """从场景卡提示词的 user 消息里取出片段原文。"""
+    user = messages[1]["content"]
+    return user.split("<<<\n", 1)[1].rsplit("\n>>>", 1)[0]
+
+
+def card_reply(text: str) -> str:
+    """按原文里出现的已知名字造一张合格的场景卡。"""
+    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+    first = lines[1] if len(lines) > 1 else (lines[0] if lines else "")
+    quote = first[:6]
+    card = {
+        "summary": "测试摘要。",
+        "pov": "",
+        "characters": [{"name": n, "role": "主要"} for n in CARD_PERSONS if n in text],
+        "locations": [n for n in CARD_PLACES if n in text],
+        "organizations": [n for n in CARD_ORGS if n in text],
+        "facts": [{"subject": "某人", "attribute": "原文", "value": quote, "quote": quote}] if quote else [],
+        "kind": "正文",
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
+def names_from_prompt(messages) -> list[str]:
+    """从实体合并提示词的 user 消息里取出叫法列表。"""
+    user = messages[1]["content"].split("字面上相近", 1)[0]
+    return [ln[2:].split("（", 1)[0] for ln in user.split("\n") if ln.startswith("- ")]
+
+
+def entity_reply(messages, groups) -> str:
+    present = set(names_from_prompt(messages))
+    out = []
+    for g in groups:
+        members = [n for n in g if n in present]
+        if len(members) >= 2:
+            out.append({"canonical": members[0], "members": members, "reason": "测试"})
+    return json.dumps({"groups": out}, ensure_ascii=False)
+
+
+def fake_ai_handler(groups=()):
+    """按提示词种类回复：连通性测试 / 场景卡 / 实体合并。"""
+
+    def handler(tier, messages):
+        system = messages[0]["content"]
+        if "连通性" in system:
+            return '{"ok": true}'
+        if "场景卡" in system:
+            return card_reply(scene_text_from(messages))
+        if "归成一组" in system:
+            return entity_reply(messages, groups)
+        raise AssertionError("没见过的提示词")
+
+    return handler
