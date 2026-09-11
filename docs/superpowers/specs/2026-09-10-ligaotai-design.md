@@ -1,7 +1,7 @@
 # 理稿台 设计文档（一期「理清」+ 二期「取舍」）
 
 - 日期：2026-09-10
-- 状态：待作者审阅
+- 状态：已通过审阅（2026-09-11）
 - 界面原型：`docs/prototype/ligaotai-prototype.html`（在线版 https://claude.ai/code/artifact/fe38e1f7-8b3e-4f2c-a8ba-f802a9073fc8）
 
 ## 1. 要解决的问题
