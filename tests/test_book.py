@@ -83,3 +83,19 @@ def test_recover_interrupted(library, book):
     fixed = recover_interrupted(library)
     assert fixed == ["测试书:split"]
     assert book.step("split")["status"] == "failed"
+
+
+def test_new_paths(book):
+    assert book.cards_dir.name == "场景卡"
+    assert book.entities_path.name == "实体.json"
+    assert book.logs_dir.name == "日志"
+
+
+def test_add_usage_accumulates(book):
+    book.add_usage("cards", calls=3, prompt_tokens=1000, completion_tokens=200, cost_usd=0.0012)
+    book.add_usage("cards", calls=1, prompt_tokens=10, completion_tokens=5, cost_usd=0.0001)
+    book.add_usage("entities", calls=2, prompt_tokens=50, completion_tokens=50, cost_usd=0.002)
+    usage = book.load()["usage"]
+    assert usage["total"] == {"calls": 6, "prompt_tokens": 1060, "completion_tokens": 255, "cost_usd": 0.0033}
+    assert usage["by_step"]["cards"]["calls"] == 4
+    assert usage["by_step"]["entities"]["cost_usd"] == 0.002

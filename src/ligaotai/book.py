@@ -69,6 +69,18 @@ class Book:
     def versions_path(self) -> Path:
         return self.root / "版本组.json"
 
+    @property
+    def cards_dir(self) -> Path:
+        return self.root / "场景卡"
+
+    @property
+    def entities_path(self) -> Path:
+        return self.root / "实体.json"
+
+    @property
+    def logs_dir(self) -> Path:
+        return self.root / "日志"
+
     def load(self) -> dict:
         data = read_json(self.meta_path)
         if data is None:
@@ -110,6 +122,25 @@ class Book:
 
     def mark_downstream_outdated(self, name: str) -> None:
         self.update(lambda data: _outdate_after(data, name))
+
+    def add_usage(
+        self, step: str, calls: int, prompt_tokens: int, completion_tokens: int, cost_usd: float
+    ) -> None:
+        """把一次运行的模型用量累加进 book.json 的 usage（总计 + 分步骤）。"""
+
+        def fn(data: dict) -> None:
+            usage = data.setdefault("usage", {"total": _zero_usage(), "by_step": {}})
+            for bucket in (usage["total"], usage["by_step"].setdefault(step, _zero_usage())):
+                bucket["calls"] += calls
+                bucket["prompt_tokens"] += prompt_tokens
+                bucket["completion_tokens"] += completion_tokens
+                bucket["cost_usd"] = round(bucket["cost_usd"] + cost_usd, 6)
+
+        self.update(fn)
+
+
+def _zero_usage() -> dict:
+    return {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0}
 
 
 def _outdate_after(data: dict, name: str) -> None:
