@@ -60,7 +60,7 @@ def create_app(
             book.set_step(step, "running")
             try:
                 return fn(progress)
-            except Exception as e:
+            except BaseException as e:
                 book.set_step(step, "failed", {"error": f"{type(e).__name__}: {e}"})
                 raise
 

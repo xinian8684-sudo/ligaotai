@@ -49,3 +49,17 @@ def test_only_one_job_at_a_time():
 def test_get_unknown():
     assert JobRunner().get("nope") is None
     assert JobRunner().current() is None
+
+
+def test_base_exception_does_not_wedge_runner():
+    import asyncio
+
+    runner = JobRunner()
+
+    def fn(progress):
+        raise asyncio.CancelledError()
+
+    job = runner.wait(runner.submit("cards", "测试书", fn).id)
+    assert job.status == "failed"
+    assert job.error.startswith("CancelledError")
+    assert runner.wait(runner.submit("dedup", "测试书", lambda p: {}).id).status == "done"

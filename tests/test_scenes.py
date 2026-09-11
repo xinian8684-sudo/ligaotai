@@ -125,3 +125,11 @@ def test_get_scene(book, src):
         get_scene(book, "../book")
     with pytest.raises(FileNotFoundError):
         get_scene(book, "S-9999")
+
+
+def test_corrupt_scene_file_error_names_the_file(book, src):
+    run_import(book, src)
+    run_split(book)
+    scene_path(book, "S-0002").write_text("坏掉了", encoding="utf-8")
+    with pytest.raises(ValueError, match="S-0002"):
+        load_scenes(book)

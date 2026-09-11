@@ -69,7 +69,7 @@ class JobRunner:
             job.result = fn(progress)
             job.finished = now_iso()
             job.status = "done"
-        except Exception as e:
+        except BaseException as e:  # 含 asyncio.CancelledError，漏接会让任务永远卡在 running
             job.error = f"{type(e).__name__}: {e}"
             job.finished = now_iso()
             job.status = "failed"

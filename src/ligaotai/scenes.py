@@ -84,7 +84,11 @@ def write_scene(book: Book, scene: Scene) -> None:
 
 
 def read_scene(path: Path) -> Scene:
-    return parse_scene(Path(path).read_text(encoding="utf-8"))
+    path = Path(path)
+    try:
+        return parse_scene(path.read_text(encoding="utf-8"))
+    except Exception as e:  # 手改坏了一个场景文件，报错要指出是哪个
+        raise ValueError(f"场景文件读不了：{path.name}（{type(e).__name__}: {e}）") from e
 
 
 def load_scenes(book: Book, with_text: bool = False) -> list[Scene]:
