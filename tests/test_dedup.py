@@ -55,6 +55,33 @@ def test_common_shingles_not_counted():
     assert find_pairs(docs, 0.5, 0.8, 100, 20) == []
 
 
+def test_containment_only_edge_attaches_to_best_container_only():
+    docs = {
+        "a": set(range(0, 3000)) | set(range(100000, 100150)),
+        "b": set(range(50000, 53000)) | set(range(100000, 100150)),
+        "c": set(range(100000, 100150)),
+    }
+    pairs = find_pairs(docs, 0.5, 0.8, 100, 200)
+    assert [(p.a, p.b) for p in pairs] == [("a", "c")]
+    assert group_pairs(pairs) == [["a", "c"]]
+
+
+def test_small_scene_still_groups_with_both_chapter_versions():
+    docs = {
+        "x": set(range(0, 3000)),
+        "y": set(range(0, 2900)) | set(range(7000, 7100)),
+        "z": set(range(10, 160)),
+    }
+    pairs = find_pairs(docs, 0.5, 0.8, 100, 20)
+    assert group_pairs(pairs) == [["x", "y", "z"]]
+
+
+def test_common_df_200_keeps_many_identical_copies():
+    docs = {f"d{i:02d}": set(range(300)) for i in range(25)}
+    [group] = group_pairs(find_pairs(docs, 0.5, 0.8, 100, 200))
+    assert group == [f"d{i:02d}" for i in range(25)]
+
+
 def test_group_pairs_natural_order():
     docs = {
         "S-2": set(range(0, 200)), "S-10": set(range(0, 200)),

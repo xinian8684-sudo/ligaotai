@@ -51,6 +51,7 @@ class Pair:
     inter: int
     jaccard: float
     containment: float
+    smaller: str
 
 
 def find_pairs(
@@ -60,6 +61,9 @@ def find_pairs(
     min_shingles: int,
     common_df: int,
 ) -> list[Pair]:
+    """满足 Jaccard 阈值的边照常保留。只满足包含度阈值的边，一个块只挂到它「最佳」
+    的容器上（inter 最大，打平按容器 natural_key 靠前），避免一个短碎片把两个不相关的
+    长块串成一组。"""
     eligible = sorted((d for d in docs if len(docs[d]) >= min_shingles), key=natural_key)
     postings: dict[int, list[int]] = defaultdict(list)
     for i, d in enumerate(eligible):
@@ -69,14 +73,34 @@ def find_pairs(
     for plist in postings.values():
         if 2 <= len(plist) <= common_df:
             counts.update(combinations(plist, 2))
-    pairs = []
+
+    jaccard_pairs: list[Pair] = []
+    containment_only: dict[str, list[Pair]] = defaultdict(list)
     for (i, j), inter in counts.items():
         a, b = eligible[i], eligible[j]
         na, nb = len(docs[a]), len(docs[b])
         jac = inter / (na + nb - inter)
         cont = inter / min(na, nb)
-        if jac >= jaccard_min or cont >= containment_min:
-            pairs.append(Pair(a, b, inter, round(jac, 4), round(cont, 4)))
+        if jac < jaccard_min and cont < containment_min:
+            continue
+        if na != nb:
+            smaller = a if na < nb else b
+        else:
+            smaller = min(a, b, key=natural_key)
+        pair = Pair(a, b, inter, round(jac, 4), round(cont, 4), smaller)
+        if jac >= jaccard_min:
+            jaccard_pairs.append(pair)
+        else:
+            containment_only[smaller].append(pair)
+
+    def container_of(p: Pair) -> str:
+        return p.b if p.smaller == p.a else p.a
+
+    best_containment = [
+        min(plist, key=lambda p: (-p.inter, natural_key(container_of(p))))
+        for plist in containment_only.values()
+    ]
+    pairs = jaccard_pairs + best_containment
     pairs.sort(key=lambda p: (natural_key(p.a), natural_key(p.b)))
     return pairs
 

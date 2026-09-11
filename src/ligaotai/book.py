@@ -30,7 +30,7 @@ DEFAULT_SETTINGS = {
     "dedup_jaccard": 0.5,        # 相似度达到这个算同一场景的不同版本
     "dedup_containment": 0.8,    # 短块有这么多内容出现在长块里，也算同一组
     "dedup_min_shingles": 100,   # 太短的块（约 100 字以下）不参与查重
-    "dedup_common_df": 20,       # 出现在超过这么多块里的字串当套话，不计数
+    "dedup_common_df": 200,      # 出现在超过这么多块里的字串当套话，不计数（真实文本 21~200 块之间几乎没有套话，调大避免误伤 21+ 份重复场景）
 }
 
 _lock = threading.RLock()
