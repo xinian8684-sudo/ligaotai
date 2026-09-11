@@ -1,5 +1,6 @@
 """测试共用的小工具。"""
 
+import asyncio
 import random
 
 CHARS = (
@@ -51,3 +52,37 @@ def make_verse_chapter(num: int, seed: int = 0):
         + gen_text(seed * 1000 + num * 2 + 1, 1000)
     )
     return Chapter(num, f"第{num}回 標題{num}", body)
+
+
+from ligaotai.llm import Reply
+
+
+class FakeBackend:
+    """假的模型接口：按顺序吐预设的回复，或者交给 handler(tier, messages) 现算。
+
+    回复可以是字符串（当作 content）、Reply、或者异常实例（会被抛出）。
+    """
+
+    def __init__(self, replies=None, handler=None, delay=0.0):
+        self.replies = list(replies or [])
+        self.handler = handler
+        self.delay = delay
+        self.calls = []
+        self.active = 0
+        self.max_active = 0
+
+    async def complete(self, tier, messages, max_tokens):
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            self.calls.append({"tier": tier, "messages": [dict(m) for m in messages], "max_tokens": max_tokens})
+            if self.delay:
+                await asyncio.sleep(self.delay)
+            out = self.handler(tier, messages) if self.handler else self.replies.pop(0)
+            if isinstance(out, Exception):
+                raise out
+            if isinstance(out, Reply):
+                return out
+            return Reply(content=out, prompt_tokens=100, completion_tokens=20)
+        finally:
+            self.active -= 1
