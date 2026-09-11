@@ -16,6 +16,12 @@ class SplitRules:
     target_chars: int = 3000
     blank_lines: int = 2
 
+    def __post_init__(self) -> None:
+        if not (0 < self.target_chars < self.max_chars):
+            raise ValueError("target_chars must be > 0 and < max_chars")
+        if self.blank_lines < 1:
+            raise ValueError("blank_lines must be >= 1")
+
 
 @dataclass(frozen=True)
 class Block:
@@ -26,17 +32,23 @@ class Block:
 
 
 _NUM = "0-9０-９一二三四五六七八九十百千零〇○两"
+_HEADING_NUM_RE = re.compile(rf"^第[{_NUM}]+[章节回卷集部篇幕]")
+_HEADING_NUM_BOUNDARY_RE = re.compile(
+    rf"^第[{_NUM}]+[章节回卷集部篇幕](?=$|[\s:：、.．·—\-])"
+)
+_MD_HEADING_RE = re.compile(r"^#{1,6}\s+\S")
 HEADING_PATTERNS = [
-    re.compile(rf"^第[{_NUM}]+[章节回卷集部篇幕]"),
+    _HEADING_NUM_RE,
     re.compile(r"^chapter\s+[0-9ivxlc]+\b", re.IGNORECASE),
-    re.compile(r"^#{1,6}\s+\S"),
+    _MD_HEADING_RE,
     re.compile(r"^[0-9０-９]{1,4}[.、．]?$"),
     re.compile(r"^[一二三四五六七八九十百零〇]{1,6}$"),
 ]
 HEADING_MAX_LEN = 50
 _SENTENCE_END = "。！？!?，,；;…」”』"
+_PROSE_END = _SENTENCE_END + "：:—～~"
 _SEPARATOR_CHARS = set("*＊-—－_=＝~～·•◇◆○●□■☆★※#＃")
-_WS = " \t\u3000"
+_WS = " \t\u3000\xa0"
 
 # 一段：(起, 止, 标题, 章节序号)
 Piece = tuple[int, int, str, int]
@@ -44,7 +56,13 @@ Piece = tuple[int, int, str, int]
 
 def is_heading(line: str) -> bool:
     s = line.strip(_WS)
-    if not s or len(s) > HEADING_MAX_LEN or s[-1] in _SENTENCE_END:
+    if not s or len(s) > HEADING_MAX_LEN:
+        return False
+    if _MD_HEADING_RE.match(s):
+        return True
+    if _HEADING_NUM_BOUNDARY_RE.match(s):
+        return True
+    if s[-1] in _PROSE_END:
         return False
     return any(p.match(s) for p in HEADING_PATTERNS)
 
@@ -120,38 +138,52 @@ def _join_heading(a: str, b: str) -> str:
     return f"{a} / {b}"
 
 
+TOC_MIN_HEADINGS = 3
+
+
 def _merge_heading_only(text: str, pieces: list[Piece]) -> list[Piece]:
     merged: list[Piece] = []
     pending: Piece | None = None
+    pending_count = 0
     for s, e, h, sec in pieces:
         if _is_heading_only(text, s, e):
             pending = (s, e, h, sec) if pending is None else (
                 pending[0], e, _join_heading(pending[2], h), sec
             )
+            pending_count += 1
             continue
         if pending is not None:
-            s, h = pending[0], _join_heading(pending[2], h)
+            if pending_count >= TOC_MIN_HEADINGS:
+                merged.append((pending[0], pending[1], "", pending[3]))
+            else:
+                s, h = pending[0], _join_heading(pending[2], h)
             pending = None
+            pending_count = 0
         merged.append((s, e, h, sec))
     if pending is not None:
-        merged.append(pending)
+        if pending_count >= TOC_MIN_HEADINGS:
+            merged.append((pending[0], pending[1], "", pending[3]))
+        else:
+            merged.append(pending)
     return merged
 
 
 _BLANK_BOUNDARY = re.compile(r"\n[ \t\u3000]*\n")
 _NEWLINE = re.compile(r"\n")
-_SENTENCE_CUT = re.compile(r"[。！？!?…][」”』）)]?")
+_SENTENCE_CUT = re.compile(r'[。！？!?…]+[」”』）)"’]*')
 
 
 def _find_cut(text: str, s: int, e: int, rules: SplitRules) -> int:
-    """在 [s, e) 里找一个最接近 s + target 的切点。"""
+    """在 [s, e) 里找一个最接近 s + target 的切点，且不超过 max_chars。"""
     ideal = s + rules.target_chars
-    min_side = rules.target_chars // 3
-    lo, hi = s + min_side, e - min_side
+    min_side = max(1, rules.target_chars // 3)
+    lo = s + min_side
+    hi = min(e - min_side, s + rules.max_chars)
+    endpos = min(e, hi + 8)
     candidate_sets = (
-        (m.start() for m in _BLANK_BOUNDARY.finditer(text, s, e)),
-        (m.start() for m in _NEWLINE.finditer(text, s, e)),
-        (m.end() for m in _SENTENCE_CUT.finditer(text, s, e)),
+        (m.start() for m in _BLANK_BOUNDARY.finditer(text, lo, endpos)),
+        (m.start() for m in _NEWLINE.finditer(text, lo, endpos)),
+        (m.end() for m in _SENTENCE_CUT.finditer(text, lo, endpos)),
     )
     for candidates in candidate_sets:
         best = min(

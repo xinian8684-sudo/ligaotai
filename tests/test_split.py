@@ -22,6 +22,12 @@ def spans(text, rules=SplitRules()):
         "12",
         "１２．",
         "十三",
+        "第105章 什么？！",
+        "第3章 救命啊！",
+        "第十二章 你竟然是他？",
+        "第9章 他来了……",
+        "# 第三章 你是谁？",
+        "第十章决战（一）",
     ],
 )
 def test_is_heading_true(line):
@@ -37,6 +43,8 @@ def test_is_heading_true(line):
         "",
         "这是一段普通的话",
         "第一章" + "长" * 60,
+        "第一节课刚下，他就冲了进来——",
+        "第二部分的内容如下：",
     ],
 )
 def test_is_heading_false(line):
@@ -150,3 +158,70 @@ def test_long_blocks_keep_heading():
     blocks = split_text(text)
     assert len(blocks) >= 2
     assert all(b.heading == "第一章 雪夜" for b in blocks)
+
+
+def test_split_web_novel_question_mark_headings():
+    text = "第一章 雪夜\n林清出场。\n第二章 你是谁？\n陌生人来了。"
+    assert spans(text) == [
+        ("第一章 雪夜\n林清出场。", "第一章 雪夜", 1),
+        ("第二章 你是谁？\n陌生人来了。", "第二章 你是谁？", 1),
+    ]
+
+
+def test_toc_run_of_headings_becomes_its_own_block():
+    text = (
+        "第一章 标题1\n第二章 标题2\n第三章 标题3\n\n"
+        "第一章 标题1\n正文。"
+    )
+    assert spans(text) == [
+        ("第一章 标题1\n第二章 标题2\n第三章 标题3", "", 1),
+        ("第一章 标题1\n正文。", "第一章 标题1", 1),
+    ]
+
+
+def test_split_rules_rejects_target_chars_ge_max_chars():
+    with pytest.raises(ValueError):
+        SplitRules(max_chars=5000, target_chars=6000)
+
+
+def test_split_rules_rejects_zero_target_chars():
+    with pytest.raises(ValueError):
+        SplitRules(target_chars=0)
+
+
+def test_split_rules_rejects_zero_blank_lines():
+    with pytest.raises(ValueError):
+        SplitRules(blank_lines=0)
+
+
+def test_nbsp_only_lines_count_as_blank():
+    nbsp = chr(0xA0)
+    text = "甲。\n" + nbsp + "\n" + nbsp + "\n乙。"
+    assert spans(text) == [("甲。", "", 1), ("乙。", "", 2)]
+
+
+def test_nbsp_indent_heading_is_recognized():
+    nbsp = chr(0xA0)
+    assert is_heading(nbsp + nbsp + "第一章 雪夜")
+
+
+def test_long_block_with_far_blank_boundary_stays_capped():
+    lines = ["乙" * 99 + "。"] * 200
+    text = "\n".join(lines[:150]) + "\n\n" + "\n".join(lines[150:])
+    blocks = split_text(text)
+    assert all(b.end - b.start <= 5000 for b in blocks)
+    assert _nows("".join(text[b.start:b.end] for b in blocks)) == _nows(text)
+
+
+def test_long_single_line_prefix_then_short_lines_stays_capped():
+    text = "丙" * 12000 + "\n" + "\n".join(["短句。"] * 20)
+    blocks = split_text(text)
+    assert all(b.end - b.start <= 5000 for b in blocks)
+    assert _nows("".join(text[b.start:b.end] for b in blocks)) == _nows(text)
+
+
+def test_ellipsis_is_not_split_mid_way():
+    text = "A" * 2999 + "……" + "B" * 3000
+    blocks = split_text(text)
+    assert all(b.end - b.start <= 5000 for b in blocks)
+    assert text[blocks[0].end - 2:blocks[0].end] == "……"
