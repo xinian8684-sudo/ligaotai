@@ -154,3 +154,15 @@ def test_interrupted_step_recovered_on_startup(tmp_path):
     open_book(tmp_path / "书库", "我的书").set_step("split", "running")
     c2 = TestClient(create_app(app_dir=tmp_path, allowed_hosts=("testserver",)))
     assert c2.get("/api/books/我的书").json()["steps"]["split"]["status"] == "failed"
+
+
+def test_config_key_is_masked_and_kept(client, tmp_path):
+    from ligaotai.config import load_config
+
+    r = client.put("/api/config", json={"api_key": "sk-abcdefghijkl", "concurrency": 4})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["api_key"] == "sk-…ijkl" and body["has_key"] is True and body["concurrency"] == 4
+    client.put("/api/config", json={"api_key": body["api_key"], "concurrency": 2})
+    cfg = load_config(tmp_path)
+    assert cfg.api_key == "sk-abcdefghijkl" and cfg.concurrency == 2

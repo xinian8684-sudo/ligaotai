@@ -10,6 +10,7 @@ dependencies = [
   "charset-normalizer>=3.3",
   "python-docx>=1.1",
   "pyyaml>=6.0",
+  "openai>=3.13",
 ]
 
 [dependency-groups]

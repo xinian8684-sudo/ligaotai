@@ -13,3 +13,9 @@ def library(tmp_path):
 @pytest.fixture
 def book(library):
     return create_book(library, "测试书")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_key(monkeypatch):
+    """测试一律用不到真的 API key。"""
+    monkeypatch.delenv("LIGAOTAI_API_KEY", raising=False)

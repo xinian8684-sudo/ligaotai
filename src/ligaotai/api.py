@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from . import __version__
 from .book import STEP_LABELS, STEPS, Book, create_book, list_books, open_book, recover_interrupted
-from .config import APP_DIR, AppConfig, library_path, load_config, save_config
+from .config import APP_DIR, AppConfig, apply_update, library_path, load_config, public_config, save_config
 from .dedup import run_dedup, set_main
 from .fsutil import ensure_within, read_json
 from .importer import check_import_folder, run_import
@@ -75,12 +75,11 @@ def create_app(
 
     @app.get("/api/config")
     def get_config() -> dict:
-        cfg = load_config(app_dir)
-        return {**cfg.model_dump(), "library_path": str(library_path(cfg, app_dir))}
+        return public_config(load_config(app_dir), app_dir)
 
     @app.put("/api/config")
     def put_config(cfg: AppConfig) -> dict:
-        save_config(cfg, app_dir)
+        save_config(apply_update(load_config(app_dir), cfg), app_dir)
         return get_config()
 
     @app.get("/api/books")
