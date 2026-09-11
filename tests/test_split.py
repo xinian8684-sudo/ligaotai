@@ -28,6 +28,11 @@ def spans(text, rules=SplitRules()):
         "第9章 他来了……",
         "# 第三章 你是谁？",
         "第十章决战（一）",
+        "第一章～相遇～",
+        "第105章「重逢」",
+        "第十章（上）",
+        "Chapter 1:",
+        "Chapter 3 The Storm",
     ],
 )
 def test_is_heading_true(line):
@@ -45,6 +50,12 @@ def test_is_heading_true(line):
         "第一章" + "长" * 60,
         "第一节课刚下，他就冲了进来——",
         "第二部分的内容如下：",
+        "第一章 写完了，明天改第二章。",
+        "第十章 他终于明白了，原来一切都是她安排的。",
+        "第三集 看完了，我们去吃饭吧。",
+        "第一回——他又输了。",
+        "第3章.他说。",
+        "第三章：林清进城，偶遇女主。",
     ],
 )
 def test_is_heading_false(line):
@@ -225,3 +236,53 @@ def test_ellipsis_is_not_split_mid_way():
     blocks = split_text(text)
     assert all(b.end - b.start <= 5000 for b in blocks)
     assert text[blocks[0].end - 2:blocks[0].end] == "……"
+
+
+def test_stacked_different_level_headings_merge_forward_not_toc():
+    text = "第一卷 风起\n第一章 雪夜\n第一节 初见\n\n\n正文。"
+    assert spans(text) == [
+        (text, "第一卷 风起 / 第一章 雪夜 / 第一节 初见", 1),
+    ]
+
+
+def test_stacked_markdown_headings_merge_forward_not_toc():
+    text = "# 书名\n## 第一卷\n### 第一章\n正文。"
+    assert spans(text) == [(text, "书名 / 第一卷 / 第一章", 1)]
+
+
+def test_toc_run_still_detected_when_same_level_repeats():
+    text = (
+        "第一章 标题1\n第二章 标题2\n第三章 标题3\n\n"
+        "第一章 标题1\n正文。"
+    )
+    assert spans(text) == [
+        ("第一章 标题1\n第二章 标题2\n第三章 标题3", "", 1),
+        ("第一章 标题1\n正文。", "第一章 标题1", 1),
+    ]
+
+
+def test_nbsp_blank_boundary_matches_true_blank_boundary_for_size_split():
+    nbsp = chr(0xA0)
+    seg = "甲" * 99 + "。\n"
+    block = seg * 31
+    text_empty = block + "\n" + block
+    text_nbsp = block + nbsp + "\n" + block
+    assert len(text_empty) > 5000
+    cuts_empty = [(b.start, b.end) for b in split_text(text_empty)]
+    cuts_nbsp = [(b.start, b.end) for b in split_text(text_nbsp)]
+    assert cuts_empty[0] == cuts_nbsp[0]
+
+
+def test_join_heading_does_not_duplicate_repeated_last_component():
+    text = "第一卷 风起\n\n\n第一章 雪夜\n\n\n正文。"
+    assert spans(text) == [(text, "第一卷 风起 / 第一章 雪夜", 1)]
+
+
+def test_markdown_heading_prefix_is_stripped_from_stored_heading():
+    text = "# 第一章 雪夜\n正文。"
+    assert spans(text) == [(text, "第一章 雪夜", 1)]
+
+
+def test_markdown_subheading_prefix_is_stripped_from_stored_heading():
+    text = "## 小节\n正文。"
+    assert spans(text) == [(text, "小节", 1)]

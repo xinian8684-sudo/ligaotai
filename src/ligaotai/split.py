@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass
 
 
@@ -32,21 +33,27 @@ class Block:
 
 
 _NUM = "0-9０-９一二三四五六七八九十百千零〇○两"
-_HEADING_NUM_RE = re.compile(rf"^第[{_NUM}]+[章节回卷集部篇幕]")
+_HEADING_NUM_RE = re.compile(rf"^第[{_NUM}]+(?P<unit>[章节回卷集部篇幕])")
+_HEADING_BOUNDARY_CHARS = r"\s:：、.．·—\-～~「『【《（(“"
 _HEADING_NUM_BOUNDARY_RE = re.compile(
-    rf"^第[{_NUM}]+[章节回卷集部篇幕](?=$|[\s:：、.．·—\-])"
+    rf"^第[{_NUM}]+[章节回卷集部篇幕](?=$|[{_HEADING_BOUNDARY_CHARS}])"
 )
 _MD_HEADING_RE = re.compile(r"^#{1,6}\s+\S")
+_MD_PREFIX_RE = re.compile(r"^#{1,6}\s+")
+_CHAPTER_RE = re.compile(r"^chapter\s+[0-9ivxlc]+\b", re.IGNORECASE)
+_BARE_NUM_RE = re.compile(r"^[0-9０-９]{1,4}[.、．]?$")
+_BARE_CJK_NUM_RE = re.compile(r"^[一二三四五六七八九十百零〇]{1,6}$")
 HEADING_PATTERNS = [
     _HEADING_NUM_RE,
-    re.compile(r"^chapter\s+[0-9ivxlc]+\b", re.IGNORECASE),
+    _CHAPTER_RE,
     _MD_HEADING_RE,
-    re.compile(r"^[0-9０-９]{1,4}[.、．]?$"),
-    re.compile(r"^[一二三四五六七八九十百零〇]{1,6}$"),
+    _BARE_NUM_RE,
+    _BARE_CJK_NUM_RE,
 ]
 HEADING_MAX_LEN = 50
 _SENTENCE_END = "。！？!?，,；;…」”』"
 _PROSE_END = _SENTENCE_END + "：:—～~"
+_PLAIN_END = "。，,；;"
 _SEPARATOR_CHARS = set("*＊-—－_=＝~～·•◇◆○●□■☆★※#＃")
 _WS = " \t\u3000\xa0"
 
@@ -61,10 +68,39 @@ def is_heading(line: str) -> bool:
     if _MD_HEADING_RE.match(s):
         return True
     if _HEADING_NUM_BOUNDARY_RE.match(s):
-        return True
+        return s[-1] not in _PLAIN_END
+    if _CHAPTER_RE.match(s):
+        return s[-1] not in _PLAIN_END
     if s[-1] in _PROSE_END:
         return False
     return any(p.match(s) for p in HEADING_PATTERNS)
+
+
+def _clean_heading_text(s: str) -> str:
+    """去掉 Markdown 标题的 # 前缀，块正文不受影响，只影响存的标题字段。"""
+    m = _MD_PREFIX_RE.match(s)
+    return s[m.end():] if m else s
+
+
+def _heading_level(line: str) -> str | None:
+    """标题的「层级」：数字标题按单位字，Markdown 按 # 个数，英文章节和纯数字各自一档。"""
+    s = line.strip(_WS)
+    m = _MD_HEADING_RE.match(s)
+    if m:
+        return f"md{len(s) - len(s.lstrip('#'))}"
+    m = _HEADING_NUM_RE.match(s)
+    if m:
+        return m.group("unit")
+    if _CHAPTER_RE.match(s):
+        return "chapter"
+    if _BARE_NUM_RE.match(s) or _BARE_CJK_NUM_RE.match(s):
+        return "num"
+    return None
+
+
+def _has_repeated_level(levels: list) -> bool:
+    counts = Counter(lv for lv in levels if lv is not None)
+    return any(c >= 2 for c in counts.values())
 
 
 def is_separator(line: str) -> bool:
@@ -107,7 +143,7 @@ def _raw_pieces(text: str, rules: SplitRules) -> list[Piece]:
         elif is_heading(line):
             pieces.append((piece_start, start, heading, section))
             piece_start = start
-            heading = line.strip(_WS)
+            heading = _clean_heading_text(line.strip(_WS))
             section += 1
     pieces.append((piece_start, len(text), heading, section))
     return pieces
@@ -135,6 +171,8 @@ def _join_heading(a: str, b: str) -> str:
         return b
     if not b or a == b:
         return a
+    if a.rsplit(" / ", 1)[-1] == b:
+        return a
     return f"{a} / {b}"
 
 
@@ -142,33 +180,38 @@ TOC_MIN_HEADINGS = 3
 
 
 def _merge_heading_only(text: str, pieces: list[Piece]) -> list[Piece]:
+    # A run of >=3 heading-only pieces is a TOC (dropped, empty heading) only when
+    # at least two of them share the same level; otherwise merge forward as before.
     merged: list[Piece] = []
     pending: Piece | None = None
     pending_count = 0
+    pending_levels: list = []
     for s, e, h, sec in pieces:
         if _is_heading_only(text, s, e):
             pending = (s, e, h, sec) if pending is None else (
                 pending[0], e, _join_heading(pending[2], h), sec
             )
             pending_count += 1
+            pending_levels.append(_heading_level(text[s:e]))
             continue
         if pending is not None:
-            if pending_count >= TOC_MIN_HEADINGS:
+            if pending_count >= TOC_MIN_HEADINGS and _has_repeated_level(pending_levels):
                 merged.append((pending[0], pending[1], "", pending[3]))
             else:
                 s, h = pending[0], _join_heading(pending[2], h)
             pending = None
             pending_count = 0
+            pending_levels = []
         merged.append((s, e, h, sec))
     if pending is not None:
-        if pending_count >= TOC_MIN_HEADINGS:
+        if pending_count >= TOC_MIN_HEADINGS and _has_repeated_level(pending_levels):
             merged.append((pending[0], pending[1], "", pending[3]))
         else:
             merged.append(pending)
     return merged
 
 
-_BLANK_BOUNDARY = re.compile(r"\n[ \t\u3000]*\n")
+_BLANK_BOUNDARY = re.compile(r"\n[ \t\u3000\xa0]*\n")
 _NEWLINE = re.compile(r"\n")
 _SENTENCE_CUT = re.compile(r'[。！？!?…]+[」”』）)"’]*')
 
