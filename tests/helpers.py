@@ -19,3 +19,18 @@ def gen_text(seed: int, n: int) -> str:
         elif i % 20 == 0:
             out.append("。")
     return "".join(out)
+
+
+def make_chapters(n: int, seed: int = 0) -> list:
+    """合成一本 n 回的小书，每回约 6000 字，中间一句带「悟空 / 八戒 / 唐僧」。"""
+    from tools.scramble import Chapter
+
+    chapters = []
+    for num in range(1, n + 1):
+        body = (
+            gen_text(seed * 1000 + num * 2, 2990)
+            + "\n\n悟空說道，八戒和唐僧都在。\n\n"
+            + gen_text(seed * 1000 + num * 2 + 1, 2990)
+        )
+        chapters.append(Chapter(num, f"第{num}回 標題{num}", body))
+    return chapters
