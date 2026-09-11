@@ -62,6 +62,19 @@ def test_persistent_problems_return_last_data():
     assert (data, problems, len(fb.calls)) == ({"a": 0}, ["还是不对"], 3)
 
 
+def test_returns_result_with_fewest_problems_not_the_last_one():
+    """重试用尽时应该返回问题最少的一次，不是最后一次解析成功的那次。
+    第 1 次 2 个问题、第 2 次 1 个问题、第 3 次 3 个问题 → 应该返回第 2 次的结果。"""
+    fb = FakeBackend(['{"n": 1}', '{"n": 2}', '{"n": 3}'])
+    problem_counts = {1: 2, 2: 1, 3: 3}
+
+    def check(d):
+        return [f"问题{i}" for i in range(problem_counts[d["n"]])]
+
+    data, problems = run(make(fb).chat_json("batch", "s", "u", check, tag="t"))
+    assert (data, problems) == ({"n": 2}, ["问题0"])
+
+
 def test_empty_reply_retried_as_is():
     fb = FakeBackend([Reply(content=""), '{"a": 1}'])
     assert run(make(fb).chat_json("batch", "s", "u", ok, tag="t"))[0] == {"a": 1}

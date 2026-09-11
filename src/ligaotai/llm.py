@@ -150,7 +150,8 @@ class LLMClient:
                 problems = [f"不是合法的 JSON：{e}"]
             else:
                 problems = check(data)
-                best = (data, problems)
+                if best is None or len(problems) <= len(best[1]):
+                    best = (data, problems)
                 if not problems:
                     return best
             messages = base + [
