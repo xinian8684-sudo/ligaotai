@@ -66,6 +66,16 @@ def test_containment_only_edge_attaches_to_best_container_only():
     assert group_pairs(pairs) == [["a", "c"]]
 
 
+def test_containment_tie_break_prefers_higher_jaccard_container():
+    f_doc = set(range(0, 200)) | set(range(5000, 7000))
+    e1 = set(range(0, 200)) | set(range(1000, 1400))
+    e2 = set(range(0, 200))
+    docs = {"S-0001": f_doc, "S-0002": e1, "S-0003": e2}
+    pairs = find_pairs(docs, 0.5, 0.8, 100, 200)
+    assert [(p.a, p.b) for p in pairs] == [("S-0002", "S-0003")]
+    assert group_pairs(pairs) == [["S-0002", "S-0003"]]
+
+
 def test_small_scene_still_groups_with_both_chapter_versions():
     docs = {
         "x": set(range(0, 3000)),

@@ -62,8 +62,8 @@ def find_pairs(
     common_df: int,
 ) -> list[Pair]:
     """满足 Jaccard 阈值的边照常保留。只满足包含度阈值的边，一个块只挂到它「最佳」
-    的容器上（inter 最大，打平按容器 natural_key 靠前），避免一个短碎片把两个不相关的
-    长块串成一组。"""
+    的容器上（inter 最大；再打平按 Jaccard 更高的优先；还打平按容器 natural_key 靠前），
+    避免一个短碎片把两个不相关的长块串成一组。"""
     eligible = sorted((d for d in docs if len(docs[d]) >= min_shingles), key=natural_key)
     postings: dict[int, list[int]] = defaultdict(list)
     for i, d in enumerate(eligible):
@@ -97,7 +97,7 @@ def find_pairs(
         return p.b if p.smaller == p.a else p.a
 
     best_containment = [
-        min(plist, key=lambda p: (-p.inter, natural_key(container_of(p))))
+        min(plist, key=lambda p: (-p.inter, -p.jaccard, natural_key(container_of(p))))
         for plist in containment_only.values()
     ]
     pairs = jaccard_pairs + best_containment
