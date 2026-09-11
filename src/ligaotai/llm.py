@@ -25,7 +25,7 @@ MAX_ATTEMPTS = 3
 MAX_TOKENS_CAP = 65536
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$")
 
-Checker = Callable[[dict], list]  # 返回问题清单（字符串），空列表 = 合格
+Checker = Callable[[dict], list]  # 返回问题清单（字符串），空列表 = 合格；检查函数不许抛异常，有问题就返回问题清单
 
 
 class LLMError(RuntimeError):
@@ -85,17 +85,29 @@ class LLMClient:
         self.backend = backend
         self.log_dir = log_dir
         self.usage = Usage()
-        self._sem = asyncio.Semaphore(cfg.concurrency)
+        self._sem: asyncio.Semaphore | None = None
+        self._sem_loop: asyncio.AbstractEventLoop | None = None
 
     def tier(self, name: str) -> TierConfig:
         if name not in ("batch", "synth"):
             raise ValueError(f"没有这一档模型：{name}")
         return getattr(self.cfg, name)
 
+    def _semaphore(self) -> asyncio.Semaphore:
+        """懒建信号量：跨两次 asyncio.run 用同一个 client 时，第一次绑定的循环已经关掉了，
+        不能继续用同一个信号量，所属循环变了就重建。"""
+        loop = asyncio.get_running_loop()
+        if self._sem is None or self._sem_loop is not loop:
+            self._sem = asyncio.Semaphore(self.cfg.concurrency)
+            self._sem_loop = loop
+        return self._sem
+
     async def _call(self, tier: TierConfig, messages: list[dict], max_tokens: int) -> Reply:
         try:
-            async with self._sem:
+            async with self._semaphore():
                 return await self.backend.complete(tier, messages, max_tokens)
+        except LLMError:
+            raise
         except Exception as e:
             status = getattr(e, "status_code", None)
             if status in (401, 402, 403):
@@ -123,12 +135,14 @@ class LLMClient:
             reply = await self._call(tier, messages, max_tokens)
             self.usage.add(reply)
             self._log(tag, attempt, tier, messages, reply)
+            if reply.finish_reason == "length":
+                # 思考模式把 max_tokens 用光时，回复常常是空内容 + finish_reason="length"；
+                # 截断要先判断，不然会被下面的空内容分支接住，额度不翻倍，白白再花一次满额度的钱。
+                problems = ["输出太长被截断了"]
+                max_tokens = max(max_tokens, min(max_tokens * 2, MAX_TOKENS_CAP))
+                continue
             if not reply.content.strip():
                 problems = ["模型返回了空内容"]
-                continue
-            if reply.finish_reason == "length":
-                problems = ["输出太长被截断了"]
-                max_tokens = min(max_tokens * 2, MAX_TOKENS_CAP)
                 continue
             try:
                 data = parse_json(reply.content)
@@ -150,10 +164,13 @@ class LLMClient:
     def _log(self, tag: str, attempt: int, tier: TierConfig, messages: list[dict], reply: Reply) -> None:
         if self.log_dir is None:
             return
-        write_json(
-            self.log_dir / f"{tag}-{attempt}.json",
-            {"time": now_iso(), "tier": tier.model_dump(), "messages": messages, "reply": asdict(reply)},
-        )
+        try:
+            write_json(
+                self.log_dir / f"{tag}-{attempt}.json",
+                {"time": now_iso(), "tier": tier.model_dump(), "messages": messages, "reply": asdict(reply)},
+            )
+        except OSError:
+            pass  # 日志是辅助功能，写失败不该让已经花了钱的这次调用也跟着失败
 
 
 def request_extras(tier: TierConfig) -> dict:
