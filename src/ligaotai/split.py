@@ -138,6 +138,47 @@ def _merge_heading_only(text: str, pieces: list[Piece]) -> list[Piece]:
     return merged
 
 
+_BLANK_BOUNDARY = re.compile(r"\n[ \t　]*\n")
+_NEWLINE = re.compile(r"\n")
+_SENTENCE_CUT = re.compile(r"[。！？!?…][」”』）)]?")
+
+
+def _find_cut(text: str, s: int, e: int, rules: SplitRules) -> int:
+    """在 [s, e) 里找一个最接近 s + target 的切点。"""
+    ideal = s + rules.target_chars
+    min_side = rules.target_chars // 3
+    lo, hi = s + min_side, e - min_side
+    candidate_sets = (
+        (m.start() for m in _BLANK_BOUNDARY.finditer(text, s, e)),
+        (m.start() for m in _NEWLINE.finditer(text, s, e)),
+        (m.end() for m in _SENTENCE_CUT.finditer(text, s, e)),
+    )
+    for candidates in candidate_sets:
+        best = min(
+            (c for c in candidates if lo <= c <= hi),
+            key=lambda c: abs(c - ideal),
+            default=None,
+        )
+        if best is not None:
+            return best
+    return ideal
+
+
+def _size_split(text: str, s: int, e: int, rules: SplitRules) -> list[tuple[int, int]]:
+    out: list[tuple[int, int]] = []
+    while e - s > rules.max_chars:
+        cut = _find_cut(text, s, e, rules)
+        head = _trim(text, s, cut)
+        if head:
+            out.append(head)
+        rest = _trim(text, cut, e)
+        if rest is None:
+            return out
+        s = rest[0]
+    out.append((s, e))
+    return out
+
+
 def _number_parts(pieces: list[Piece]) -> list[Block]:
     blocks = []
     counts: dict[int, int] = {}
@@ -153,4 +194,8 @@ def split_text(text: str, rules: SplitRules = SplitRules()) -> list[Block]:
         t = _trim(text, s, e)
         if t:
             pieces.append((t[0], t[1], h, sec))
-    return _number_parts(_merge_heading_only(text, pieces))
+    sized: list[Piece] = []
+    for s, e, h, sec in _merge_heading_only(text, pieces):
+        for s2, e2 in _size_split(text, s, e, rules):
+            sized.append((s2, e2, h, sec))
+    return _number_parts(sized)

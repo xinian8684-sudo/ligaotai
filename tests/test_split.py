@@ -105,3 +105,48 @@ def test_trailing_heading_only_block_is_kept():
 def test_empty_text():
     assert split_text("") == []
     assert split_text("\n\n  \n") == []
+
+
+def _nows(s):
+    return "".join(s.split())
+
+
+def test_long_block_cut_at_blank_line_near_target():
+    para = "甲" * 279 + "。"
+    text = "\n\n".join([para] * 40)
+    blocks = split_text(text)
+    lengths = [b.end - b.start for b in blocks]
+    assert all(n <= 5000 for n in lengths)
+    assert abs(lengths[0] - 3000) <= 300
+    assert text[blocks[0].end:blocks[0].end + 2] == "\n\n"
+    assert [b.part for b in blocks] == list(range(1, len(blocks) + 1))
+    assert _nows("".join(text[b.start:b.end] for b in blocks)) == _nows(text)
+
+
+def test_long_block_without_blank_lines_cuts_at_newline():
+    line = "乙" * 199 + "。"
+    text = "\n".join([line] * 50)
+    blocks = split_text(text)
+    assert all(b.end - b.start <= 5000 for b in blocks)
+    assert all(text[b.end] == "\n" for b in blocks[:-1])
+    assert _nows("".join(text[b.start:b.end] for b in blocks)) == _nows(text)
+
+
+def test_long_single_line_cuts_after_sentence_end():
+    text = ("丙" * 99 + "。") * 80
+    blocks = split_text(text)
+    assert all(b.end - b.start <= 5000 for b in blocks)
+    assert all(text[b.end - 1] == "。" for b in blocks)
+    assert "".join(text[b.start:b.end] for b in blocks) == text
+
+
+def test_no_punctuation_hard_cut():
+    text = "丁" * 12000
+    assert [b.end - b.start for b in split_text(text)] == [3000, 3000, 3000, 3000]
+
+
+def test_long_blocks_keep_heading():
+    text = "第一章 雪夜\n" + "\n\n".join(["戊" * 279 + "。"] * 30)
+    blocks = split_text(text)
+    assert len(blocks) >= 2
+    assert all(b.heading == "第一章 雪夜" for b in blocks)
