@@ -1,0 +1,74 @@
+import pytest
+from docx import Document
+
+from ligaotai.fsutil import read_json
+from ligaotai.importer import run_import
+
+
+def make_src(tmp_path):
+    src = tmp_path / "我的稿子"
+    (src / "旧稿").mkdir(parents=True)
+    (src / ".obsidian").mkdir()
+    (src / "a.txt").write_bytes("第一章 开端\n林清年方十六。".encode("gbk"))
+    (src / "旧稿" / "b.md").write_text("# 第二章\n雪夜。", encoding="utf-8")
+    doc = Document()
+    doc.add_heading("第三章", level=1)
+    doc.add_paragraph("正文。")
+    doc.save(str(src / "c.docx"))
+    (src / "d.pdf").write_bytes(b"%PDF")
+    (src / ".obsidian" / "e.txt").write_text("x", encoding="utf-8")
+    (src / "~$f.docx").write_bytes(b"lock")
+    return src
+
+
+def test_first_import(tmp_path, book):
+    src = make_src(tmp_path)
+    calls = []
+    summary = run_import(book, src, lambda done, total, *a: calls.append((done, total)))
+    assert summary["added"] == 3
+    assert summary["changed"] == 0
+    assert summary["failed"] == []
+    assert sorted(s["path"] for s in summary["skipped"]) == [".obsidian/e.txt", "d.pdf", "~$f.docx"]
+    assert (book.originals_dir / "我的稿子" / "旧稿" / "b.md").exists()
+    files = read_json(book.manifest_path)["files"]
+    assert set(files) == {"我的稿子/a.txt", "我的稿子/旧稿/b.md", "我的稿子/c.docx"}
+    assert files["我的稿子/a.txt"]["encoding"] == "gb18030"
+    assert files["我的稿子/c.docx"]["encoding"] == "docx"
+    assert book.step("import")["status"] == "done"
+    assert calls[-1] == (6, 6)
+
+
+def test_reimport_unchanged_keeps_downstream(tmp_path, book):
+    src = make_src(tmp_path)
+    run_import(book, src)
+    book.set_step("split", "done")
+    summary = run_import(book, src)
+    assert (summary["added"], summary["changed"], summary["unchanged"]) == (0, 0, 3)
+    assert book.step("split")["status"] == "done"
+
+
+def test_reimport_changed_outdates_downstream(tmp_path, book):
+    src = make_src(tmp_path)
+    run_import(book, src)
+    book.set_step("split", "done")
+    (src / "旧稿" / "b.md").write_text("# 第二章\n雪夜，改过了。", encoding="utf-8")
+    summary = run_import(book, src)
+    assert summary["changed"] == 1
+    assert book.step("split")["status"] == "outdated"
+    copied = (book.originals_dir / "我的稿子" / "旧稿" / "b.md").read_text(encoding="utf-8")
+    assert "改过了" in copied
+
+
+def test_broken_docx_is_reported_not_copied(tmp_path, book):
+    src = tmp_path / "稿"
+    src.mkdir()
+    (src / "坏.docx").write_bytes(b"not a zip")
+    summary = run_import(book, src)
+    assert [f["path"] for f in summary["failed"]] == ["稿/坏.docx"]
+    assert not (book.originals_dir / "稿" / "坏.docx").exists()
+    assert read_json(book.manifest_path)["files"] == {}
+
+
+def test_not_a_folder(tmp_path, book):
+    with pytest.raises(NotADirectoryError):
+        run_import(book, tmp_path / "没有")
