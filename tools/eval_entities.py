@@ -44,8 +44,13 @@ GOLD = {
 }
 
 
-def _main_entity(names: set[str], ent_of: dict[str, str]) -> str | None:
-    """这组叫法里出现次数最多的实体（沿用 gold 统计的算法）；一个都没落进任何实体就是 None。"""
+def _main_entity(names: list[str], ent_of: dict[str, str]) -> str | None:
+    """这组叫法里出现次数最多的实体（沿用 gold 统计的算法）；一个都没落进任何实体就是 None。
+
+    `names` 必须是固定顺序、已去重的列表（不能是 set）：Counter.most_common 平局时按
+    元素第一次出现的顺序决出胜负，如果 names 是 set，这个顺序就随进程的 PYTHONHASHSEED
+    乱跳，同一份数据能跑出不一样的结论。调用方负责保证顺序（比如 replaces 排最前面）。
+    """
     present = [n for n in names if n in ent_of]
     if not present:
         return None
@@ -76,17 +81,28 @@ def evaluate(entities: list[dict], key: dict, gold: dict = GOLD) -> dict:
     injected = []
     for a in key["aliases"]:
         variants = sorted(n for n in ent_of if a["alias"] in n)
-        variant_ids = {ent_of[v] for v in variants}
-        # 主实体 = 这个人物的 gold 叫法 + replaces + canonical 里出现次数最多的实体（沿用 gold
-        # 统计的算法）。挑主实体时排除跟这个植入别名互相包含的叫法（比如「御弟」是「御弟師父」
-        # 的前缀）——不然别名不用真被模型合并，光靠字面包含关系就能借 gold 那边的统计蹭到命中。
-        pool = set(gold.get(a["canonical"], [])) | {a["replaces"], a["canonical"]}
-        pool = {n for n in pool if a["alias"] not in n and n not in a["alias"]}
-        main_id = _main_entity(pool, ent_of)
+        variant_ids = sorted({ent_of[v] for v in variants})
+        # 主实体候选叫法：固定顺序 [replaces, canonical, *gold[canonical]]，保序去重。排除跟
+        # 这个植入别名互相包含的叫法（比如「御弟」是「御弟師父」的前缀）——不然别名不用真被
+        # 模型合并，光靠字面包含关系就能借 gold 那边的统计蹭到命中。顺序必须固定：
+        # Counter.most_common 平局时按元素第一次出现的顺序决出胜负（即优先 replaces 所在的
+        # 实体），这样同一份数据不管 PYTHONHASHSEED 是几，判定都一样。
+        pool = [a["replaces"], a["canonical"], *gold.get(a["canonical"], [])]
+        pool = [n for n in pool if a["alias"] not in n and n not in a["alias"]]
+        seen: set[str] = set()
+        ordered_pool = [n for n in pool if not (n in seen or seen.add(n))]
+        main_id = _main_entity(ordered_pool, ent_of)
+        main_in_wrong_merge = main_id is not None and main_id in wrong_ids
         # 命中 = 含这个别名的某个叫法所在实体就是主实体，且这个实体没混进别的主角。
-        merged = main_id is not None and main_id in variant_ids and main_id not in wrong_ids
+        merged = main_id is not None and main_id in variant_ids and not main_in_wrong_merge
         injected.append({
-            "alias": a["alias"], "canonical": a["canonical"], "extracted": variants, "merged": merged,
+            "alias": a["alias"],
+            "canonical": a["canonical"],
+            "extracted": variants,
+            "merged": merged,
+            "main_id": main_id,
+            "variant_ids": variant_ids,
+            "main_in_wrong_merge": main_in_wrong_merge,
         })
     found = sum(x["merged"] for x in injected)
     total = len(injected)
@@ -128,12 +144,29 @@ def _check_manifest(book: Book, folder: Path, key: dict) -> None:
 
     书名已经带着乱稿文件夹名和 seed，正常情况下不会撞上别的乱稿；但万一手动搬过书库、或者
     答案和乱稿文件夹没对上，run_import 只会新增/更新清单，不会删掉文件夹里已经不存在的旧条目，
-    新旧两份乱稿的场景、叫法会一直混在一起验收，而且报告里看不出来。"""
+    新旧两份乱稿的场景、叫法会一直混在一起验收，而且报告里看不出来。
+
+    多出的条目（清单里有、答案里没有）和缺少的条目（答案里有、清单里没有）是两种不同的毛病：
+    多出通常是混进了别的乱稿，缺少通常是有文件导入失败——分开报数量、给不同的排查提示。
+    终端只打 ASCII：中文的具体文件名不打印，挂在 SystemExit 的 extra/missing 属性上，
+    调用方需要时自己从异常对象里取。"""
     root_name = safe_name(folder.name)
     expected = {f"{root_name}/{f['path']}" for f in key["files"]}
     actual = set(read_json(book.manifest_path, {"files": {}})["files"])
-    if actual != expected:
-        sys.exit(f"验收书里混进了别的乱稿，删掉这本书重跑：{book.root}")
+    extra = sorted(actual - expected)
+    missing = sorted(expected - actual)
+    if not extra and not missing:
+        return
+    hints = []
+    if extra:
+        hints.append(f"{len(extra)} extra file(s) (likely mixed with another draft; delete this book and rerun)")
+    if missing:
+        hints.append(f"{len(missing)} missing file(s) (some file(s) may have failed to import; check import results)")
+    exc = SystemExit("manifest mismatch: " + "; ".join(hints))
+    exc.book = str(book.root)
+    exc.extra = extra
+    exc.missing = missing
+    raise exc
 
 
 def run_eval(
@@ -221,8 +254,10 @@ def main(argv: list[str] | None = None) -> None:
             "book": getattr(e, "book", None),
             "usage": getattr(e, "usage", {}),
         }
-        report_path.write_text(json.dumps(partial, ensure_ascii=False, indent=2), encoding="utf-8")
-        sys.exit(f"fatal model error, see {report_path}")
+        # 残缺报告写到另一个文件名，别覆盖同一路径上一次成功的完整报告。
+        error_report_path = report_path.with_name(report_path.stem + "-error.json")
+        error_report_path.write_text(json.dumps(partial, ensure_ascii=False, indent=2), encoding="utf-8")
+        sys.exit("fatal model error, see the -error report next to your --report path")
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     total = report["usage"].get("total", {})
     this_run = report["this_run"]
