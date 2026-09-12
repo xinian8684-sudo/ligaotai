@@ -53,3 +53,94 @@ def test_chunk_names():
     assert chunk_names(names, 20, 3) == [names]
     chunks = chunk_names(names, 6, 2)
     assert chunks == [["n0", "n1", "n2", "n3", "n4", "n5"], ["n0", "n1", "n6", "n7", "n8", "n9"]]
+
+
+import pytest
+
+from ligaotai import entities as ent
+from ligaotai.entities import check_groups, clean_groups, merge_groups, run_entities
+from ligaotai.fsutil import read_json, write_json
+
+LIN = ["林清", "清儿", "林姑娘"]
+
+
+def test_check_groups():
+    allowed = {"林清", "清儿", "赵五"}
+    assert check_groups({"groups": [{"canonical": "林清", "members": ["林清", "清儿"]}]}, allowed) == []
+    assert check_groups({"x": 1}, allowed) == ["缺少 groups 列表"]
+    problems = check_groups(
+        {"groups": [
+            {"canonical": "张三", "members": ["林清", "张三"]},
+            {"canonical": "清儿", "members": ["清儿", "林清"]},
+        ]},
+        allowed,
+    )
+    text = "；".join(problems)
+    assert "张三" in text and "同时出现在两个组" in text
+
+
+def test_clean_groups():
+    data = {"groups": [
+        {"canonical": "张三", "members": ["林清", "张三", "清儿"], "reason": "r"},
+        {"canonical": "清儿", "members": ["清儿", "赵五"]},
+        {"canonical": "赵五", "members": ["赵五"]},
+    ]}
+    assert clean_groups(data, {"林清", "清儿", "赵五"}) == [
+        {"canonical": "林清", "members": ["林清", "清儿"], "reason": "r"}
+    ]
+
+
+def test_merge_groups_across_chunks():
+    groups = [
+        {"canonical": "清儿", "members": ["清儿", "林清"], "reason": "a"},
+        {"canonical": "林清", "members": ["林清", "林姑娘"], "reason": "b"},
+        {"canonical": "赵五", "members": ["赵五", "老赵"], "reason": ""},
+    ]
+    merged = merge_groups(groups, {"林清": 5, "清儿": 2, "林姑娘": 1, "赵五": 3, "老赵": 1})
+    assert merged[0] == {"canonical": "林清", "members": ["林清", "清儿", "林姑娘"], "reason": "a；b"}
+    assert merged[1]["canonical"] == "赵五"
+
+
+def test_run_entities_groups_aliases(story_book):
+    run_cards(story_book, client_for(story_book))
+    c = client_for(story_book, groups=[LIN])
+    summary = run_entities(story_book, c)
+    data = read_json(story_book.entities_path)
+    persons = [e for e in data["entities"] if e["type"] == "person"]
+    draft = [e for e in persons if e["status"] == "draft"]
+    assert len(draft) == 1 and set(draft[0]["names"]) == set(LIN)
+    assert draft[0]["canonical"] == "林清"
+    assert [e["canonical"] for e in persons if e["status"] == "single"] == ["赵五"]
+    assert {e["type"] for e in data["entities"]} == {"person", "location", "organization"}
+    assert c.usage.calls == 1  # 地点、组织各只有一个叫法，不调模型
+    assert summary["draft_groups"] == 1
+    assert story_book.step("entities")["status"] == "done"
+    assert story_book.load()["usage"]["by_step"]["entities"]["calls"] == 1
+
+
+def test_confirmed_group_survives_rerun(story_book):
+    run_cards(story_book, client_for(story_book))
+    run_entities(story_book, client_for(story_book, groups=[LIN]))
+    data = read_json(story_book.entities_path)
+    group = next(e for e in data["entities"] if e["status"] == "draft")
+    group["status"] = "confirmed"
+    write_json(story_book.entities_path, data)
+
+    run_entities(story_book, client_for(story_book, groups=[["林清", "赵五"]]))
+    data = read_json(story_book.entities_path)
+    kept = next(e for e in data["entities"] if e["id"] == group["id"])
+    assert kept["status"] == "confirmed" and set(kept["names"]) == set(LIN)
+    zhao = next(e for e in data["entities"] if e["canonical"] == "赵五")
+    assert zhao["status"] == "single"
+    assert len({e["id"] for e in data["entities"]}) == len(data["entities"])
+
+
+def test_names_split_into_chunks(story_book, monkeypatch):
+    run_cards(story_book, client_for(story_book))
+    monkeypatch.setattr(ent, "MAX_NAMES_PER_CALL", 3)
+    monkeypatch.setattr(ent, "ANCHOR_NAMES", 1)
+    c = client_for(story_book, groups=[LIN])
+    run_entities(story_book, c)
+    assert c.usage.calls == 2
+    data = read_json(story_book.entities_path)
+    assert sum(e["status"] == "draft" for e in data["entities"]) == 1
