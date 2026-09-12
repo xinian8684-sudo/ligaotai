@@ -1,4 +1,5 @@
 import json
+import threading
 
 import pytest
 from helpers import FakeBackend, fake_ai_handler, names_from_prompt
@@ -590,14 +591,32 @@ def find(book, canonical):
 
 def test_confirm(grouped):
     e = find(grouped, "林清")
-    [out] = confirm(grouped, [e["id"]])
-    assert out["status"] == "confirmed" and find(grouped, "林清")["status"] == "confirmed"
-    assert grouped.step("threads")["status"] == "outdated"
+    out = confirm(grouped, [e["id"], e["id"]])  # 重复的 id 只返回一次
+    assert len(out) == 1 and out[0]["status"] == "confirmed" and find(grouped, "林清")["status"] == "confirmed"
+    assert grouped.step("threads")["status"] == "done"  # 确认不改规范名映射，下游不过期
+
+
+def test_confirm_without_changes_does_not_write(grouped, monkeypatch):
+    e = find(grouped, "林清")
+    confirm(grouped, [e["id"]])
+    writes = []
+    monkeypatch.setattr(ent, "write_json", lambda path, data: writes.append(path))
+    assert confirm(grouped, []) == []
+    assert [x["id"] for x in confirm(grouped, [e["id"]])] == [e["id"]]  # 已经确认过
+    assert writes == []
 
 
 def test_rename(grouped):
+    zhao = find(grouped, "赵五")
+    rename(grouped, zhao["id"], " 赵五 ")  # 改成同一个名字：状态变已确认，但规范名映射没变，下游不过期
+    assert find(grouped, "赵五")["status"] == "confirmed"
+    assert grouped.step("threads")["status"] == "done"
+
     e = find(grouped, "林清")
     assert rename(grouped, e["id"], " 林小清 ")["canonical"] == "林小清"
+    saved = next(x for x in read_json(grouped.entities_path)["entities"] if x["id"] == e["id"])
+    assert saved["canonical"] == "林小清" and saved["status"] == "confirmed"  # 写回了文件
+    assert grouped.step("threads")["status"] == "outdated"
     with pytest.raises(ValueError):
         rename(grouped, e["id"], "  ")
 
@@ -609,6 +628,7 @@ def test_merge(grouped):
     assert out["scenes"] == ["S-0001", "S-0002", "S-0003"] and out["status"] == "confirmed"
     ids = [e["id"] for e in read_json(grouped.entities_path)["entities"]]
     assert zhao["id"] not in ids
+    assert grouped.step("threads")["status"] == "outdated"
 
 
 def test_merge_rejects_bad_input(grouped):
@@ -722,3 +742,207 @@ def test_affixes_two_char_generic_terms():
         assert core(name) == expect
     for title in ("阿哥", "大姐", "阿姐", "小哥", "小妹", "师妹", "師妹"):
         assert core(title) == title  # 称谓本身原样返回，不再被单字词缀拆开
+
+
+# --- 任务 11 审查意见 ---
+
+
+def test_merge_canonical_param(grouped):
+    lin, zhao = find(grouped, "林清"), find(grouped, "赵五")
+    before = read_json(grouped.entities_path)
+    for blank in ("", "   "):
+        with pytest.raises(ValueError):
+            merge(grouped, [lin["id"], zhao["id"]], canonical=blank)
+    assert read_json(grouped.entities_path) == before  # 报错时什么都没写
+    out = merge(grouped, [lin["id"], zhao["id"]], canonical=" 新名 ")
+    assert out["canonical"] == "新名" and find(grouped, "新名")["id"] == lin["id"]
+    m = canonical_map(grouped)
+    assert all(m[("person", n)] == "新名" for n in [*LIN, "赵五"])
+
+
+def test_merge_recomputes_scenes_and_orders_names(grouped):
+    """存盘的场景列表过时了（场景卡重做过、步骤 5 没重跑）：合并按当前场景卡重算，名字按出现次数排。"""
+    data = read_json(grouped.entities_path)
+    lin = next(e for e in data["entities"] if e["canonical"] == "林清")
+    lin["scenes"] = ["S-0099"]
+    lin["names"] = list(reversed(lin["names"]))
+    write_json(grouped.entities_path, data)
+    zhao = find(grouped, "赵五")
+    out = merge(grouped, [lin["id"], zhao["id"]])
+    assert out["scenes"] == ["S-0001", "S-0002", "S-0003"]
+    assert out["names"][0] == "赵五"  # 赵五出现在两个场景，其余各一个
+    assert out["names"] == ent._order_names(out["names"], collect_mentions(grouped)["person"])
+    assert find(grouped, "林清")["scenes"] == out["scenes"]
+
+
+def test_split_moves_canonical(grouped):
+    lin = find(grouped, "林清")
+    new = split(grouped, lin["id"], ["林清"])
+    assert new["canonical"] == "林清" and new["names"] == ["林清"] and new["scenes"] == ["S-0001"]
+    rest = next(e for e in read_json(grouped.entities_path)["entities"] if e["id"] == lin["id"])
+    assert rest["canonical"] in rest["names"] and "林清" not in rest["names"]
+    assert set(rest["names"]) == {"清儿", "林姑娘"} and rest["scenes"] == ["S-0002", "S-0003"]
+    m = canonical_map(grouped)
+    assert m[("person", "林清")] == "林清" and m[("person", "清儿")] == rest["canonical"]
+    assert grouped.step("threads")["status"] == "outdated"
+
+
+def test_cache_key_ignores_max_tokens_and_key_but_not_api_base(story_book):
+    run_cards(story_book, client_for(story_book))
+    run_entities(story_book, client_for(story_book, groups=[LIN]))
+
+    bigger = TierConfig(thinking="on", effort="high", max_tokens=65536)  # 只改上限：照样命中
+    c = client_for(story_book, groups=[LIN], synth=bigger)
+    run_entities(story_book, c)
+    assert c.usage.calls == 0
+
+    relay = "https://relay.example.com/v1"  # 模型名一样、换了服务商：不能命中
+    c2 = client_for(story_book, groups=[LIN], api_base=relay)
+    run_entities(story_book, c2)
+    assert c2.usage.calls == 1
+
+    c3 = client_for(story_book, groups=[LIN], api_base=relay, api_key="sk-test-not-a-real-key")  # 换 key 不影响
+    run_entities(story_book, c3)
+    assert c3.usage.calls == 0
+
+
+def _locked(book) -> dict:
+    data = read_json(book.entities_path)
+    return {e["id"]: {k: v for k, v in e.items() if k != "scenes"} for e in data["entities"]
+            if e["status"] not in ("draft", "single")}
+
+
+def _assert_rerun_keeps_author_work(book, client):
+    before = read_json(book.entities_path)
+    locked = _locked(book)
+    book.entities_cache_path.unlink()
+    run_entities(book, client)
+    after = read_json(book.entities_path)
+    now = _locked(book)
+    assert {eid: now.get(eid) for eid in locked} == locked  # 作者确认过的实体原样保留
+    seen = [(e["type"], n) for e in after["entities"] for n in e["names"]]
+    assert len(seen) == len(set(seen))  # 没有叫法同时出现在两个实体里
+    assert after["next_id"] >= before["next_id"]  # 编号只增不减
+    return after
+
+
+def test_rerun_after_split_merge_rename_confirm(grouped):
+    lin, zhao = find(grouped, "林清"), find(grouped, "赵五")
+    place, org = find(grouped, "青州城外"), find(grouped, "天机阁")
+    moved = split(grouped, lin["id"], ["林姑娘"])
+    merge(grouped, [zhao["id"], moved["id"]], canonical="赵五")  # 删掉刚发出去的最大号
+    rename(grouped, org["id"], "天机阁总舵")
+    confirm(grouped, [place["id"]])
+
+    after = _assert_rerun_keeps_author_work(grouped, client_for(grouped, groups=[[*LIN, "赵五"]]))
+    assert moved["id"] not in {e["id"] for e in after["entities"]}
+    assert after["next_id"] > ent._id_num(moved["id"])
+
+
+def test_rerun_after_rename_and_confirm_model_cannot_take_locked_names(grouped):
+    zhao, place = find(grouped, "赵五"), find(grouped, "青州城外")
+    rename(grouped, zhao["id"], "赵五爷")
+    confirm(grouped, [place["id"]])
+
+    c = client_for(grouped, groups=[[*LIN, "赵五"]])  # 模型想把已确认的赵五也拉进林清这组
+    after = _assert_rerun_keeps_author_work(grouped, c)
+    assert c.usage.calls == 1
+    persons = [e for e in after["entities"] if e["type"] == "person"]
+    draft = [e for e in persons if e["status"] == "draft"]
+    assert len(draft) == 1 and set(draft[0]["names"]) == set(LIN)
+    assert next(e for e in persons if e["id"] == zhao["id"])["canonical"] == "赵五爷"
+
+
+def test_confirm_during_step5_write_is_not_lost(grouped, monkeypatch):
+    """步骤 5 读了旧 实体.json、还没写回的时候作者点了确认：确认要等步骤 5 写完再读改写，不能被它覆盖。"""
+    draft = find(grouped, "林清")
+    real_assemble = ent._assemble
+    finished = threading.Event()
+    held_off, errors, workers = [], [], []
+
+    def author():
+        try:
+            confirm(grouped, [draft["id"]])
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+        finally:
+            finished.set()
+
+    def assemble(old, mentions, groups):  # 此时步骤 5 正拿着锁
+        t = threading.Thread(target=author)
+        workers.append(t)
+        t.start()
+        # 有锁：作者被挡在外面，这里等不到它做完，超时后照常往下走（不会死锁）。
+        # 没锁：它会趁这段时间读旧文件 → 写回，然后被下面的写回整个覆盖。
+        held_off.append(not finished.wait(timeout=0.3))
+        return real_assemble(old, mentions, groups)
+
+    monkeypatch.setattr(ent, "_assemble", assemble)
+    run_entities(grouped, client_for(grouped, groups=[LIN]))
+    workers[0].join(timeout=10)
+    assert not workers[0].is_alive() and errors == []
+    assert held_off == [True]
+    kept = find(grouped, "林清")
+    assert kept["id"] == draft["id"] and kept["status"] == "confirmed"
+
+
+def test_concurrent_confirms_keep_both(grouped, monkeypatch):
+    lin, zhao = find(grouped, "林清"), find(grouped, "赵五")
+    real_load = ent.load_entities
+    first_loaded, second_done = threading.Event(), threading.Event()
+    held_off, errors = [], []
+
+    def load(book):
+        data = real_load(book)
+        if threading.current_thread().name == "first":  # 第一个确认读完文件、还没写回
+            first_loaded.set()
+            held_off.append(not second_done.wait(timeout=0.3))  # 有锁时第二个确认做不完
+        return data
+
+    def run(eid, done=None):
+        try:
+            confirm(grouped, [eid])
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+        finally:
+            if done is not None:
+                done.set()
+
+    monkeypatch.setattr(ent, "load_entities", load)
+    t1 = threading.Thread(target=run, args=(lin["id"],), name="first")
+    t2 = threading.Thread(target=run, args=(zhao["id"], second_done), name="second")
+    t1.start()
+    assert first_loaded.wait(timeout=10)
+    t2.start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+    assert not t1.is_alive() and not t2.is_alive() and errors == []
+    assert held_off == [True]
+    assert find(grouped, "林清")["status"] == "confirmed" and find(grouped, "赵五")["status"] == "confirmed"
+
+
+def test_split_and_merge_read_cards_outside_lock(grouped, monkeypatch):
+    """读全部场景卡的 collect_mentions 不能在锁里跑：另一个线程这时要能拿到锁。"""
+    real_collect = ent.collect_mentions
+    free = []
+
+    def collect(book):
+        got = []
+
+        def probe():
+            ok = ent.FILE_LOCK.acquire(blocking=False)
+            got.append(ok)
+            if ok:
+                ent.FILE_LOCK.release()
+
+        t = threading.Thread(target=probe)
+        t.start()
+        t.join(timeout=10)
+        free.append(got == [True])
+        return real_collect(book)
+
+    monkeypatch.setattr(ent, "collect_mentions", collect)
+    lin, zhao = find(grouped, "林清"), find(grouped, "赵五")
+    moved = split(grouped, lin["id"], ["林姑娘"])
+    merge(grouped, [zhao["id"], moved["id"]])
+    assert free == [True, True]

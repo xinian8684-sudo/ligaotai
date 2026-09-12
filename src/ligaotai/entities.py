@@ -5,9 +5,10 @@
    叫法太多时分批：出现次数最多的一批（锚点）放进每一批，冷门外号才能挂到主要人物身上；
    字面提示连起来的叫法尽量装进同一批。锚点之间是不是同一个，以第一批的判断为准，
    后面的批跟它冲突的组不合并，记进 summary 的 conflicts。
-3. 所有类型的所有批一起并发。每批的结果按提示词全文 + 模型名缓存进 实体合并缓存.json，
-   暂停、单批失败、欠费中止后重跑，做完的批不用再花钱。
-4. 模型全部调完才读 实体.json，拼好结果马上写回，作者运行期间做的确认不会被覆盖。
+3. 所有类型的所有批一起并发。每批的结果按提示词全文 + 综合档配置（不含 max_tokens）+ 接口地址
+   缓存进 实体合并缓存.json，暂停、单批失败、欠费中止后重跑，做完的批不用再花钱。
+4. 模型全部调完才读 实体.json，「读 → 拼结果 → 写回」整段在 FILE_LOCK 里；作者的确认、改名、合并、
+   拆分也在同一把锁里读改写，所以运行期间作者做的操作不会被覆盖，作者的操作之间也不会互相覆盖。
    模型给的组是草稿（draft），作者确认、改名、合并、拆分后才算数（confirmed）。
    只有 draft 和 single 会被重算，其他状态（confirmed 或不认识的）原样保留，里面的叫法不会被模型挪走。
    编号用文件顶层只增不减的 next_id；结果没变的草稿/single 沿用原编号。
@@ -25,7 +26,7 @@ from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Callable
 
-from .book import Book
+from .book import FILE_LOCK, Book
 from .cards import is_fresh, load_cards
 from .fsutil import natural_key, read_json, write_json
 from .llm import FatalLLMError, LLMClient, LLMError
@@ -327,11 +328,19 @@ class _Batch:
     names: list[str]
     system: str
     user: str
-    key: str  # 缓存键：提示词全文 + 模型名的 sha256
+    key: str  # 缓存键，见 _cache_key
+
+
+def _cache_cfg(client: LLMClient) -> dict:
+    """缓存键里的配置部分：综合档配置 + 接口地址。
+    max_tokens 不算——截断由 chat_json 自动加大上限重试，改上限不改变结果，不该让付过钱的批作废；
+    接口地址要算——换了服务商（比如都叫 deepseek-flash 的中转站），模型名一样也不是同一个模型。
+    API key 不进缓存键。"""
+    return {**client.tier("synth").model_dump(exclude={"max_tokens"}), "api_base": client.cfg.api_base}
 
 
 def _cache_key(system: str, user: str, synth_cfg: dict) -> str:
-    """提示词全文 + 综合档完整配置（模型、思考开关/强度等）。改思考设置也要重新调模型。"""
+    """提示词全文 + _cache_cfg 给的配置（模型、思考开关/强度、接口地址等）的 sha256。"""
     return hashlib.sha256(
         json.dumps([system, user, synth_cfg], ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()
@@ -373,14 +382,18 @@ def _scenes_of(names: list[str], mentions: dict[str, Mention]) -> list[str]:
     return sorted({s for n in names if n in mentions for s in mentions[n].scenes}, key=natural_key)
 
 
+def _order_names(names: list[str], mentions: dict[str, Mention]) -> list[str]:
+    """出现的场景多的在前，平票按字面。"""
+    return sorted(names, key=lambda n: (-(mentions[n].count if n in mentions else 0), n))
+
+
 def _entity(num: int, typ: str, canonical: str, names: list[str], status: str, reason: str,
             mentions: dict[str, Mention]) -> dict:
-    ordered = sorted(names, key=lambda n: (-(mentions[n].count if n in mentions else 0), n))
     return {
         "id": f"E-{num:04d}",
         "type": typ,
         "canonical": canonical,
-        "names": ordered,
+        "names": _order_names(names, mentions),
         "status": status,
         "reason": reason,
         "scenes": _scenes_of(names, mentions),
@@ -457,7 +470,7 @@ def run_entities(book: Book, client: LLMClient, progress: Progress = _noop) -> d
 
 async def _run_entities(book: Book, client: LLMClient, progress: Progress) -> dict:
     mentions = collect_mentions(book)
-    synth_cfg = client.tier("synth").model_dump()
+    synth_cfg = _cache_cfg(client)
     # 这里读 实体.json 只为决定哪些类型不用调模型；拼结果时等模型全部调完再重新读。
     locked_now = _locked_names(read_json(book.entities_path, {"entities": []}))
     plans: dict[str, tuple[list[str], list[_Batch]]] = {}
@@ -521,10 +534,12 @@ async def _run_entities(book: Book, client: LLMClient, progress: Progress) -> di
         groups[typ], conf = merge_groups([results.get((typ, b.no)) for b in bs], counts, anchors)
         conflicts += [{"type": typ, **c} for c in conf]
 
-    old = read_json(book.entities_path, {"entities": []})
-    data = _assemble(old, mentions, groups)
-    changed = _signature(old) != _signature(data)
-    write_json(book.entities_path, data)
+    # 只把「读旧文件 → 拼结果 → 写回」放进锁里，都是毫秒级的纯本地操作；调模型在上面，绝不能进锁。
+    with FILE_LOCK:
+        old = read_json(book.entities_path, {"entities": []})
+        data = _assemble(old, mentions, groups)
+        changed = _signature(old) != _signature(data)
+        write_json(book.entities_path, data)
     if set(cache) - used:  # 跑成功了，这次没用到的缓存条目清掉，免得越积越多
         try:
             write_json(book.entities_cache_path, {k: v for k, v in cache.items() if k in used})
@@ -561,9 +576,17 @@ def load_entities(book: Book) -> dict:
     return data
 
 
-def _save(book: Book, data: dict) -> None:
+def _cmap(data: dict) -> dict[tuple[str, str], str]:
+    return {(e["type"], n): e["canonical"] for e in data["entities"] for n in e["names"]}
+
+
+def _save(book: Book, data: dict, before: dict[tuple[str, str], str]) -> None:
+    """写回 实体.json。规范名映射（_cmap，即给下游用的 canonical_map）真的变了才让下游过期：
+    单纯确认、改成同一个名字都不改映射，作者一条条确认几百个组时归线不该被反复标过期。
+    要在 FILE_LOCK 里调。"""
     write_json(book.entities_path, data)
-    book.mark_downstream_outdated("entities")
+    if _cmap(data) != before:
+        book.mark_downstream_outdated("entities")
 
 
 def _get(data: dict, eid: str) -> dict:
@@ -573,14 +596,21 @@ def _get(data: dict, eid: str) -> dict:
     raise KeyError(eid)
 
 
+# 下面四个操作：读 实体.json → 改 → 写回 整段在 FILE_LOCK 里，跟步骤 5 的写回、跟彼此都串行，
+# 不会拿旧数据把别人的改动整个覆盖掉。要读全部场景卡的 collect_mentions 不碰 实体.json，放在锁外先算好。
+
+
 def confirm(book: Book, ids: list[str]) -> list[dict]:
-    data = load_entities(book)
-    out = []
-    for eid in ids:
-        e = _get(data, eid)
-        e["status"] = CONFIRMED
-        out.append(e)
-    _save(book, data)
+    """标成已确认。重复的 id 只算一次；没有任何状态变化（比如 ids 为空、都已确认）就不写文件。"""
+    ids = list(dict.fromkeys(ids))
+    with FILE_LOCK:
+        data = load_entities(book)
+        before = _cmap(data)
+        out = [_get(data, eid) for eid in ids]  # 有找不到的 id 就在改动前抛 KeyError
+        if any(e.get("status") != CONFIRMED for e in out):
+            for e in out:
+                e["status"] = CONFIRMED
+            _save(book, data, before)
     return out
 
 
@@ -588,58 +618,73 @@ def rename(book: Book, eid: str, canonical: str) -> dict:
     canonical = canonical.strip()
     if not canonical:
         raise ValueError("规范名不能为空")
-    data = load_entities(book)
-    e = _get(data, eid)
-    e["canonical"], e["status"] = canonical, CONFIRMED
-    _save(book, data)
+    with FILE_LOCK:
+        data = load_entities(book)
+        before = _cmap(data)
+        e = _get(data, eid)
+        e["canonical"], e["status"] = canonical, CONFIRMED
+        _save(book, data, before)
     return e
 
 
 def merge(book: Book, ids: list[str], canonical: str | None = None) -> dict:
+    """合并成第一个实体。名字按出现次数排，场景按当前场景卡重算（跟拆分一样）。"""
     if len(set(ids)) < 2:
         raise ValueError("至少要选两个实体才能合并")
-    data = load_entities(book)
-    ents = [_get(data, eid) for eid in dict.fromkeys(ids)]
-    if len({e["type"] for e in ents}) > 1:
-        raise ValueError("不同类型的实体不能合并")
-    keep = ents[0]
-    keep.update(
-        names=list(dict.fromkeys(n for e in ents for n in e["names"])),
-        scenes=sorted({s for e in ents for s in e["scenes"]}, key=natural_key),
-        canonical=(canonical or keep["canonical"]).strip(),
-        status=CONFIRMED,
-        reason="作者合并",
-    )
-    dropped = {e["id"] for e in ents[1:]}
-    data["entities"] = [e for e in data["entities"] if e["id"] not in dropped]
-    _save(book, data)
+    if canonical is not None:
+        canonical = canonical.strip()
+        if not canonical:
+            raise ValueError("规范名不能为空")
+    mentions = collect_mentions(book)
+    with FILE_LOCK:
+        data = load_entities(book)
+        before = _cmap(data)
+        ents = [_get(data, eid) for eid in dict.fromkeys(ids)]
+        if len({e["type"] for e in ents}) > 1:
+            raise ValueError("不同类型的实体不能合并")
+        keep = ents[0]
+        ms = mentions.get(keep["type"], {})
+        names = list(dict.fromkeys(n for e in ents for n in e["names"]))
+        keep.update(
+            names=_order_names(names, ms),
+            scenes=_scenes_of(names, ms),
+            canonical=canonical or keep["canonical"],
+            status=CONFIRMED,
+            reason="作者合并",
+        )
+        dropped = {e["id"] for e in ents[1:]}
+        data["entities"] = [e for e in data["entities"] if e["id"] not in dropped]
+        _save(book, data, before)
     return keep
 
 
 def split(book: Book, eid: str, names: list[str]) -> dict:
-    data = load_entities(book)
-    e = _get(data, eid)
-    wanted = set(names)
-    moving = [n for n in e["names"] if n in wanted]
-    if not moving or len(moving) != len(wanted):
-        raise ValueError("要拆出去的叫法必须都在这个实体里")
-    if len(moving) == len(e["names"]):
-        raise ValueError("不能把全部叫法都拆出去")
-    mentions = collect_mentions(book)[e["type"]]
-    e["names"] = [n for n in e["names"] if n not in wanted]
-    if e["canonical"] in wanted:
-        e["canonical"] = e["names"][0]
-    e["status"] = CONFIRMED
-    e["scenes"] = _scenes_of(e["names"], mentions)
-    # 编号用文件顶层只增不减的 next_id 取号，不能只看当前实体列表里的最大号——否则合并删掉
-    # 最大号的实体后，编号可能被重新发出去，跟已经删掉的旧实体撞号。
-    num = _next_id(data)
-    data["next_id"] = num + 1
-    new = _entity(num, e["type"], moving[0], moving, CONFIRMED, "作者拆分", mentions)
-    data["entities"].append(new)
-    _save(book, data)
+    mentions = collect_mentions(book)
+    with FILE_LOCK:
+        data = load_entities(book)
+        before = _cmap(data)
+        e = _get(data, eid)
+        wanted = set(names)
+        moving = [n for n in e["names"] if n in wanted]
+        if not moving or len(moving) != len(wanted):
+            raise ValueError("要拆出去的叫法必须都在这个实体里")
+        if len(moving) == len(e["names"]):
+            raise ValueError("不能把全部叫法都拆出去")
+        ms = mentions.get(e["type"], {})
+        e["names"] = [n for n in e["names"] if n not in wanted]
+        if e["canonical"] in wanted:
+            e["canonical"] = e["names"][0]
+        e["status"] = CONFIRMED
+        e["scenes"] = _scenes_of(e["names"], ms)
+        # 编号用文件顶层只增不减的 next_id 取号，不能只看当前实体列表里的最大号——否则合并删掉
+        # 最大号的实体后，编号可能被重新发出去，跟已经删掉的旧实体撞号。
+        num = _next_id(data)
+        data["next_id"] = num + 1
+        new = _entity(num, e["type"], moving[0], moving, CONFIRMED, "作者拆分", ms)
+        data["entities"].append(new)
+        _save(book, data, before)
     return new
 
 
 def canonical_map(book: Book) -> dict[tuple[str, str], str]:
-    return {(e["type"], n): e["canonical"] for e in load_entities(book)["entities"] for n in e["names"]}
+    return _cmap(load_entities(book))

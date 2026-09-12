@@ -34,7 +34,9 @@ DEFAULT_SETTINGS = {
     "dedup_common_df": 200,      # 出现在超过这么多块里的字串当套话，不计数（真实文本 21~200 块之间几乎没有套话，调大避免误伤 21+ 份重复场景）
 }
 
-_lock = threading.RLock()
+# 进程内一把可重入锁：book.json、实体.json 的「读 → 改 → 写」都在它里面串行。
+# 可重入，所以拿着它再调 book.update（比如 mark_downstream_outdated）不会死锁。
+FILE_LOCK = threading.RLock()
 
 
 def now_iso() -> str:
@@ -94,7 +96,7 @@ class Book:
 
     def update(self, fn: Callable[[dict], None]) -> dict:
         """在锁里读 → 改 → 写 book.json。"""
-        with _lock:
+        with FILE_LOCK:
             data = self.load()
             fn(data)
             write_json(self.meta_path, data)
