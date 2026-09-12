@@ -2,15 +2,25 @@
 
 1. 程序汇总所有叫法：出现在哪些场景、原文上下文；再按字面找出一些「看着像」的提示对。
 2. 按类型把全部叫法（带上下文和提示）交给综合档模型，让它把指同一对象的叫法归组。
-   叫法太多时分批，出现次数最多的一批放进每一批，冷门外号才能挂到主要人物身上。
-3. 结果写进 实体.json。模型给的组是草稿（draft），作者确认、改名、合并、拆分后才算数（confirmed）。
-   作者确认过的组重跑时原样保留，里面的叫法不会被模型挪走。
+   叫法太多时分批：出现次数最多的一批（锚点）放进每一批，冷门外号才能挂到主要人物身上；
+   字面提示连起来的叫法尽量装进同一批。锚点之间是不是同一个，以第一批的判断为准，
+   后面的批跟它冲突的组不合并，记进 summary 的 conflicts。
+3. 所有类型的所有批一起并发。每批的结果按提示词全文 + 模型名缓存进 实体合并缓存.json，
+   暂停、单批失败、欠费中止后重跑，做完的批不用再花钱。
+4. 模型全部调完才读 实体.json，拼好结果马上写回，作者运行期间做的确认不会被覆盖。
+   模型给的组是草稿（draft），作者确认、改名、合并、拆分后才算数（confirmed）。
+   只有 draft 和 single 会被重算，其他状态（confirmed 或不认识的）原样保留，里面的叫法不会被模型挪走。
+   编号用文件顶层只增不减的 next_id；结果没变的草稿/single 沿用原编号。
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections import defaultdict
+import hashlib
+import json
+import math
+import re
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Callable
@@ -18,7 +28,7 @@ from typing import Callable
 from .book import Book
 from .cards import is_fresh, load_cards
 from .fsutil import natural_key, read_json, write_json
-from .llm import LLMClient
+from .llm import FatalLLMError, LLMClient, LLMError
 from .prompts import render
 from .scenes import load_scenes
 
@@ -30,11 +40,19 @@ MAX_NAMES_PER_CALL = 600
 ANCHOR_NAMES = 150
 HINT_LIMIT = 300
 AFFIXES = (
-    "大人", "姑娘", "公子", "先生", "夫人", "娘子", "師父", "师父", "師兄", "师兄", "師弟", "师弟",
+    "大人", "姑娘", "公子", "先生", "夫人", "娘子", "小姐", "大哥", "師父", "师父", "師兄", "师兄", "師弟", "师弟",
     "長老", "长老", "大王", "老爺", "老爷", "兄", "哥", "姐", "妹", "兒", "儿", "阿", "老", "小",
 )
+NICK_PREFIXES = ("阿", "小")
+NICK_SUFFIXES = ("儿", "兒")
+CROWDED = 3  # 只剩一个字的 core 撞在一起、或者昵称能对上的全名超过这么多个：多半是同姓不同人，不出提示
+PRONOUNS = frozenset({
+    "我", "你", "您", "他", "她", "它", "我们", "你们", "他们", "她们", "它们", "我們", "你們", "他們", "她們", "它們",
+    "咱", "咱们", "咱們", "俺", "俺们", "俺們", "本人", "自己", "在下", "老子", "人家",
+})
 
 DRAFT, CONFIRMED, SINGLE = "draft", "confirmed", "single"
+RECOMPUTED = (DRAFT, SINGLE)  # 只有这两种会被重算，其他状态一律当锁定原样保留
 
 Progress = Callable[..., None]
 
@@ -77,7 +95,7 @@ def collect_mentions(book: Book) -> dict[str, dict[str, Mention]]:
         found += [("organization", n) for n in card.get("organizations", [])]
         for typ, raw in found:
             name = raw.strip()
-            if not name:
+            if not name or name in PRONOUNS:
                 continue
             m = out[typ].setdefault(name, Mention(typ, name))
             if sid in m.scenes:
@@ -91,42 +109,120 @@ def collect_mentions(book: Book) -> dict[str, dict[str, Mention]]:
 
 
 def core(name: str) -> str:
-    """去掉常见称谓前后缀。整个名字就是称谓时保留原样。"""
-    changed = True
-    while changed:
-        changed = False
+    """去掉常见称谓前后缀。名字本身就是称谓（在 AFFIXES 里）时原样返回，不再被单字词缀拆开。"""
+    while name not in AFFIXES:
         for a in AFFIXES:
             if len(name) > len(a) and name.startswith(a):
-                name, changed = name[len(a) :], True
-            elif len(name) > len(a) and name.endswith(a):
-                name, changed = name[: -len(a)], True
+                name = name[len(a) :]
+                break
+            if len(name) > len(a) and name.endswith(a):
+                name = name[: -len(a)]
+                break
+        else:
+            break
     return name
 
 
-def hint_pairs(names: list[str], limit: int = HINT_LIMIT) -> list[tuple[str, str, str]]:
-    pairs: dict[frozenset, tuple[str, str, str]] = {}
+def _nick_core(name: str) -> str:
+    """去掉昵称词缀：阿X、小X、X儿。"""
+    for p in NICK_PREFIXES:
+        if len(name) > 1 and name.startswith(p):
+            name = name[1:]
+            break
+    for s in NICK_SUFFIXES:
+        if len(name) > 1 and name.endswith(s):
+            name = name[:-1]
+            break
+    return name
+
+
+def hint_pairs(names: list[str], limit: int | None = HINT_LIMIT) -> list[tuple[str, str, str]]:
+    """字面上「看着像」的叫法对 (a, b, 原因)，只是给模型的参考。limit=None 不截断。
+
+    按有用程度排：一个包含另一个 → 昵称对上全名的结尾 → 去掉称谓后相同；同一类里，
+    names 里排得靠前（出现多）的名字优先。本身就是称谓的名字不当包含关系里较短的那个，
+    只剩一个字的 core 撞在一起的名字太多时不两两出提示（黄夫人、黄兄、黄老爷多半是不同的人）。
+    """
+    pos = {n: i for i, n in enumerate(names)}
+
+    def order(p: tuple[str, str, str]) -> tuple[int, int]:
+        return min(pos[p[0]], pos[p[1]]), max(pos[p[0]], pos[p[1]])
+
+    contain: list[tuple[str, str, str]] = []
+    for b in names:
+        subs = {b[i:j] for i in range(len(b)) for j in range(i + 2, len(b) + 1)} - {b}
+        contain += [(a, b, "一个包含另一个") for a in subs if a in pos and a not in AFFIXES]
+
+    # 昵称（清儿 / 阿清 / 小清）去掉昵称词缀后，恰好是某个不带称谓的全名（林清）的结尾
+    full_by_suffix: dict[str, list[str]] = defaultdict(list)
+    for b in names:
+        if b not in AFFIXES and core(b) == b:
+            for i in range(1, len(b)):
+                full_by_suffix[b[i:]].append(b)
+    nick: list[tuple[str, str, str]] = []
+    for a in names:
+        c = _nick_core(a)
+        if c == a or a in AFFIXES:
+            continue
+        full = [b for b in full_by_suffix.get(c, []) if b != a]
+        if len(full) <= CROWDED:
+            nick += [(a, b, "去掉儿/阿/小后是另一个名字的结尾") for b in full]
+
     by_core: dict[str, list[str]] = defaultdict(list)
     for n in names:
         by_core[core(n)].append(n)
-    for group in by_core.values():
-        for a, b in combinations(group, 2):
-            pairs.setdefault(frozenset((a, b)), (a, b, "去掉称谓后相同"))
-    by_len = sorted(names, key=len)
-    for i, a in enumerate(by_len):
-        if len(a) < 2:
+    same: list[tuple[str, str, str]] = []
+    for c, group in by_core.items():
+        if len(c) == 1 and len(group) > CROWDED:
             continue
-        for b in by_len[i + 1 :]:
-            if a != b and a in b:
-                pairs.setdefault(frozenset((a, b)), (a, b, "一个包含另一个"))
-    return list(pairs.values())[:limit]
+        same += [(a, b, "去掉称谓后相同") for a, b in combinations(group, 2)]
+
+    pairs: dict[frozenset, tuple[str, str, str]] = {}
+    for p in sorted(contain, key=order) + sorted(nick, key=order) + sorted(same, key=order):
+        pairs.setdefault(frozenset(p[:2]), p)
+    out = list(pairs.values())
+    return out if limit is None else out[:limit]
 
 
-def chunk_names(names: list[str], max_names: int, anchors: int) -> list[list[str]]:
+def _find(parent: dict[str, str], x: str) -> str:
+    parent.setdefault(x, x)
+    while parent[x] != x:
+        parent[x] = parent[parent[x]]
+        x = parent[x]
+    return x
+
+
+def chunk_names(names: list[str], max_names: int, anchors: int, pairs=()) -> list[list[str]]:
+    """names 按出现次数从多到少排好传进来。不超过 max_names 就一批；超过时，前 anchors 个（锚点）
+    放进每一批，其余的平均分成 ceil(其余个数 / 每批容量) 批。pairs（字面提示对）连起来的名字
+    当一个整体装进同一批，整体本身比一批的容量还大才拆开。"""
+    if anchors >= max_names:
+        raise ValueError(f"每批最多 {max_names} 个叫法，锚点却要 {anchors} 个：锚点数必须小于每批上限")
     if len(names) <= max_names:
         return [names]
     head, rest = names[:anchors], names[anchors:]
     size = max_names - anchors
-    return [head + rest[i : i + size] for i in range(0, len(rest), size)]
+    count = math.ceil(len(rest) / size)
+    target = math.ceil(len(rest) / count)
+    pos = {n: i for i, n in enumerate(rest)}
+    parent: dict[str, str] = {}
+    for a, b, *_ in pairs:
+        if a in pos and b in pos:
+            parent[_find(parent, a)] = _find(parent, b)
+    comps: dict[str, list[str]] = {}
+    for n in rest:
+        comps.setdefault(_find(parent, n), []).append(n)
+    bins: list[list[str]] = []
+    for comp in comps.values():
+        for piece in (comp[i : i + size] for i in range(0, len(comp), size)):
+            dest = next((b for b in bins if len(b) + len(piece) <= target), None)
+            if dest is None and len(bins) >= count:
+                dest = min((b for b in bins if len(b) + len(piece) <= size), key=len, default=None)
+            if dest is None:
+                dest = []
+                bins.append(dest)
+            dest.extend(piece)
+    return [head + sorted(b, key=pos.__getitem__) for b in bins]
 
 
 def check_groups(data: dict, allowed: set[str]) -> list[str]:
@@ -170,32 +266,46 @@ def clean_groups(data: dict, allowed: set[str]) -> list[dict]:
     return out
 
 
-def merge_groups(groups: list[dict], counts: dict[str, int]) -> list[dict]:
+def merge_groups(
+    batches: list[list[dict] | None], counts: dict[str, int], anchors=()
+) -> tuple[list[dict], list[dict]]:
+    """合并各批的组。batches 按批次顺序排，失败的批是 None。返回 (合并后的组, 冲突)。
+
+    锚点每批都在，它们之间是不是同一个，以第一批（第一个有结果的批）的分组为准：后面某批的
+    一个组如果碰到了第一批里分属不同组的锚点，就是冲突——这个组整个不参与合并（它的非锚点名字
+    也不借它挂上去），记进冲突列表。其余的组按共同名字连起来。
+    规范名取被提议次数最多的，平票比场景数，再比字面。
+    """
+    anchor_set = set(anchors)
+    side = {a: a for a in anchor_set}  # 锚点 → 它在第一批里所在组的代表锚点
+    for g in next((gs for gs in batches if gs is not None), []):
+        rep = next((m for m in g["members"] if m in anchor_set), None)
+        for m in g["members"]:
+            if m in anchor_set:
+                side[m] = rep
+    accepted: list[dict] = []
+    conflicts: list[dict] = []
+    for i, gs in enumerate(batches, 1):
+        for g in gs or []:
+            if len({side[m] for m in g["members"] if m in anchor_set}) > 1:
+                conflicts.append({"chunk": i, "names": list(g["members"])})
+            else:
+                accepted.append(g)
     parent: dict[str, str] = {}
-
-    def find(x: str) -> str:
-        parent.setdefault(x, x)
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    for g in groups:
+    for g in accepted:
         for m in g["members"][1:]:
-            ra, rb = find(g["members"][0]), find(m)
-            if ra != rb:
-                parent[rb] = ra
+            parent[_find(parent, m)] = _find(parent, g["members"][0])
     buckets: dict[str, list[dict]] = defaultdict(list)
-    for g in groups:
-        buckets[find(g["members"][0])].append(g)
+    for g in accepted:
+        buckets[_find(parent, g["members"][0])].append(g)
     out = []
     for gs in buckets.values():
         members = sorted({m for g in gs for m in g["members"]}, key=lambda n: (-counts.get(n, 0), n))
-        proposed = [g["canonical"] for g in gs if g["canonical"] in members]
-        canonical = max(proposed, key=lambda n: counts.get(n, 0)) if proposed else members[0]
+        votes = Counter(g["canonical"] for g in gs if g["canonical"] in members)
+        canonical = min(votes, key=lambda n: (-votes[n], -counts.get(n, 0), n)) if votes else members[0]
         reason = "；".join(dict.fromkeys(g["reason"] for g in gs if g["reason"]))
         out.append({"canonical": canonical, "members": members, "reason": reason})
-    return out
+    return out, conflicts
 
 
 def _name_lines(names: list[str], mentions: dict[str, Mention]) -> str:
@@ -209,24 +319,46 @@ def _hint_lines(pairs: list[tuple[str, str, str]]) -> str:
     return "\n".join(f"- {a} ↔ {b}（{why}）" for a, b, why in pairs) or "（无）"
 
 
-async def cluster_type(client: LLMClient, typ: str, mentions: dict[str, Mention]) -> list[dict]:
+@dataclass
+class _Batch:
+    typ: str
+    no: int
+    names: list[str]
+    system: str
+    user: str
+    key: str  # 缓存键：提示词全文 + 模型名的 sha256
+
+
+def _cache_key(system: str, user: str, model: str) -> str:
+    return hashlib.sha256(json.dumps([system, user, model], ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _plan_type(typ: str, mentions: dict[str, Mention], model: str) -> tuple[list[str], list[_Batch]]:
+    """一个类型要发给模型的各批。返回 (锚点, 各批)；只有一批时没有锚点。"""
     names = sorted(mentions, key=lambda n: (-mentions[n].count, n))
-    if len(names) < 2:
-        return []
-    groups: list[dict] = []
-    for i, chunk in enumerate(chunk_names(names, MAX_NAMES_PER_CALL, ANCHOR_NAMES), 1):
-        allowed = set(chunk)
+    chunks = chunk_names(names, MAX_NAMES_PER_CALL, ANCHOR_NAMES, hint_pairs(names, limit=None))
+    anchors = names[:ANCHOR_NAMES] if len(chunks) > 1 else []
+    batches = []
+    for no, chunk in enumerate(chunks, 1):
         system, user = render(
             "entities",
             type_label=TYPE_LABELS[typ],
             names=_name_lines(chunk, mentions),
             hints=_hint_lines(hint_pairs(chunk)),
         )
-        data, _ = await client.chat_json(
-            "synth", system, user, lambda d, allowed=allowed: check_groups(d, allowed), tag=f"entities/{typ}-{i}"
-        )
-        groups.extend(clean_groups(data, allowed))
-    return merge_groups(groups, {n: m.count for n, m in mentions.items()})
+        batches.append(_Batch(typ, no, chunk, system, user, _cache_key(system, user, model)))
+    return anchors, batches
+
+
+def _load_cache(book: Book) -> dict[str, dict]:
+    """缓存坏了就当没有：大不了重新调一遍模型。"""
+    try:
+        data = read_json(book.entities_cache_path, {})
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, dict)}
 
 
 def _scenes_of(names: list[str], mentions: dict[str, Mention]) -> list[str]:
@@ -247,8 +379,60 @@ def _entity(num: int, typ: str, canonical: str, names: list[str], status: str, r
     }
 
 
+_ID = re.compile(r"E-(\d+)")
+
+
+def _id_num(eid) -> int:
+    m = _ID.fullmatch(eid) if isinstance(eid, str) else None
+    return int(m.group(1)) if m else 0
+
+
+def _locked_names(data: dict) -> set[tuple[str, str]]:
+    return {(e["type"], n) for e in data["entities"] if e.get("status") not in RECOMPUTED for n in e["names"]}
+
+
 def _signature(data: dict) -> list:
-    return sorted((e["type"], e["canonical"], tuple(sorted(e["names"])), e["status"]) for e in data["entities"])
+    return sorted(
+        (e["type"], e["canonical"], tuple(sorted(e["names"])), str(e.get("status"))) for e in data["entities"]
+    )
+
+
+def _assemble(old: dict, mentions: dict[str, dict[str, Mention]], groups: dict[str, list[dict]]) -> dict:
+    """用刚读到的 实体.json 和模型的分组拼出新结果。锁定的实体原样保留（只刷新场景）；
+    其余名字组成草稿组或 single。和旧文件里同类型、名字集合完全相同的草稿/single 沿用原编号，
+    新的从只增不减的 next_id 取。"""
+    kept = [e for e in old["entities"] if e.get("status") not in RECOMPUTED]
+    locked = _locked_names(old)
+    reuse = {
+        (e["type"], frozenset(e["names"])): _id_num(e.get("id"))
+        for e in old["entities"]
+        if e.get("status") in RECOMPUTED and _id_num(e.get("id"))
+    }
+    top = max((_id_num(e.get("id")) for e in old["entities"]), default=0)
+    next_id = max(old.get("next_id", 0), top + 1)
+    entities = [{**e, "scenes": _scenes_of(e["names"], mentions.get(e["type"], {}))} for e in kept]
+
+    def number(typ: str, names: list[str]) -> int:
+        nonlocal next_id
+        num = reuse.pop((typ, frozenset(names)), None)
+        if num is None:
+            num, next_id = next_id, next_id + 1
+        return num
+
+    for typ in TYPES:
+        ms = mentions[typ]
+        free = {n for n in ms if (typ, n) not in locked}
+        grouped: set[str] = set()
+        for g in groups.get(typ, []):
+            members = [n for n in g["members"] if n in free]
+            if len(members) < 2:
+                continue
+            canonical = g["canonical"] if g["canonical"] in members else members[0]
+            entities.append(_entity(number(typ, members), typ, canonical, members, DRAFT, g["reason"], ms))
+            grouped.update(members)
+        for n in sorted(free - grouped, key=lambda n: (-ms[n].count, n)):
+            entities.append(_entity(number(typ, [n]), typ, n, [n], SINGLE, "", ms))
+    return {"next_id": next_id, "entities": entities}
 
 
 def run_entities(book: Book, client: LLMClient, progress: Progress = _noop) -> dict:
@@ -257,40 +441,87 @@ def run_entities(book: Book, client: LLMClient, progress: Progress = _noop) -> d
 
 async def _run_entities(book: Book, client: LLMClient, progress: Progress) -> dict:
     mentions = collect_mentions(book)
-    old = read_json(book.entities_path, {"entities": []})
-    confirmed = [e for e in old["entities"] if e["status"] == CONFIRMED]
-    locked = {(e["type"], n) for e in confirmed for n in e["names"]}
-    next_num = max((int(e["id"][2:]) for e in old["entities"]), default=0) + 1
-    entities = [{**e, "scenes": _scenes_of(e["names"], mentions[e["type"]])} for e in confirmed]
-    progress(0, len(TYPES))
+    model = client.tier("synth").model
+    # 这里读 实体.json 只为决定哪些类型不用调模型；拼结果时等模型全部调完再重新读。
+    locked_now = _locked_names(read_json(book.entities_path, {"entities": []}))
+    plans: dict[str, tuple[list[str], list[_Batch]]] = {}
+    for typ in TYPES:
+        free = [n for n in mentions[typ] if (typ, n) not in locked_now]
+        if len(free) >= 2:
+            plans[typ] = _plan_type(typ, mentions[typ], model)
+    batches = [b for _, bs in plans.values() for b in bs]
+
+    cache = _load_cache(book)
+    used: set[str] = set()
+    results: dict[tuple[str, int], list[dict]] = {}
+    failed: list[dict] = []
+    unresolved: list[dict] = []
+    done = 0
+    progress(0, len(batches))
+
+    async def one(b: _Batch) -> None:
+        nonlocal done
+        allowed = set(b.names)
+        entry = cache.get(b.key)
+        if entry is None:
+            try:
+                data, problems = await client.chat_json(
+                    "synth", b.system, b.user, lambda d: check_groups(d, allowed), tag=f"entities/{b.typ}-{b.no}"
+                )
+            except FatalLLMError:
+                raise
+            except LLMError as e:  # 这一批不贡献分组，整步不失败
+                failed.append({"type": b.typ, "chunk": b.no, "error": str(e)})
+            else:
+                entry = cache[b.key] = {"groups": clean_groups(data, allowed), "problems": problems}
+                write_json(book.entities_cache_path, cache)
+        if entry is not None:
+            used.add(b.key)
+            results[(b.typ, b.no)] = clean_groups(entry, allowed)
+            if entry.get("problems"):
+                unresolved.append({"type": b.typ, "chunk": b.no, "problems": list(entry["problems"])[:5]})
+        done += 1
+        progress(done, len(batches))  # 暂停检查点：已经做完的批都在缓存里
+
     try:
-        for i, typ in enumerate(TYPES, 1):
-            ms = mentions[typ]
-            free = {n for n in ms if (typ, n) not in locked}
-            grouped: set[str] = set()
-            for g in await cluster_type(client, typ, ms):
-                members = [n for n in g["members"] if n in free]
-                if len(members) < 2:
-                    continue
-                canonical = g["canonical"] if g["canonical"] in members else members[0]
-                entities.append(_entity(next_num, typ, canonical, members, DRAFT, g["reason"], ms))
-                next_num += 1
-                grouped.update(members)
-            for n in sorted(free - grouped, key=lambda n: (-ms[n].count, n)):
-                entities.append(_entity(next_num, typ, n, [n], SINGLE, "", ms))
-                next_num += 1
-            progress(i, len(TYPES))
+        async with asyncio.TaskGroup() as tg:
+            for b in batches:
+                tg.create_task(one(b))
+    except BaseExceptionGroup as eg:
+        # 欠费/key 失效（FatalLLMError）要让作者看到，不能被「已暂停」（JobCancelled）盖住
+        fatal = [e for e in eg.exceptions if isinstance(e, FatalLLMError)]
+        raise (fatal or list(eg.exceptions))[0] from None
     finally:
         u = client.usage
         book.add_usage("entities", u.calls, u.prompt_tokens, u.completion_tokens, u.cost(client.cfg))
-    data = {"entities": entities}
+
+    groups: dict[str, list[dict]] = {}
+    conflicts: list[dict] = []
+    for typ, (anchors, bs) in plans.items():
+        counts = {n: m.count for n, m in mentions[typ].items()}
+        groups[typ], conf = merge_groups([results.get((typ, b.no)) for b in bs], counts, anchors)
+        conflicts += [{"type": typ, **c} for c in conf]
+
+    old = read_json(book.entities_path, {"entities": []})
+    data = _assemble(old, mentions, groups)
     changed = _signature(old) != _signature(data)
     write_json(book.entities_path, data)
+    if set(cache) - used:  # 跑成功了，这次没用到的缓存条目清掉，免得越积越多
+        write_json(book.entities_cache_path, {k: v for k, v in cache.items() if k in used})
+
+    def by_chunk(x: dict) -> tuple[int, int]:
+        return TYPES.index(x["type"]), x["chunk"]
+
+    ents = data["entities"]
     summary = {
         "names": sum(len(v) for v in mentions.values()),
-        "entities": len(entities),
-        "draft_groups": sum(e["status"] == DRAFT for e in entities),
-        "confirmed": len(confirmed),
+        "entities": len(ents),
+        "draft_groups": sum(e.get("status") == DRAFT for e in ents),
+        "confirmed": sum(e.get("status") not in RECOMPUTED for e in ents),
+        "chunks": len(batches),
+        "failed_chunks": sorted(failed, key=by_chunk),
+        "conflicts": conflicts,
+        "unresolved": sorted(unresolved, key=by_chunk),
         "calls": client.usage.calls,
         "cost_usd": round(client.usage.cost(client.cfg), 4),
     }

@@ -78,6 +78,11 @@ class Book:
         return self.root / "实体.json"
 
     @property
+    def entities_cache_path(self) -> Path:
+        """实体合并每一批模型结果的缓存：暂停、失败后重跑，做完的批不用再花钱。"""
+        return self.root / "实体合并缓存.json"
+
+    @property
     def logs_dir(self) -> Path:
         return self.root / "日志"
 
