@@ -50,6 +50,19 @@ def test_long_summary():
     assert check_card(with_(summary="长" * 201), TEXT) != []
 
 
+# --- R2: summary 为空（null 或只有空白）也算问题 ---
+
+
+def test_null_summary_is_a_problem():
+    problems = check_card(with_(summary=None), TEXT)
+    assert len(problems) == 1 and "summary" in problems[0] and "空" in problems[0]
+
+
+def test_whitespace_only_summary_is_a_problem():
+    problems = check_card(with_(summary="   "), TEXT)
+    assert len(problems) == 1 and "空" in problems[0]
+
+
 def test_clean_card_drops_unverifiable_items():
     data = with_(
         pov="张三",
@@ -104,6 +117,37 @@ def test_number_value_coerced_to_string():
     assert card.facts[0].value == "16"
 
 
+# --- R3: Fact 的 attribute/value/quote 为 null 或缺失时当成空字符串，不算格式错；
+# 列表字段里的 None 元素直接过滤掉；characters[i].name 为 None 静默丢掉 ---
+
+
+def test_fact_value_null_is_not_a_format_error():
+    data = with_(facts=[{"subject": "林清", "attribute": "年龄", "value": None, "quote": "林清年方十六"}])
+    card = Card.model_validate(data)
+    assert card.facts[0].value == ""
+
+
+def test_fact_missing_quote_is_not_a_format_error_and_gets_reported_as_too_short():
+    data = with_(facts=[{"subject": "林清", "attribute": "年龄", "value": "十六"}])
+    card = Card.model_validate(data)
+    assert card.facts[0].quote == ""
+    problems = check_card(data, TEXT)
+    assert len(problems) == 1 and "太短" in problems[0]
+
+
+def test_events_null_element_is_filtered_out():
+    data = with_(events=[None, "赵五来了"])
+    card = Card.model_validate(data)
+    assert card.events == ["赵五来了"]
+
+
+def test_character_name_null_is_silently_dropped():
+    data = with_(characters=[{"name": None, "role": "主要"}])
+    card = Card.model_validate(data)
+    assert card.characters == []
+    assert check_card(data, TEXT) == []
+
+
 # --- A2: fact 的 subject 也要核对 ---
 
 
@@ -132,6 +176,23 @@ def test_clean_card_drops_facts_whose_subject_name_was_dropped():
     assert "孙悟空" in dropped["names"]
 
 
+# --- R4: subject 去标点后是空串的 fact，不能静默丢——check_card 要报出来，
+# clean_card 要放进 dropped，不能悄无声息地消失 ---
+
+
+def test_fact_with_punctuation_only_subject_is_reported_as_a_problem():
+    data = with_(facts=[{"subject": "，", "attribute": "a", "value": "v", "quote": "林清年方十六"}])
+    problems = check_card(data, TEXT)
+    assert len(problems) == 1 and "subject" in problems[0]
+
+
+def test_clean_card_drops_fact_with_punctuation_only_subject_into_dropped():
+    data = with_(facts=[{"subject": "，", "attribute": "a", "value": "v", "quote": "林清年方十六"}])
+    card, dropped = clean_card(Card.model_validate(data), TEXT)
+    assert card.facts == []
+    assert dropped["facts"] == [{"subject": "", "attribute": "a", "value": "v", "quote": "林清年方十六"}]
+
+
 # --- A3: quote 太短（去空白标点后 < 4 字）也算问题 ---
 
 
@@ -145,6 +206,21 @@ def test_clean_card_drops_short_quote():
     data = with_(facts=[{"subject": "林清", "attribute": "称呼", "value": "是", "quote": "是"}])
     card, dropped = clean_card(Card.model_validate(data), TEXT)
     assert card.facts == [] and dropped["facts"][0]["quote"] == "是"
+
+
+# --- R6: 空串 / 纯标点的 quote 都报问题（太短） ---
+
+
+def test_empty_quote_is_a_problem():
+    data = with_(facts=[{"subject": "林清", "attribute": "a", "value": "v", "quote": ""}])
+    problems = check_card(data, TEXT)
+    assert len(problems) == 1 and "太短" in problems[0]
+
+
+def test_punctuation_only_quote_is_a_problem():
+    data = with_(facts=[{"subject": "林清", "attribute": "a", "value": "v", "quote": "，。！？"}])
+    problems = check_card(data, TEXT)
+    assert len(problems) == 1 and "太短" in problems[0]
 
 
 # --- A5: 全角半角、大小写都要能对上 ---
@@ -192,7 +268,7 @@ def test_clean_card_truncates_long_summary():
 import pytest
 from helpers import FakeBackend, card_reply, fake_ai_handler, scene_text_from
 
-from ligaotai.cards import load_card, run_cards
+from ligaotai.cards import load_card, pick_error, run_cards
 from ligaotai.config import AppConfig
 from ligaotai.importer import run_import
 from ligaotai.jobs import JobCancelled
@@ -303,7 +379,12 @@ def test_unverifiable_items_dropped_after_retries(story_book):
     assert c.usage.calls == 3 + 2
 
 
-# --- B1：异常组里 Fatal 优先于 Cancelled ---
+# --- B1/R5：异常组里 Fatal 优先于 Cancelled ---
+
+
+def test_pick_error_prefers_fatal_over_cancelled():
+    eg = BaseExceptionGroup("x", [JobCancelled(), FatalLLMError("x")])
+    assert isinstance(pick_error(eg), FatalLLMError)
 
 
 def test_fatal_error_wins_over_cancelled_in_exception_group(story_book):

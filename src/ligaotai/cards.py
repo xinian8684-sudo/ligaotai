@@ -63,7 +63,9 @@ class Character(BaseModel):
             data = {"name": data}
         if isinstance(data, dict):
             data = dict(data)
-            if isinstance(data.get("name"), str):
+            if data.get("name") is None:
+                data["name"] = ""
+            elif isinstance(data.get("name"), str):
                 data["name"] = strip_edges(data["name"])
             if data.get("role") not in ("主要", "次要", "提及"):
                 data["role"] = "提及"
@@ -79,10 +81,17 @@ class Fact(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _strip_subject(cls, data: Any) -> Any:
-        if isinstance(data, dict) and isinstance(data.get("subject"), str):
-            data = dict(data)
+    def _lenient(cls, data: Any) -> Any:
+        """subject 去首尾标点；attribute / value / quote 缺失或为 null 时当成空字符串——
+        quote 空了会被 A3 判太短，3 次后只丢这一条 fact，不会让整张卡格式错。"""
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        if isinstance(data.get("subject"), str):
             data["subject"] = strip_edges(data["subject"])
+        for name in ("attribute", "value", "quote"):
+            if data.get(name) is None:
+                data[name] = ""
         return data
 
 
@@ -130,8 +139,10 @@ class Card(BaseModel):
                 else:
                     data[name] = info.get_default(call_default_factory=True)
                 continue
-            if get_origin(ann) is list and not isinstance(value, list):
-                data[name] = [value]
+            if get_origin(ann) is list:
+                if not isinstance(value, list):
+                    value = [value]
+                data[name] = [v for v in value if v is not None]
         return data
 
     @model_validator(mode="after")
@@ -142,7 +153,9 @@ class Card(BaseModel):
         self.locations = [n for n in (strip_edges(x) for x in self.locations) if n]
         self.organizations = [n for n in (strip_edges(x) for x in self.organizations) if n]
         self.characters = [c for c in self.characters if c.name]
-        self.facts = [f for f in self.facts if f.subject]
+        # facts 不在这里按 subject 过滤：subject 去标点后是空串的 fact 要留到
+        # check_card / clean_card 里当成 subject 问题处理（报出来 + 进 dropped），
+        # 不能在这里就静默丢掉，否则问题不会被报出来（R4）。
         return self
 
 
@@ -162,6 +175,10 @@ def _in_text(s: str, body: str) -> bool:
     return bool(n) and n in body
 
 
+def _quote_len_ok(quote: str) -> bool:
+    return len(cards_normalize(quote)) >= MIN_QUOTE_LEN
+
+
 def _quote_ok(quote: str, body: str) -> bool:
     n = cards_normalize(quote)
     return len(n) >= MIN_QUOTE_LEN and n in body
@@ -174,11 +191,16 @@ def check_card(data: dict, text: str) -> list[str]:
         return [f"字段格式不对：{brief_errors(e)}"]
     body = cards_normalize(text)
     problems = []
+    if not card.summary.strip():
+        problems.append("summary 是空的，请写一句话概括这一段")
     if len(card.summary) > SUMMARY_LIMIT:
         problems.append("summary 太长了，请压到 150 字以内")
-    bad_quotes = [f.quote for f in card.facts if not _quote_ok(f.quote, body)]
-    if bad_quotes:
-        problems.append("这些 quote 不是从原文逐字复制的（或太短，没法核对）：" + "；".join(bad_quotes[:5]))
+    short_quotes = [f.quote for f in card.facts if not _quote_len_ok(f.quote)]
+    if short_quotes:
+        problems.append("这些 quote 太短（至少 4 个字）：" + "；".join(short_quotes[:5]))
+    not_verbatim = [f.quote for f in card.facts if _quote_len_ok(f.quote) and not _quote_ok(f.quote, body)]
+    if not_verbatim:
+        problems.append("这些 quote 不是从原文逐字复制的：" + "；".join(not_verbatim[:5]))
     bad_names = sorted({n for n in card_names(card) if not _in_text(n, body)})
     if bad_names:
         problems.append("这些名字在原文里找不到，请照原文的写法：" + "、".join(bad_names[:10]))
@@ -302,6 +324,14 @@ async def make_card(book: Book, client: LLMClient, scene: Scene) -> dict:
     return record
 
 
+def pick_error(eg: BaseExceptionGroup) -> BaseException:
+    """异常组里如果同时有 FatalLLMError（欠费/key 失效）和别的异常（比如 JobCancelled
+    表示已暂停），优先返回 FatalLLMError——不能让「已暂停」盖住作者需要看到的欠费/key 问题。
+    没有 Fatal 就返回第一个异常。"""
+    fatal = [e for e in eg.exceptions if isinstance(e, FatalLLMError)]
+    return (fatal or list(eg.exceptions))[0]
+
+
 def run_cards(
     book: Book, client: LLMClient, progress: Progress = _noop, only: list[str] | None = None
 ) -> dict:
@@ -343,10 +373,7 @@ async def _run_cards(book: Book, client: LLMClient, progress: Progress, only: li
             for scene in todo:
                 tg.create_task(one(scene))
     except BaseExceptionGroup as eg:
-        # 欠费/key 失效（FatalLLMError）要让作者看到，不能被「已暂停」（JobCancelled）盖住：
-        # 两种异常同时出现在异常组里时，优先抛 FatalLLMError。
-        fatal = [e for e in eg.exceptions if isinstance(e, FatalLLMError)]
-        raise (fatal or list(eg.exceptions))[0] from None
+        raise pick_error(eg) from None
     finally:
         u = client.usage
         book.add_usage("cards", u.calls, u.prompt_tokens, u.completion_tokens, u.cost(client.cfg))
