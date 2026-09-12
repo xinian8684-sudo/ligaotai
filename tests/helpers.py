@@ -106,13 +106,17 @@ def card_reply(text: str) -> str:
     lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
     first = lines[1] if len(lines) > 1 else (lines[0] if lines else "")
     quote = first[:6]
+    persons = [n for n in CARD_PERSONS if n in text]
+    # fact 的 subject 也要能在原文里核对（cards.py A2），不能再用「某人」这种编出来的占位名字，
+    # 否则 check_card 会一直报问题、run_cards 的用量断言全部要重跑。用片段里真实出现的人名。
+    subject = persons[0] if persons else None
     card = {
         "summary": "测试摘要。",
         "pov": "",
-        "characters": [{"name": n, "role": "主要"} for n in CARD_PERSONS if n in text],
+        "characters": [{"name": n, "role": "主要"} for n in persons],
         "locations": [n for n in CARD_PLACES if n in text],
         "organizations": [n for n in CARD_ORGS if n in text],
-        "facts": [{"subject": "某人", "attribute": "原文", "value": quote, "quote": quote}] if quote else [],
+        "facts": [{"subject": subject, "attribute": "原文", "value": quote, "quote": quote}] if quote and subject else [],
         "kind": "正文",
     }
     return json.dumps(card, ensure_ascii=False)

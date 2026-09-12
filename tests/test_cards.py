@@ -1,4 +1,4 @@
-from ligaotai.cards import Card, check_card, clean_card
+from ligaotai.cards import Card, Character, check_card, clean_card
 
 TEXT = "第一章 雪夜\n林清年方十六，住在青州城外。那一年冬天，赵五来了。"
 GOOD = {
@@ -64,7 +64,129 @@ def test_clean_card_drops_unverifiable_items():
     assert [c.name for c in card.characters] == ["林清"]
     assert card.locations == ["青州城外"] and card.pov == ""
     assert [f.quote for f in card.facts] == ["林清年方十六"]
-    assert dropped == {"facts": ["林清年方十七"], "names": ["孙悟空", "张三", "花果山"]}
+    # A8：dropped 里的 facts 存整条 fact（dict），不再只存 quote 字符串。
+    assert dropped == {
+        "facts": [{"subject": "林清", "attribute": "年龄", "value": "十七", "quote": "林清年方十七"}],
+        "names": ["孙悟空", "张三", "花果山"],
+    }
+
+
+# --- A1: 宽松 validator ---
+
+
+def test_null_fields_become_defaults():
+    data = with_(pov=None, locations=None, incomplete=None, world_hint=None)
+    card = Card.model_validate(data)
+    assert card.pov == "" and card.locations == [] and card.incomplete is False and card.world_hint == ""
+
+
+def test_list_field_given_single_string_is_wrapped():
+    data = with_(locations="青州城外")
+    card = Card.model_validate(data)
+    assert card.locations == ["青州城外"]
+
+
+def test_character_as_bare_string_becomes_dict():
+    data = with_(characters=["林清"])
+    card = Card.model_validate(data)
+    assert card.characters == [Character(name="林清", role="提及")]
+
+
+def test_bad_role_falls_back_to_mentioned():
+    data = with_(characters=[{"name": "林清", "role": "路人"}])
+    card = Card.model_validate(data)
+    assert card.characters[0].role == "提及"
+
+
+def test_number_value_coerced_to_string():
+    data = with_(facts=[{"subject": "林清", "attribute": "年龄", "value": 16, "quote": "林清年方十六"}])
+    card = Card.model_validate(data)
+    assert card.facts[0].value == "16"
+
+
+# --- A2: fact 的 subject 也要核对 ---
+
+
+def test_fact_subject_not_in_text_or_names_is_a_problem():
+    data = with_(facts=[{"subject": "某人", "attribute": "年龄", "value": "十六", "quote": "林清年方十六"}])
+    problems = check_card(data, TEXT)
+    assert len(problems) == 1 and "某人" in problems[0]
+
+
+def test_fact_subject_matching_a_card_name_does_not_double_report():
+    # subject 是本卡自己列出的一个名字（哪怕这名字本身也没在原文里核对通过），
+    # 不该再单独报一次「subject 找不到」——名字本身的问题已经由 bad_names 报过一次了。
+    data = with_(pov="张三", facts=[{"subject": "张三", "attribute": "关系", "value": "路人", "quote": "赵五来了"}])
+    problems = check_card(data, TEXT)
+    assert len(problems) == 1 and "张三" in problems[0]
+
+
+def test_clean_card_drops_facts_whose_subject_name_was_dropped():
+    data = with_(
+        characters=[{"name": "林清", "role": "主要"}, {"name": "孙悟空", "role": "提及"}],
+        facts=[{"subject": "孙悟空", "attribute": "来历", "value": "不明", "quote": "赵五来了"}],
+    )
+    card, dropped = clean_card(Card.model_validate(data), TEXT)
+    assert card.facts == []
+    assert dropped["facts"] == [{"subject": "孙悟空", "attribute": "来历", "value": "不明", "quote": "赵五来了"}]
+    assert "孙悟空" in dropped["names"]
+
+
+# --- A3: quote 太短（去空白标点后 < 4 字）也算问题 ---
+
+
+def test_short_quote_is_a_problem():
+    data = with_(facts=[{"subject": "林清", "attribute": "称呼", "value": "他", "quote": "他"}])
+    problems = check_card(data, TEXT)
+    assert len(problems) == 1 and "他" in problems[0]
+
+
+def test_clean_card_drops_short_quote():
+    data = with_(facts=[{"subject": "林清", "attribute": "称呼", "value": "是", "quote": "是"}])
+    card, dropped = clean_card(Card.model_validate(data), TEXT)
+    assert card.facts == [] and dropped["facts"][0]["quote"] == "是"
+
+
+# --- A5: 全角半角、大小写都要能对上 ---
+
+
+ENGLISH_TEXT = "第一章 异客\nTom住在青州城外，Lin是他的朋友。"
+
+
+def test_fullwidth_and_case_insensitive_name_match():
+    data = with_(characters=[{"name": "ｔｏｍ", "role": "主要"}], locations=[], organizations=[], facts=[], pov="")
+    assert check_card(data, ENGLISH_TEXT) == []
+
+
+# --- A6/A7: 名字去首尾标点；去完是空串静默丢掉 ---
+
+
+def test_name_with_trailing_punctuation_matches():
+    data = with_(characters=[{"name": "林清，", "role": "主要"}])
+    card = Card.model_validate(data)
+    assert card.characters[0].name == "林清"
+    assert check_card(data, TEXT) == []
+
+
+def test_blank_or_punctuation_only_names_are_silently_dropped():
+    data = with_(
+        characters=[{"name": "", "role": "主要"}, {"name": "，。！", "role": "提及"}],
+        locations=["", "——"],
+        pov="…",
+    )
+    card = Card.model_validate(data)
+    assert card.characters == [] and card.locations == [] and card.pov == ""
+    # 静默丢掉：不报问题，也不出现在 dropped 里（dropped 是 clean_card 的产物，这里连 check_card 都不该报问题）
+    assert check_card(data, TEXT) == []
+
+
+# --- A9: summary 截断到 SUMMARY_LIMIT ---
+
+
+def test_clean_card_truncates_long_summary():
+    data = with_(summary="长" * 250)
+    card, _ = clean_card(Card.model_validate(data), TEXT)
+    assert len(card.summary) == 200
 
 
 import pytest
@@ -140,11 +262,16 @@ def test_cancel_keeps_finished_cards(story_book):
 
     with pytest.raises(JobCancelled):
         run_cards(story_book, client_for(story_book, concurrency=1), progress)
-    assert len(list(story_book.cards_dir.glob("S-*.json"))) == 1
+    # B2：卡数依赖调度细节（FakeBackend 没有真等待，可能不止 1 张已经写完），
+    # 只断言「至少写了 1 张、没写完全部 3 张」，别死抠具体数字。
+    n = len(list(story_book.cards_dir.glob("S-*.json")))
+    assert 1 <= n < 3
+    # B2：异常路径（暂停）也要记进用量，不能因为中途抛异常就漏记这次已经花掉的调用。
+    assert story_book.load()["usage"]["by_step"]["cards"]["calls"] >= 1
 
     c = client_for(story_book)
     run_cards(story_book, c)
-    assert c.usage.calls == 2
+    assert c.usage.calls == 3 - n
 
 
 def test_only_regenerates_given_scene(story_book):
@@ -167,7 +294,61 @@ def test_unverifiable_items_dropped_after_retries(story_book):
     c = client_for(story_book, handler)
     s = run_cards(story_book, c)
     record = load_card(story_book, "S-0001")
-    assert record["problems"] and record["dropped"] == {"facts": ["不存在的话"], "names": ["孙悟空"]}
+    assert record["problems"] and record["dropped"] == {
+        "facts": [{"subject": "林清", "attribute": "a", "value": "v", "quote": "不存在的话"}],
+        "names": ["孙悟空"],
+    }
     assert record["card"]["characters"] == [{"name": "林清", "role": "主要"}]
     assert s["with_problems"] == 1
     assert c.usage.calls == 3 + 2
+
+
+# --- B1：异常组里 Fatal 优先于 Cancelled ---
+
+
+def test_fatal_error_wins_over_cancelled_in_exception_group(story_book):
+    def handler(tier, messages):
+        text = scene_text_from(messages)
+        if "天机阁" in text:
+            class Denied(Exception):
+                status_code = 401
+
+            raise Denied("no balance")
+        return card_reply(text)
+
+    def progress(done, total):
+        if done >= 1:
+            raise JobCancelled()
+
+    with pytest.raises(FatalLLMError):
+        run_cards(story_book, client_for(story_book, handler), progress)
+
+
+# --- B3：坏卡文件不能把整个步骤炸掉 ---
+
+
+def test_corrupt_card_file_is_treated_as_missing_and_redone(story_book):
+    run_cards(story_book, client_for(story_book))
+    (story_book.cards_dir / "S-0002.json").write_text("", encoding="utf-8")
+    c = client_for(story_book)
+    s = run_cards(story_book, c)
+    assert c.usage.calls == 1 and s["written"] == 1 and s["fresh"] == 3
+    assert load_card(story_book, "S-0002") is not None
+
+
+def test_not_a_dict_card_file_is_treated_as_missing_and_redone(story_book):
+    run_cards(story_book, client_for(story_book))
+    (story_book.cards_dir / "S-0003.json").write_text("[1, 2, 3]", encoding="utf-8")
+    c = client_for(story_book)
+    s = run_cards(story_book, c)
+    assert c.usage.calls == 1 and s["written"] == 1 and s["fresh"] == 3
+
+
+# --- B4：only 里给了不存在/已删除的场景编号，要记进 failed，不能静默忽略 ---
+
+
+def test_only_with_unknown_scene_is_recorded_as_failed(story_book):
+    c = client_for(story_book)
+    s = run_cards(story_book, c, only=["S-9999"])
+    assert s["failed"] == [{"id": "S-9999", "error": "场景不存在或已删除"}]
+    assert c.usage.calls == 0 and s["written"] == 0
