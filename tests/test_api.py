@@ -90,7 +90,9 @@ def test_import_own_book_folder_is_400(client, tmp_path):
 
 def test_errors(client, src):
     client.post("/api/books", json={"title": "我的书"})
-    assert client.post("/api/books/我的书/steps/cards/run").status_code == 400
+    # threads 是计划②b 才做的步骤，现在还不能跑；cards 从任务 12 起是合法步骤名
+    # （上游没做完时返回 409，见 test_entities_need_cards_first 之类的测试）。
+    assert client.post("/api/books/我的书/steps/threads/run").status_code == 400
     assert client.post("/api/books/我的书/import", json={"folder": str(src / "没有")}).status_code == 400
     assert client.get("/api/books/我的书/scenes/..%2Fbook").status_code == 404
     assert client.get("/api/books/我的书/scenes/S-0001").status_code == 404
