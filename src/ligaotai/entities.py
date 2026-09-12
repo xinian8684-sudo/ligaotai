@@ -40,7 +40,8 @@ MAX_NAMES_PER_CALL = 600
 ANCHOR_NAMES = 150
 HINT_LIMIT = 300
 AFFIXES = (
-    "大人", "姑娘", "公子", "先生", "夫人", "娘子", "小姐", "大哥", "師父", "师父", "師兄", "师兄", "師弟", "师弟",
+    "大人", "姑娘", "公子", "先生", "夫人", "娘子", "小姐", "大哥", "阿哥", "大姐", "阿姐", "小哥", "小妹",
+    "師父", "师父", "師兄", "师兄", "師弟", "师弟", "師妹", "师妹",
     "長老", "长老", "大王", "老爺", "老爷", "兄", "哥", "姐", "妹", "兒", "儿", "阿", "老", "小",
 )
 NICK_PREFIXES = ("阿", "小")
@@ -329,11 +330,14 @@ class _Batch:
     key: str  # 缓存键：提示词全文 + 模型名的 sha256
 
 
-def _cache_key(system: str, user: str, model: str) -> str:
-    return hashlib.sha256(json.dumps([system, user, model], ensure_ascii=False).encode("utf-8")).hexdigest()
+def _cache_key(system: str, user: str, synth_cfg: dict) -> str:
+    """提示词全文 + 综合档完整配置（模型、思考开关/强度等）。改思考设置也要重新调模型。"""
+    return hashlib.sha256(
+        json.dumps([system, user, synth_cfg], ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
 
-def _plan_type(typ: str, mentions: dict[str, Mention], model: str) -> tuple[list[str], list[_Batch]]:
+def _plan_type(typ: str, mentions: dict[str, Mention], synth_cfg: dict) -> tuple[list[str], list[_Batch]]:
     """一个类型要发给模型的各批。返回 (锚点, 各批)；只有一批时没有锚点。"""
     names = sorted(mentions, key=lambda n: (-mentions[n].count, n))
     chunks = chunk_names(names, MAX_NAMES_PER_CALL, ANCHOR_NAMES, hint_pairs(names, limit=None))
@@ -346,19 +350,23 @@ def _plan_type(typ: str, mentions: dict[str, Mention], model: str) -> tuple[list
             names=_name_lines(chunk, mentions),
             hints=_hint_lines(hint_pairs(chunk)),
         )
-        batches.append(_Batch(typ, no, chunk, system, user, _cache_key(system, user, model)))
+        batches.append(_Batch(typ, no, chunk, system, user, _cache_key(system, user, synth_cfg)))
     return anchors, batches
 
 
 def _load_cache(book: Book) -> dict[str, dict]:
-    """缓存坏了就当没有：大不了重新调一遍模型。"""
+    """缓存坏了就当没有：大不了重新调一遍模型。条目里 groups/problems 形状不对的也丢掉。"""
     try:
         data = read_json(book.entities_cache_path, {})
     except (OSError, ValueError):
         return {}
     if not isinstance(data, dict):
         return {}
-    return {k: v for k, v in data.items() if isinstance(v, dict)}
+    return {
+        k: v
+        for k, v in data.items()
+        if isinstance(v, dict) and isinstance(v.get("groups"), list) and isinstance(v.get("problems"), list)
+    }
 
 
 def _scenes_of(names: list[str], mentions: dict[str, Mention]) -> list[str]:
@@ -387,6 +395,15 @@ def _id_num(eid) -> int:
     return int(m.group(1)) if m else 0
 
 
+def _next_id(data: dict) -> int:
+    """下一个可用编号：取文件顶层 next_id；缺失或不是 int 时按现有最大编号 + 1 兜底。"""
+    top = max((_id_num(e.get("id")) for e in data["entities"]), default=0)
+    n = data.get("next_id")
+    if not isinstance(n, int):
+        n = 0
+    return max(n, top + 1)
+
+
 def _locked_names(data: dict) -> set[tuple[str, str]]:
     return {(e["type"], n) for e in data["entities"] if e.get("status") not in RECOMPUTED for n in e["names"]}
 
@@ -408,8 +425,7 @@ def _assemble(old: dict, mentions: dict[str, dict[str, Mention]], groups: dict[s
         for e in old["entities"]
         if e.get("status") in RECOMPUTED and _id_num(e.get("id"))
     }
-    top = max((_id_num(e.get("id")) for e in old["entities"]), default=0)
-    next_id = max(old.get("next_id", 0), top + 1)
+    next_id = _next_id(old)
     entities = [{**e, "scenes": _scenes_of(e["names"], mentions.get(e["type"], {}))} for e in kept]
 
     def number(typ: str, names: list[str]) -> int:
@@ -441,14 +457,14 @@ def run_entities(book: Book, client: LLMClient, progress: Progress = _noop) -> d
 
 async def _run_entities(book: Book, client: LLMClient, progress: Progress) -> dict:
     mentions = collect_mentions(book)
-    model = client.tier("synth").model
+    synth_cfg = client.tier("synth").model_dump()
     # 这里读 实体.json 只为决定哪些类型不用调模型；拼结果时等模型全部调完再重新读。
     locked_now = _locked_names(read_json(book.entities_path, {"entities": []}))
     plans: dict[str, tuple[list[str], list[_Batch]]] = {}
     for typ in TYPES:
         free = [n for n in mentions[typ] if (typ, n) not in locked_now]
         if len(free) >= 2:
-            plans[typ] = _plan_type(typ, mentions[typ], model)
+            plans[typ] = _plan_type(typ, mentions[typ], synth_cfg)
     batches = [b for _, bs in plans.values() for b in bs]
 
     cache = _load_cache(book)
@@ -474,7 +490,10 @@ async def _run_entities(book: Book, client: LLMClient, progress: Progress) -> di
                 failed.append({"type": b.typ, "chunk": b.no, "error": str(e)})
             else:
                 entry = cache[b.key] = {"groups": clean_groups(data, allowed), "problems": problems}
-                write_json(book.entities_cache_path, cache)
+                try:
+                    write_json(book.entities_cache_path, cache)
+                except OSError:
+                    pass  # 缓存写失败不该让已经花了钱的这次调用也跟着失败
         if entry is not None:
             used.add(b.key)
             results[(b.typ, b.no)] = clean_groups(entry, allowed)
@@ -507,7 +526,10 @@ async def _run_entities(book: Book, client: LLMClient, progress: Progress) -> di
     changed = _signature(old) != _signature(data)
     write_json(book.entities_path, data)
     if set(cache) - used:  # 跑成功了，这次没用到的缓存条目清掉，免得越积越多
-        write_json(book.entities_cache_path, {k: v for k, v in cache.items() if k in used})
+        try:
+            write_json(book.entities_cache_path, {k: v for k, v in cache.items() if k in used})
+        except OSError:
+            pass
 
     def by_chunk(x: dict) -> tuple[int, int]:
         return TYPES.index(x["type"]), x["chunk"]
@@ -609,12 +631,9 @@ def split(book: Book, eid: str, names: list[str]) -> dict:
         e["canonical"] = e["names"][0]
     e["status"] = CONFIRMED
     e["scenes"] = _scenes_of(e["names"], mentions)
-    # 编号用文件顶层只增不减的 next_id 取号（缺失或不是 int 时按现有最大编号 + 1 兜底，
-    # 跟 _assemble 的做法一致），不能只看当前实体列表里的最大号——否则合并删掉最大号的实体后，
-    # 编号可能被重新发出去，跟已经删掉的旧实体撞号。
-    top = max((_id_num(x.get("id")) for x in data["entities"]), default=0)
-    raw_next = data.get("next_id")
-    num = max(raw_next if isinstance(raw_next, int) else 0, top + 1)
+    # 编号用文件顶层只增不减的 next_id 取号，不能只看当前实体列表里的最大号——否则合并删掉
+    # 最大号的实体后，编号可能被重新发出去，跟已经删掉的旧实体撞号。
+    num = _next_id(data)
     data["next_id"] = num + 1
     new = _entity(num, e["type"], moving[0], moving, CONFIRMED, "作者拆分", mentions)
     data["entities"].append(new)

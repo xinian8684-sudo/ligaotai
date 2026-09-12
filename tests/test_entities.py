@@ -660,3 +660,65 @@ def test_canonical_map(grouped):
 def test_ops_before_run_raise(story_book):
     with pytest.raises(FileNotFoundError):
         confirm(story_book, ["E-0001"])
+
+
+# --- 顺手修的 Minor ---
+
+
+def test_cache_write_failure_does_not_fail_the_step(story_book, monkeypatch):
+    """缓存目录写不进去（比如磁盘只读、被占用）不该让这一步跟着失败：大不了下次重跑再花一次钱。"""
+    run_cards(story_book, client_for(story_book))
+    real_write_json = ent.write_json
+
+    def flaky(path, data):
+        if path == story_book.entities_cache_path:
+            raise OSError("模拟磁盘写入失败")
+        return real_write_json(path, data)
+
+    monkeypatch.setattr(ent, "write_json", flaky)
+    s = run_entities(story_book, client_for(story_book, groups=[LIN]))
+    assert s["draft_groups"] == 1
+    assert not story_book.entities_cache_path.exists()  # 缓存确实没写成功，但这不影响实体.json
+
+
+def test_load_cache_drops_malformed_entries(book, monkeypatch):
+    good = {"groups": [{"canonical": "a", "members": ["a", "b"], "reason": ""}], "problems": []}
+    data = {
+        "good": good,
+        "not_a_dict": "oops",
+        "bad_groups": {"groups": "oops", "problems": []},
+        "bad_problems": {"groups": [], "problems": "oops"},
+        "missing_problems": {"groups": []},
+    }
+    monkeypatch.setattr(ent, "read_json", lambda path, default=None: data)
+    assert ent._load_cache(book) == {"good": good}
+
+
+def test_assemble_tolerates_non_int_next_id():
+    old = {"next_id": "oops", "entities": [{"id": "E-0002", "type": "person", "canonical": "a",
+                                             "names": ["a"], "status": "confirmed", "reason": "", "scenes": []}]}
+    mentions = {t: {} for t in ent.TYPES}
+    out = ent._assemble(old, mentions, {})
+    assert out["next_id"] == 3  # 非 int 的 next_id 当 0 处理，退回按现有最大编号 + 1 兜底
+
+
+def test_cache_key_changes_with_synth_tier_settings(story_book):
+    """模型名没变，只改了综合档的思考强度：缓存键要跟着变，不能误命中旧缓存。"""
+    run_cards(story_book, client_for(story_book))
+    run_entities(story_book, client_for(story_book, groups=[LIN]))
+    assert len(read_json(story_book.entities_cache_path)) == 1
+
+    same_model_diff_effort = TierConfig(model="deepseek-flash", thinking="on", effort="low", max_tokens=32768)
+    c2 = client_for(story_book, groups=[LIN], synth=same_model_diff_effort)
+    run_entities(story_book, c2)
+    assert c2.usage.calls == 1  # 没有命中缓存，重新调了模型
+
+
+def test_affixes_two_char_generic_terms():
+    for name, expect in [
+        ("张阿哥", "张"), ("王大姐", "王"), ("李阿姐", "李"),
+        ("赵小哥", "赵"), ("钱小妹", "钱"), ("孙师妹", "孙"), ("孙師妹", "孙"),
+    ]:
+        assert core(name) == expect
+    for title in ("阿哥", "大姐", "阿姐", "小哥", "小妹", "师妹", "師妹"):
+        assert core(title) == title  # 称谓本身原样返回，不再被单字词缀拆开
