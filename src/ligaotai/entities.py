@@ -527,3 +527,100 @@ async def _run_entities(book: Book, client: LLMClient, progress: Progress) -> di
     }
     book.set_step("entities", "done", summary, changed=changed)
     return summary
+
+
+# --- 作者的确认 / 改名 / 合并 / 拆分 ---
+
+
+def load_entities(book: Book) -> dict:
+    data = read_json(book.entities_path)
+    if data is None:
+        raise FileNotFoundError("还没有实体合并的结果，先跑步骤 5")
+    return data
+
+
+def _save(book: Book, data: dict) -> None:
+    write_json(book.entities_path, data)
+    book.mark_downstream_outdated("entities")
+
+
+def _get(data: dict, eid: str) -> dict:
+    for e in data["entities"]:
+        if e["id"] == eid:
+            return e
+    raise KeyError(eid)
+
+
+def confirm(book: Book, ids: list[str]) -> list[dict]:
+    data = load_entities(book)
+    out = []
+    for eid in ids:
+        e = _get(data, eid)
+        e["status"] = CONFIRMED
+        out.append(e)
+    _save(book, data)
+    return out
+
+
+def rename(book: Book, eid: str, canonical: str) -> dict:
+    canonical = canonical.strip()
+    if not canonical:
+        raise ValueError("规范名不能为空")
+    data = load_entities(book)
+    e = _get(data, eid)
+    e["canonical"], e["status"] = canonical, CONFIRMED
+    _save(book, data)
+    return e
+
+
+def merge(book: Book, ids: list[str], canonical: str | None = None) -> dict:
+    if len(set(ids)) < 2:
+        raise ValueError("至少要选两个实体才能合并")
+    data = load_entities(book)
+    ents = [_get(data, eid) for eid in dict.fromkeys(ids)]
+    if len({e["type"] for e in ents}) > 1:
+        raise ValueError("不同类型的实体不能合并")
+    keep = ents[0]
+    keep.update(
+        names=list(dict.fromkeys(n for e in ents for n in e["names"])),
+        scenes=sorted({s for e in ents for s in e["scenes"]}, key=natural_key),
+        canonical=(canonical or keep["canonical"]).strip(),
+        status=CONFIRMED,
+        reason="作者合并",
+    )
+    dropped = {e["id"] for e in ents[1:]}
+    data["entities"] = [e for e in data["entities"] if e["id"] not in dropped]
+    _save(book, data)
+    return keep
+
+
+def split(book: Book, eid: str, names: list[str]) -> dict:
+    data = load_entities(book)
+    e = _get(data, eid)
+    wanted = set(names)
+    moving = [n for n in e["names"] if n in wanted]
+    if not moving or len(moving) != len(wanted):
+        raise ValueError("要拆出去的叫法必须都在这个实体里")
+    if len(moving) == len(e["names"]):
+        raise ValueError("不能把全部叫法都拆出去")
+    mentions = collect_mentions(book)[e["type"]]
+    e["names"] = [n for n in e["names"] if n not in wanted]
+    if e["canonical"] in wanted:
+        e["canonical"] = e["names"][0]
+    e["status"] = CONFIRMED
+    e["scenes"] = _scenes_of(e["names"], mentions)
+    # 编号用文件顶层只增不减的 next_id 取号（缺失或不是 int 时按现有最大编号 + 1 兜底，
+    # 跟 _assemble 的做法一致），不能只看当前实体列表里的最大号——否则合并删掉最大号的实体后，
+    # 编号可能被重新发出去，跟已经删掉的旧实体撞号。
+    top = max((_id_num(x.get("id")) for x in data["entities"]), default=0)
+    raw_next = data.get("next_id")
+    num = max(raw_next if isinstance(raw_next, int) else 0, top + 1)
+    data["next_id"] = num + 1
+    new = _entity(num, e["type"], moving[0], moving, CONFIRMED, "作者拆分", mentions)
+    data["entities"].append(new)
+    _save(book, data)
+    return new
+
+
+def canonical_map(book: Book) -> dict[tuple[str, str], str]:
+    return {(e["type"], n): e["canonical"] for e in load_entities(book)["entities"] for n in e["names"]}

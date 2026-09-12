@@ -7,14 +7,19 @@ from ligaotai import entities as ent
 from ligaotai.cards import run_cards
 from ligaotai.config import AppConfig, TierConfig
 from ligaotai.entities import (
+    canonical_map,
     check_groups,
     chunk_names,
     clean_groups,
     collect_mentions,
+    confirm,
     core,
     hint_pairs,
+    merge,
     merge_groups,
+    rename,
     run_entities,
+    split,
 )
 from ligaotai.fsutil import read_json, write_json
 from ligaotai.jobs import JobCancelled
@@ -566,3 +571,92 @@ def test_unknown_status_is_kept(story_book):
     kept = next(e for e in after if e["id"] == target["id"])
     assert kept["status"] == "ignored" and set(kept["names"]) == set(LIN)
     assert not any(e["status"] == "single" and e["canonical"] in LIN for e in after)
+
+
+# --- 作者的确认 / 改名 / 合并 / 拆分 ---
+
+
+@pytest.fixture
+def grouped(story_book):
+    run_cards(story_book, client_for(story_book))
+    run_entities(story_book, client_for(story_book, groups=[LIN]))
+    story_book.set_step("threads", "done")
+    return story_book
+
+
+def find(book, canonical):
+    return next(e for e in read_json(book.entities_path)["entities"] if e["canonical"] == canonical)
+
+
+def test_confirm(grouped):
+    e = find(grouped, "林清")
+    [out] = confirm(grouped, [e["id"]])
+    assert out["status"] == "confirmed" and find(grouped, "林清")["status"] == "confirmed"
+    assert grouped.step("threads")["status"] == "outdated"
+
+
+def test_rename(grouped):
+    e = find(grouped, "林清")
+    assert rename(grouped, e["id"], " 林小清 ")["canonical"] == "林小清"
+    with pytest.raises(ValueError):
+        rename(grouped, e["id"], "  ")
+
+
+def test_merge(grouped):
+    lin, zhao = find(grouped, "林清"), find(grouped, "赵五")
+    out = merge(grouped, [lin["id"], zhao["id"]])
+    assert out["id"] == lin["id"] and set(out["names"]) == set(LIN) | {"赵五"}
+    assert out["scenes"] == ["S-0001", "S-0002", "S-0003"] and out["status"] == "confirmed"
+    ids = [e["id"] for e in read_json(grouped.entities_path)["entities"]]
+    assert zhao["id"] not in ids
+
+
+def test_merge_rejects_bad_input(grouped):
+    lin, place = find(grouped, "林清"), find(grouped, "青州城外")
+    with pytest.raises(ValueError):
+        merge(grouped, [lin["id"]])
+    with pytest.raises(ValueError):
+        merge(grouped, [lin["id"], place["id"]])
+    with pytest.raises(KeyError):
+        merge(grouped, [lin["id"], "E-9999"])
+
+
+def test_split(grouped):
+    lin = find(grouped, "林清")
+    new = split(grouped, lin["id"], ["林姑娘"])
+    assert new["names"] == ["林姑娘"] and new["scenes"] == ["S-0003"] and new["status"] == "confirmed"
+    rest = find(grouped, "林清")
+    assert set(rest["names"]) == {"林清", "清儿"} and rest["scenes"] == ["S-0001", "S-0002"]
+    with pytest.raises(ValueError):
+        split(grouped, lin["id"], ["林清", "清儿"])
+    with pytest.raises(ValueError):
+        split(grouped, lin["id"], ["不存在"])
+
+
+def test_split_after_merge_does_not_reuse_deleted_max_id(grouped):
+    """先拆出一个新实体（拿到当时最大的编号），把它合并掉（删掉当时的最大号），
+    再拆一次：新编号必须接着 next_id 往后排，不能因为「当前最大号」变小了就把刚被删的号发出去。"""
+    lin, zhao = find(grouped, "林清"), find(grouped, "赵五")
+    moved = split(grouped, lin["id"], ["林姑娘"])  # 新建的实体此刻是编号最大的
+    before = read_json(grouped.entities_path)
+    assert before["next_id"] == ent._id_num(moved["id"]) + 1
+
+    combined = merge(grouped, [zhao["id"], moved["id"]])  # 保留赵五，删掉刚才那个最大号
+    ids_after_merge = {e["id"] for e in read_json(grouped.entities_path)["entities"]}
+    assert moved["id"] not in ids_after_merge
+
+    again = split(grouped, combined["id"], ["林姑娘"])
+    assert ent._id_num(again["id"]) > ent._id_num(moved["id"])
+    ids = [e["id"] for e in read_json(grouped.entities_path)["entities"]]
+    assert moved["id"] not in ids and ids.count(again["id"]) == 1
+
+
+def test_canonical_map(grouped):
+    m = canonical_map(grouped)
+    assert m[("person", "清儿")] == "林清" and m[("person", "赵五")] == "赵五"
+    assert m[("location", "青州城外")] == "青州城外"
+
+
+def test_ops_before_run_raise(story_book):
+    with pytest.raises(FileNotFoundError):
+        confirm(story_book, ["E-0001"])
