@@ -358,6 +358,10 @@ def run_cards(
 
 
 async def _run_cards(book: Book, client: LLMClient, progress: Progress, only: list[str] | None) -> dict:
+    # 单卡重做（only 不为空）不改 cards 步骤自己的状态：先把当前状态记下来，
+    # 跑完原样写回去（done 还是 done、failed 还是 failed、todo 还是 todo）。
+    # 这里必须在做任何事之前读，因为 api.submit 对单卡重做不会再把状态标成 running。
+    keep_status = book.step("cards")["status"] if only is not None else None
     scenes = [s for s in load_scenes(book, with_text=True) if not s.removed]
     records = load_cards(book)
     failed: list[dict] = []
@@ -409,5 +413,6 @@ async def _run_cards(book: Book, client: LLMClient, progress: Progress, only: li
         "calls": client.usage.calls,
         "cost_usd": round(client.usage.cost(client.cfg), 4),
     }
-    book.set_step("cards", "done", summary, changed=counts["written"] > 0)
+    status = keep_status if only is not None else "done"
+    book.set_step("cards", status, summary, changed=counts["written"] > 0)
     return summary

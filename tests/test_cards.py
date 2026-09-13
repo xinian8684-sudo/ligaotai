@@ -450,3 +450,51 @@ def test_only_with_unknown_scene_is_recorded_as_failed(story_book):
     s = run_cards(story_book, c, only=["S-9999"])
     assert s["failed"] == [{"id": "S-9999", "error": "场景不存在或已删除"}]
     assert c.usage.calls == 0 and s["written"] == 0
+
+
+# --- I1：单卡重做（only）不许改 cards 步骤自己的状态 ---
+
+
+def test_only_mode_keeps_todo_status(story_book):
+    assert story_book.step("cards")["status"] == "todo"
+    run_cards(story_book, client_for(story_book), only=["S-0002"])
+    assert story_book.step("cards")["status"] == "todo"
+
+
+def test_only_mode_keeps_failed_status(story_book):
+    story_book.set_step("cards", "failed", {"error": "已暂停：做完的部分已经保存，重跑会接着做"})
+    run_cards(story_book, client_for(story_book), only=["S-0002"])
+    assert story_book.step("cards")["status"] == "failed"
+
+
+def test_only_mode_keeps_done_status(story_book):
+    run_cards(story_book, client_for(story_book))
+    assert story_book.step("cards")["status"] == "done"
+    run_cards(story_book, client_for(story_book), only=["S-0002"])
+    assert story_book.step("cards")["status"] == "done"
+
+
+def test_only_mode_keeps_status_on_fatal_error(story_book):
+    """欠费/key 失效时也不能碰 cards 步骤自己的状态（已知问题 M5 的反方向）。"""
+    story_book.set_step("cards", "failed", {"error": "上一次欠费失败"})
+
+    class Denied(Exception):
+        status_code = 401
+
+    with pytest.raises(FatalLLMError):
+        run_cards(story_book, client_for(story_book, lambda t, m: Denied("bad key")), only=["S-0002"])
+    assert story_book.step("cards")["status"] == "failed"
+
+
+def test_only_mode_keeps_status_on_cancel(story_book):
+    """暂停单卡重做时，已经是 done 的 cards 步骤不能被打回 failed。"""
+    run_cards(story_book, client_for(story_book))
+    assert story_book.step("cards")["status"] == "done"
+
+    def progress(done, total):
+        if done >= 1:
+            raise JobCancelled()
+
+    with pytest.raises(JobCancelled):
+        run_cards(story_book, client_for(story_book), progress, only=["S-0002"])
+    assert story_book.step("cards")["status"] == "done"

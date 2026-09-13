@@ -234,3 +234,69 @@ def test_fatal_error_marks_entities_step_failed_not_paused(tmp_path):
     assert job.status == "failed"
     assert st["status"] == "failed" and "FatalLLMError" in st["summary"]["error"]
     assert "已暂停" not in st["summary"]["error"]
+
+
+# --- I1：单卡重做（/cards/{sid}/regenerate）不许改 cards 步骤自己的状态 ---
+
+
+def test_regenerate_from_todo_keeps_todo_and_blocks_entities(ready):
+    c = ready
+    assert c.get(BOOK).json()["steps"]["cards"]["status"] == "todo"
+    wait(c, c.post(f"{BOOK}/cards/S-0002/regenerate"))
+    assert c.get(BOOK).json()["steps"]["cards"]["status"] == "todo"
+    assert c.post(f"{BOOK}/steps/entities/run").status_code == 409
+
+
+def test_regenerate_after_paused_keeps_failed_and_blocks_entities(tmp_path):
+    g = _gate("cards")
+    c = gated_client(tmp_path, gate=g)
+    _pause(c, c.post(f"{BOOK}/steps/cards/run"), g)
+    assert c.get(BOOK).json()["steps"]["cards"]["status"] == "failed"
+
+    wait(c, c.post(f"{BOOK}/cards/S-0002/regenerate"))
+    assert c.get(BOOK).json()["steps"]["cards"]["status"] == "failed"
+    assert c.post(f"{BOOK}/steps/entities/run").status_code == 409
+
+
+def test_regenerate_on_done_cards_keeps_done(ready):
+    c = ready
+    wait(c, c.post(f"{BOOK}/steps/cards/run"))
+    wait(c, c.post(f"{BOOK}/cards/S-0002/regenerate"))
+    assert c.get(BOOK).json()["steps"]["cards"]["status"] == "done"
+
+
+def test_regenerate_fatal_error_does_not_flip_done_to_failed(tmp_path):
+    """已知问题 M5 的反方向：单卡重做遇到欠费/key 失效时，cards 步骤（已经是 done）不能被打成 failed。"""
+    base = fake_ai_handler()
+    calls = {"n": 0}
+
+    def handler(tier, messages):
+        system = messages[0]["content"]
+        if "场景卡" in system:
+            calls["n"] += 1
+            if calls["n"] > 3:  # 前 3 次是全量跑三张卡；第 4 次是单卡重做，让它欠费失败
+
+                class Denied(Exception):
+                    status_code = 401
+
+                return Denied("Error code: 401 - Your api key: sk-SECRET123 is invalid")
+        return base(tier, messages)
+
+    fake = FakeBackend(handler=handler)
+    app = create_app(app_dir=tmp_path, allowed_hosts=("testserver",), backend_factory=lambda cfg: fake)
+    c = TestClient(app, raise_server_exceptions=False)
+    src = tmp_path / "稿"
+    src.mkdir()
+    for name, text in STORY.items():
+        (src / name).write_text(text, encoding="utf-8")
+    c.post("/api/books", json={"title": "我的书"})
+    wait(c, c.post(f"{BOOK}/import", json={"folder": str(src)}))
+    wait(c, c.post(f"{BOOK}/steps/split/run"))
+    wait(c, c.post(f"{BOOK}/steps/dedup/run"))
+    wait(c, c.post(f"{BOOK}/steps/cards/run"))
+    assert c.get(BOOK).json()["steps"]["cards"]["status"] == "done"
+
+    r = c.post(f"{BOOK}/cards/S-0002/regenerate")
+    job = c.app.state.runner.wait(r.json()["id"])
+    assert job.status == "failed" and "FatalLLMError" in job.error
+    assert c.get(BOOK).json()["steps"]["cards"]["status"] == "done"

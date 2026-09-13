@@ -884,11 +884,13 @@ def test_confirm_during_step5_write_is_not_lost(grouped, monkeypatch):
             errors.append(e)
 
     def assemble(old, mentions, groups):  # 此时步骤 5 正拿着锁
+        # 探针必须在作者线程 start 之前探测：锁被步骤 5 占着，这时候去探测才测的是
+        # 「步骤 5 拿着锁」。放在 t.start() 之后，作者线程常常先抢到锁，探针测到的就是
+        # 「作者拿着锁」，去掉步骤 5 的锁这条测试也不会必然失败（I2）。
+        probe_results.append(_probe_lock_held())
         t = threading.Thread(target=author)
         workers.append(t)
         t.start()
-        # 锁被步骤 5 占着：另一个线程非阻塞拿锁必须拿不到。
-        probe_results.append(_probe_lock_held())
         return real_assemble(old, mentions, groups)
 
     monkeypatch.setattr(ent, "_assemble", assemble)

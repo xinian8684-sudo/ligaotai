@@ -96,16 +96,23 @@ def create_app(
         cfg = load_config(app_dir)
         return LLMClient(cfg, make_backend(cfg), log_dir=book.logs_dir)
 
-    def submit(book: Book, step: str, fn: Callable[[Callable], dict]) -> dict:
+    def submit(
+        book: Book, step: str, fn: Callable[[Callable], dict], track_step: bool = True
+    ) -> dict:
+        # track_step=False：单卡重做用，不把 step 的状态标成 running/failed——
+        # 状态是不是变，交给 fn 自己决定（cards.run_cards 的 only 模式会原样保留）。
         def work(progress: Callable) -> dict:
-            book.set_step(step, "running")
+            if track_step:
+                book.set_step(step, "running")
             try:
                 return fn(progress)
             except JobCancelled:
-                book.set_step(step, "failed", {"error": PAUSED})
+                if track_step:
+                    book.set_step(step, "failed", {"error": PAUSED})
                 raise
             except BaseException as e:
-                book.set_step(step, "failed", {"error": f"{type(e).__name__}: {e}"})
+                if track_step:
+                    book.set_step(step, "failed", {"error": f"{type(e).__name__}: {e}"})
                 raise
 
         try:
@@ -267,7 +274,9 @@ def create_app(
             raise HTTPException(404, "没有这个场景")
         require_upstream(b, "cards")
         client = make_client(b)
-        return submit(b, "cards", lambda p: run_cards(b, client, p, only=[sid]))
+        return submit(
+            b, "cards", lambda p: run_cards(b, client, p, only=[sid]), track_step=False
+        )
 
     @app.get("/api/books/{name}/entities")
     def entities(name: str) -> dict:
