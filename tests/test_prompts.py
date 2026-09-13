@@ -29,6 +29,14 @@ def test_real_cards_prompt():
     assert "$" not in system + user
 
 
+def test_real_cards_prompt_has_pov_and_quote_rules():
+    """作者批准的两条新规则：pov 没有明确视角人物就留空、不要写「第三人称/全知」；
+    quote 不许用省略号/分号拼接几处原文。"""
+    system, _ = render("cards", scene_id="S-0001", source="稿/a.txt", heading="第一章", text="林清年方十六。")
+    assert "第三人称" in system
+    assert "省略号" in system
+
+
 def test_real_entities_prompt():
     system, user = render("entities", type_label="人物", names="- 林清（3 个场景）：林清年方十六", hints="（无）")
     assert "json" in system and "人物" in system and "归成一组" in system

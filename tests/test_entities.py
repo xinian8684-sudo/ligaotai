@@ -853,35 +853,49 @@ def test_rerun_after_rename_and_confirm_model_cannot_take_locked_names(grouped):
     assert next(e for e in persons if e["id"] == zhao["id"])["canonical"] == "赵五爷"
 
 
+def _probe_lock_held() -> bool:
+    """另开一个线程试着不阻塞地拿 FILE_LOCK：拿不到（False）说明锁正被别的线程占着；
+    万一拿到了，立刻释放，别把锁悬在那——调用方把返回值当探针结果，锁被改坏时这里会
+    变成 True，断言随之失败，不靠计时去猜。"""
+    got = []
+
+    def probe():
+        ok = ent.FILE_LOCK.acquire(blocking=False)
+        got.append(ok)
+        if ok:
+            ent.FILE_LOCK.release()
+
+    t = threading.Thread(target=probe)
+    t.start()
+    t.join(timeout=10)
+    return got[0]
+
+
 def test_confirm_during_step5_write_is_not_lost(grouped, monkeypatch):
     """步骤 5 读了旧 实体.json、还没写回的时候作者点了确认：确认要等步骤 5 写完再读改写，不能被它覆盖。"""
     draft = find(grouped, "林清")
     real_assemble = ent._assemble
-    finished = threading.Event()
-    held_off, errors, workers = [], [], []
+    errors, workers, probe_results = [], [], []
 
     def author():
         try:
             confirm(grouped, [draft["id"]])
         except Exception as e:  # noqa: BLE001
             errors.append(e)
-        finally:
-            finished.set()
 
     def assemble(old, mentions, groups):  # 此时步骤 5 正拿着锁
         t = threading.Thread(target=author)
         workers.append(t)
         t.start()
-        # 有锁：作者被挡在外面，这里等不到它做完，超时后照常往下走（不会死锁）。
-        # 没锁：它会趁这段时间读旧文件 → 写回，然后被下面的写回整个覆盖。
-        held_off.append(not finished.wait(timeout=0.3))
+        # 锁被步骤 5 占着：另一个线程非阻塞拿锁必须拿不到。
+        probe_results.append(_probe_lock_held())
         return real_assemble(old, mentions, groups)
 
     monkeypatch.setattr(ent, "_assemble", assemble)
     run_entities(grouped, client_for(grouped, groups=[LIN]))
     workers[0].join(timeout=10)
     assert not workers[0].is_alive() and errors == []
-    assert held_off == [True]
+    assert probe_results == [False]
     kept = find(grouped, "林清")
     assert kept["id"] == draft["id"] and kept["status"] == "confirmed"
 
@@ -889,35 +903,33 @@ def test_confirm_during_step5_write_is_not_lost(grouped, monkeypatch):
 def test_concurrent_confirms_keep_both(grouped, monkeypatch):
     lin, zhao = find(grouped, "林清"), find(grouped, "赵五")
     real_load = ent.load_entities
-    first_loaded, second_done = threading.Event(), threading.Event()
-    held_off, errors = [], []
+    first_loaded = threading.Event()
+    errors, probe_results = [], []
 
     def load(book):
         data = real_load(book)
-        if threading.current_thread().name == "first":  # 第一个确认读完文件、还没写回
+        if threading.current_thread().name == "first":  # 第一个确认拿着锁，读完文件、还没写回
+            # 锁被第一个确认占着：另一个线程非阻塞拿锁必须拿不到。
+            probe_results.append(_probe_lock_held())
             first_loaded.set()
-            held_off.append(not second_done.wait(timeout=0.3))  # 有锁时第二个确认做不完
         return data
 
-    def run(eid, done=None):
+    def run(eid):
         try:
             confirm(grouped, [eid])
         except Exception as e:  # noqa: BLE001
             errors.append(e)
-        finally:
-            if done is not None:
-                done.set()
 
     monkeypatch.setattr(ent, "load_entities", load)
     t1 = threading.Thread(target=run, args=(lin["id"],), name="first")
-    t2 = threading.Thread(target=run, args=(zhao["id"], second_done), name="second")
+    t2 = threading.Thread(target=run, args=(zhao["id"],), name="second")
     t1.start()
     assert first_loaded.wait(timeout=10)
     t2.start()
     t1.join(timeout=10)
     t2.join(timeout=10)
     assert not t1.is_alive() and not t2.is_alive() and errors == []
-    assert held_off == [True]
+    assert probe_results == [False]
     assert find(grouped, "林清")["status"] == "confirmed" and find(grouped, "赵五")["status"] == "confirmed"
 
 

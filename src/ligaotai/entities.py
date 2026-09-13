@@ -27,7 +27,7 @@ from itertools import combinations
 from typing import Callable
 
 from .book import FILE_LOCK, Book
-from .cards import is_fresh, load_cards
+from .cards import is_fresh, load_cards, pick_error
 from .fsutil import natural_key, read_json, write_json
 from .llm import FatalLLMError, LLMClient, LLMError
 from .prompts import render
@@ -521,8 +521,7 @@ async def _run_entities(book: Book, client: LLMClient, progress: Progress) -> di
                 tg.create_task(one(b))
     except BaseExceptionGroup as eg:
         # 欠费/key 失效（FatalLLMError）要让作者看到，不能被「已暂停」（JobCancelled）盖住
-        fatal = [e for e in eg.exceptions if isinstance(e, FatalLLMError)]
-        raise (fatal or list(eg.exceptions))[0] from None
+        raise pick_error(eg) from None
     finally:
         u = client.usage
         book.add_usage("entities", u.calls, u.prompt_tokens, u.completion_tokens, u.cost(client.cfg))

@@ -108,13 +108,18 @@ def evaluate(entities: list[dict], key: dict, gold: dict = GOLD) -> dict:
     total = len(injected)
     recall = found / total if total else 0.0
 
+    # 平局判定跟 injected 节用同一个 _main_entity helper、同一种固定顺序：gold 没有 replaces，
+    # 就按 [canonical, *gold[canonical]] 排（去重保序），不能各写一套、平局时判两样。
     gold_report = {}
     for canon, names in gold.items():
-        present = [n for n in names if n in ent_of]
+        pool = [canon, *names]
+        seen: set[str] = set()
+        ordered_pool = [n for n in pool if not (n in seen or seen.add(n))]
+        present = [n for n in ordered_pool if n in ent_of]
         if not present:
             gold_report[canon] = {"present": 0, "merged": 0, "left_out": []}
             continue
-        main = Counter(ent_of[n] for n in present).most_common(1)[0][0]
+        main = _main_entity(ordered_pool, ent_of)
         gold_report[canon] = {
             "present": len(present),
             "merged": sum(ent_of[n] == main for n in present),
@@ -244,6 +249,8 @@ def main(argv: list[str] | None = None) -> None:
     if not args.folder or not args.key:
         sys.exit("--folder and --key are required")
     key = json.loads(Path(args.key).read_text(encoding="utf-8"))
+    # 残缺报告写到另一个文件名，别覆盖同一路径上一次成功的完整报告。
+    error_report_path = report_path.with_name(report_path.stem + "-error.json")
     try:
         report = run_eval(
             Path(args.folder), key, Path(args.library), cfg, backend, fresh_entities=args.fresh_entities
@@ -254,11 +261,21 @@ def main(argv: list[str] | None = None) -> None:
             "book": getattr(e, "book", None),
             "usage": getattr(e, "usage", {}),
         }
-        # 残缺报告写到另一个文件名，别覆盖同一路径上一次成功的完整报告。
-        error_report_path = report_path.with_name(report_path.stem + "-error.json")
         error_report_path.write_text(json.dumps(partial, ensure_ascii=False, indent=2), encoding="utf-8")
         sys.exit("fatal model error, see the -error report next to your --report path")
+    except SystemExit as e:
+        # 清单核对失败（_check_manifest）：把多出/缺少的文件名、书的路径也写进 -error.json，
+        # 终端仍只打 ASCII（sys.exit 的 message 本身已经是 ASCII，行为不变，只是多存一份细节）。
+        partial = {
+            "error": str(e),
+            "book": getattr(e, "book", None),
+            "extra": getattr(e, "extra", None),
+            "missing": getattr(e, "missing", None),
+        }
+        error_report_path.write_text(json.dumps(partial, ensure_ascii=False, indent=2), encoding="utf-8")
+        raise
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    error_report_path.unlink(missing_ok=True)  # 这次跑成功了，同目录旧的残缺报告不该再留着
     total = report["usage"].get("total", {})
     this_run = report["this_run"]
     print(

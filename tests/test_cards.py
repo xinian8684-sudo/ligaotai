@@ -193,6 +193,23 @@ def test_clean_card_drops_fact_with_punctuation_only_subject_into_dropped():
     assert dropped["facts"] == [{"subject": "", "attribute": "a", "value": "v", "quote": "林清年方十六"}]
 
 
+def test_blank_subject_problem_carries_attribute_and_quote_hint():
+    # subject 去标点后是空串时，问题文案要带上这条 fact 的 attribute 和 quote（不能是空的，
+    # 模型看不出说的是哪条 fact）。
+    data = with_(facts=[{"subject": "，", "attribute": "身份", "value": "v", "quote": "林清年方十六"}])
+    problems = check_card(data, TEXT)
+    assert len(problems) == 1 and "身份" in problems[0] and "林清年方十六" in problems[0]
+
+
+def test_blank_subject_quote_hint_is_truncated():
+    # quote 截到约 20 字，太长的 quote 不能整段塞进问题文案里。
+    quote = "林清年方十六，住在青州城外。那一年冬天，赵五来了。"
+    data = with_(facts=[{"subject": "，", "attribute": "身份", "value": "v", "quote": quote}])
+    problems = check_card(data, TEXT)
+    assert len(problems) == 1
+    assert quote[:20] in problems[0] and quote not in problems[0]
+
+
 # --- A3: quote 太短（去空白标点后 < 4 字）也算问题 ---
 
 

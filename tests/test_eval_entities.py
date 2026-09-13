@@ -368,6 +368,62 @@ def test_m5_main_exits_cleanly_and_writes_report_on_fatal_error(tmp_path, monkey
     assert data["usage"]["total"]["calls"] == 3
 
 
+def test_a4_manifest_mismatch_in_main_writes_details_to_error_report(tmp_path, monkeypatch):
+    """A4：main() 接住清单核对的 SystemExit，把多出/缺少的文件名和书路径写进 -error.json；
+    终端（SystemExit 的 message）仍然只有 ASCII。"""
+    out = tmp_path / "乱稿"
+    library = tmp_path / "书库"
+    key = scramble(make_chapters(20), out, seed=3, **SMALL)
+    key_path = tmp_path / "答案.json"
+    key_path.write_text(json.dumps(key), encoding="utf-8")
+    report_path = tmp_path / "报告.json"
+    fake = FakeBackend(handler=fake_ai_handler(GROUPS))
+    monkeypatch.setattr(eval_entities, "OpenAIBackend", lambda cfg: fake)
+
+    argv = [
+        "--folder", str(out), "--key", str(key_path), "--library", str(library), "--report", str(report_path),
+    ]
+    eval_entities.main(argv)  # 第一次正常跑完，建好书
+
+    book = open_book(library, safe_name(f"{TITLE_PREFIX}乱稿-s3"))
+    manifest = read_json(book.manifest_path)
+    manifest["files"]["乱稿/杂/漏网的旧稿.txt"] = {
+        "sha256": "0" * 64, "encoding": "utf-8", "chars": 1, "mtime": 0, "imported": "2020-01-01T00:00:00",
+    }
+    write_json(book.manifest_path, manifest)
+
+    with pytest.raises(SystemExit) as ei:
+        eval_entities.main(argv)
+    assert str(ei.value).isascii()
+
+    error_path = report_path.with_name(report_path.stem + "-error.json")
+    data = json.loads(error_path.read_text(encoding="utf-8"))
+    assert data["extra"] == ["乱稿/杂/漏网的旧稿.txt"]
+    assert data["missing"] == []
+    assert data["book"]
+
+
+def test_a4_successful_run_removes_stale_error_report(tmp_path, monkeypatch):
+    """A4：这次跑成功了，同目录上一次留下的 -error.json 要清掉，别让作者以为还有残留问题。"""
+    out = tmp_path / "乱稿"
+    library = tmp_path / "书库"
+    key = scramble(make_chapters(20), out, seed=3, **SMALL)
+    key_path = tmp_path / "答案.json"
+    key_path.write_text(json.dumps(key), encoding="utf-8")
+    report_path = tmp_path / "报告.json"
+    error_path = report_path.with_name(report_path.stem + "-error.json")
+    error_path.write_text("{}", encoding="utf-8")  # 上一次失败留下的旧残缺报告
+    fake = FakeBackend(handler=fake_ai_handler(GROUPS))
+    monkeypatch.setattr(eval_entities, "OpenAIBackend", lambda cfg: fake)
+
+    eval_entities.main([
+        "--folder", str(out), "--key", str(key_path), "--library", str(library), "--report", str(report_path),
+    ])
+
+    assert not error_path.exists()
+    assert report_path.exists()
+
+
 def test_mc_fatal_error_does_not_overwrite_the_last_successful_report(tmp_path, monkeypatch):
     key_path = tmp_path / "答案.json"
     key_path.write_text(json.dumps({"aliases": [], "seed": 1, "files": []}), encoding="utf-8")

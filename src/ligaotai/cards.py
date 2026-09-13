@@ -184,6 +184,19 @@ def _quote_ok(quote: str, body: str) -> bool:
     return len(n) >= MIN_QUOTE_LEN and n in body
 
 
+SUBJECT_QUOTE_HINT_LEN = 20  # subject 空着时，用 attribute/quote 拼线索，quote 截到这么长
+
+
+def _fact_hint(f: Fact) -> str:
+    """subject 去标点后是空串时，报出来的问题里没法带上这条 fact 的名字——用 attribute
+    和 quote（截断到 SUBJECT_QUOTE_HINT_LEN 字左右）拼一条线索，让模型看出问题指的是哪条 fact。"""
+    quote = f.quote.strip()
+    if len(quote) > SUBJECT_QUOTE_HINT_LEN:
+        quote = quote[:SUBJECT_QUOTE_HINT_LEN] + "…"
+    parts = [p for p in (f.attribute.strip(), quote) if p]
+    return "、".join(parts) if parts else "（没有更多线索）"
+
+
 def check_card(data: dict, text: str) -> list[str]:
     try:
         card = Card.model_validate(data)
@@ -207,15 +220,21 @@ def check_card(data: dict, text: str) -> list[str]:
     # fact 的 subject 也要核对：能在原文里找到，或者是本卡自己列出的某个名字
     # （哪怕那个名字本身也没核对过——它的问题已经在上面的 bad_names 里报过一次了，不重复报）。
     names_norm = {cards_normalize(n) for n in card_names(card)} - {""}
-    bad_subjects = sorted(
-        {
-            f.subject
-            for f in card.facts
-            if not _in_text(f.subject, body) and cards_normalize(f.subject) not in names_norm
-        }
-    )
+
+    def subject_bad(f: Fact) -> bool:
+        return not _in_text(f.subject, body) and cards_normalize(f.subject) not in names_norm
+
+    bad_subjects = sorted({f.subject for f in card.facts if f.subject and subject_bad(f)})
     if bad_subjects:
         problems.append("这些 fact 的 subject 找不到对应的人物/地点/组织：" + "、".join(bad_subjects[:10]))
+    # subject 去标点后是空串：光报「subject 是空的」模型看不出说的是哪条，带上这条 fact
+    # 的 attribute/quote 当线索（见 _fact_hint）。
+    blank_hints = sorted({_fact_hint(f) for f in card.facts if not f.subject and subject_bad(f)})
+    if blank_hints:
+        problems.append(
+            "这些 fact 的 subject 是空的，请照原文补上具体的人名/地名/组织名（这条 fact 的线索："
+            + "；".join(blank_hints[:10]) + "）"
+        )
     return problems
 
 
