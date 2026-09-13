@@ -1,3 +1,4 @@
+import json
 import threading
 
 import pytest
@@ -127,5 +128,109 @@ def test_paused_step_is_marked(ready):
     job_id = r.json()["id"]
     runner.cancel(job_id)
     job = runner.wait(job_id)
-    if job.status == "cancelled":
-        assert "已暂停" in c.get(BOOK).json()["steps"]["cards"]["summary"]["error"]
+    # 任务开跑前就被取消，这条路径应该总是 cancelled（无条件断言，别再靠 if 悄悄空过）。
+    assert job.status == "cancelled"
+    assert "已暂停" in c.get(BOOK).json()["steps"]["cards"]["summary"]["error"]
+
+
+def test_card_summary_null_is_reported_as_empty_string(ready, tmp_path):
+    """M1：卡里 summary 是 null 时接口该返回 ""，跟没有卡时一致，不是裸的 null。"""
+    c = ready
+    wait(c, c.post(f"{BOOK}/steps/cards/run"))
+    book = open_book(tmp_path / "书库", "我的书")
+    p = book.cards_dir / "S-0001.json"
+    rec = json.loads(p.read_text(encoding="utf-8"))
+    rec["card"]["summary"] = None
+    p.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+    out = next(x for x in c.get(f"{BOOK}/cards").json() if x["id"] == "S-0001")
+    assert out["summary"] == ""
+
+
+# --- A0/I1：暂停 / 欠费路径在 API 层的确定性测试（闸门后端，先取消/判定再放行） ---
+
+
+class _Denied401(Exception):
+    status_code = 401
+
+
+def gated_client(tmp_path, gate=None, fail_on=None, groups=(["林清", "清儿", "林姑娘"],)):
+    """gate: {"kind": "cards"|"entities", "started": Event, "release": Event}——handler 跑到这一种
+    提示词时先 started.set()，再等 release，好让测试精确地在「跑到一半」时取消任务，不靠计时猜。
+    fail_on 同理：跑到这一种提示词时直接返回一个 401，测欠费/key 失效路径。"""
+    base = fake_ai_handler(groups)
+
+    def handler(tier, messages):
+        system = messages[0]["content"]
+        kind = "cards" if "场景卡" in system else ("entities" if "归成一组" in system else "other")
+        if fail_on == kind:
+            return _Denied401("Error code: 401 - Your api key: sk-SECRET123 is invalid")
+        if gate is not None and kind == gate["kind"]:
+            gate["started"].set()
+            gate["release"].wait(5)
+        return base(tier, messages)
+
+    fake = FakeBackend(handler=handler)
+    app = create_app(app_dir=tmp_path, allowed_hosts=("testserver",), backend_factory=lambda cfg: fake)
+    c = TestClient(app, raise_server_exceptions=False)
+    src = tmp_path / "稿"
+    src.mkdir()
+    for name, text in STORY.items():
+        (src / name).write_text(text, encoding="utf-8")
+    c.post("/api/books", json={"title": "我的书"})
+    wait(c, c.post(f"{BOOK}/import", json={"folder": str(src)}))
+    wait(c, c.post(f"{BOOK}/steps/split/run"))
+    wait(c, c.post(f"{BOOK}/steps/dedup/run"))
+    return c
+
+
+def _gate(kind):
+    return {"kind": kind, "started": threading.Event(), "release": threading.Event()}
+
+
+def _pause(c, r, gate):
+    assert r.status_code == 202, r.text
+    jid = r.json()["id"]
+    assert gate["started"].wait(5)
+    c.app.state.runner.cancel(jid)
+    gate["release"].set()
+    return c.app.state.runner.wait(jid)
+
+
+def test_pause_mid_run_marks_cards_step_paused(tmp_path):
+    g = _gate("cards")
+    c = gated_client(tmp_path, gate=g)
+    job = _pause(c, c.post(f"{BOOK}/steps/cards/run"), g)
+    st = c.get(BOOK).json()["steps"]["cards"]
+    assert job.status == "cancelled"
+    assert st["status"] == "failed" and st["summary"]["error"].startswith("已暂停")
+
+
+def test_pause_mid_run_marks_entities_step_paused(tmp_path):
+    g = _gate("entities")
+    c = gated_client(tmp_path, gate=g)
+    wait(c, c.post(f"{BOOK}/steps/cards/run"))
+    job = _pause(c, c.post(f"{BOOK}/steps/entities/run"), g)
+    st = c.get(BOOK).json()["steps"]["entities"]
+    assert job.status == "cancelled"
+    assert st["status"] == "failed" and st["summary"]["error"].startswith("已暂停")
+
+
+def test_fatal_error_marks_cards_step_failed_not_paused(tmp_path):
+    c = gated_client(tmp_path, fail_on="cards")
+    r = c.post(f"{BOOK}/steps/cards/run")
+    job = c.app.state.runner.wait(r.json()["id"])
+    st = c.get(BOOK).json()["steps"]["cards"]
+    assert job.status == "failed"
+    assert st["status"] == "failed" and "FatalLLMError" in st["summary"]["error"]
+    assert "已暂停" not in st["summary"]["error"]
+
+
+def test_fatal_error_marks_entities_step_failed_not_paused(tmp_path):
+    c = gated_client(tmp_path, fail_on="entities")
+    wait(c, c.post(f"{BOOK}/steps/cards/run"))
+    r = c.post(f"{BOOK}/steps/entities/run")
+    job = c.app.state.runner.wait(r.json()["id"])
+    st = c.get(BOOK).json()["steps"]["entities"]
+    assert job.status == "failed"
+    assert st["status"] == "failed" and "FatalLLMError" in st["summary"]["error"]
+    assert "已暂停" not in st["summary"]["error"]

@@ -18,7 +18,7 @@ from typing import Callable, Protocol
 from openai import AsyncOpenAI
 
 from .book import now_iso
-from .config import AppConfig, TierConfig, effective_key
+from .config import AppConfig, TierConfig, effective_key, mask_key
 from .fsutil import write_json
 
 MAX_ATTEMPTS = 3
@@ -102,6 +102,12 @@ class LLMClient:
             self._sem_loop = loop
         return self._sem
 
+    def _mask_key_in(self, text: str) -> str:
+        """上游错误原文如果原样带着 key（中转站可能不像官方接口那样自己打码），换成打码
+        后的样子，别让 key 落进 job.error、book.json 的步骤 summary 和 /api 的返回里。"""
+        key = effective_key(self.cfg)
+        return text.replace(key, mask_key(key)) if key else text
+
     async def _call(self, tier: TierConfig, messages: list[dict], max_tokens: int) -> Reply:
         try:
             async with self._semaphore():
@@ -110,9 +116,10 @@ class LLMClient:
             raise
         except Exception as e:
             status = getattr(e, "status_code", None)
+            msg = self._mask_key_in(str(e))
             if status in (401, 402, 403):
-                raise FatalLLMError(f"接口拒绝了请求（{status}）：{e}") from e
-            raise LLMError(f"{type(e).__name__}: {e}") from e
+                raise FatalLLMError(f"接口拒绝了请求（{status}）：{msg}") from e
+            raise LLMError(f"{type(e).__name__}: {msg}") from e
 
     async def chat_json(
         self,

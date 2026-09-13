@@ -244,7 +244,7 @@ def create_app(
                 "id": s.id,
                 "fresh": is_fresh(r, s),
                 "kind": card.get("kind"),
-                "summary": card.get("summary", ""),
+                "summary": card.get("summary") or "",
                 "problems": len(problems),
                 "dropped": sum(len(v) for v in dropped.values()),
             })

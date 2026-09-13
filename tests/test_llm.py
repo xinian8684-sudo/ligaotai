@@ -3,7 +3,7 @@ import asyncio
 import pytest
 from helpers import FakeBackend
 
-from ligaotai.config import AppConfig, TierConfig
+from ligaotai.config import AppConfig, TierConfig, mask_key
 from ligaotai.llm import FatalLLMError, LLMClient, LLMError, Reply, Usage, parse_json
 
 
@@ -127,6 +127,31 @@ def test_payment_or_forbidden_error_is_fatal(status):
 
     with pytest.raises(FatalLLMError):
         run(make(FakeBackend([Denied("no")])).chat_json("batch", "s", "u", ok, tag="t"))
+
+
+def test_upstream_error_key_is_masked():
+    """M7：中转站如果把完整 key 回显在错误原文里，异常信息里不能出现原 key（复用 config
+    里已有的打码函数），否则 key 会顺着 job.error / book.json / /api 的返回泄露出去。"""
+
+    class Denied(Exception):
+        status_code = 401
+
+    key = "sk-SECRET123456"
+    c = make(FakeBackend([Denied(f"Error code: 401 - Your api key: {key} is invalid")]), api_key=key)
+    with pytest.raises(FatalLLMError) as ei:
+        run(c.chat_json("batch", "s", "u", ok, tag="t"))
+    assert key not in str(ei.value)
+    assert mask_key(key) in str(ei.value)
+
+
+def test_upstream_error_key_is_masked_for_item_error():
+    """同一处打码逻辑也要覆盖非 401/402/403 的普通 LLMError 路径。"""
+    key = "sk-SECRET123456"
+    c = make(FakeBackend([RuntimeError(f"timeout, key={key}")]), api_key=key)
+    with pytest.raises(LLMError) as ei:
+        run(c.chat_json("batch", "s", "u", ok, tag="t"))
+    assert key not in str(ei.value)
+    assert mask_key(key) in str(ei.value)
 
 
 def test_other_error_is_item_error():
