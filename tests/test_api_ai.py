@@ -300,3 +300,61 @@ def test_regenerate_fatal_error_does_not_flip_done_to_failed(tmp_path):
     job = c.app.state.runner.wait(r.json()["id"])
     assert job.status == "failed" and "FatalLLMError" in job.error
     assert c.get(BOOK).json()["steps"]["cards"]["status"] == "done"
+
+
+def test_regenerate_pause_mid_run_keeps_done_cards_step(tmp_path):
+    """cards 步骤已经是 done，单卡重做（/cards/{sid}/regenerate）中途被取消时：
+    api.submit 里 JobCancelled 分支只该管全量跑（track_step=True）；单卡重做
+    （track_step=False）不能被这条分支误标成"已暂停"/failed，得保持原来的 done。"""
+    base = fake_ai_handler()
+    calls = {"n": 0}
+    started, release = threading.Event(), threading.Event()
+
+    def handler(tier, messages):
+        system = messages[0]["content"]
+        if "场景卡" in system:
+            calls["n"] += 1
+            if calls["n"] > 3:  # 前 3 次是全量跑三张卡；第 4 次是单卡重做，卡在这里等取消
+                started.set()
+                release.wait(5)
+        return base(tier, messages)
+
+    fake = FakeBackend(handler=handler)
+    app = create_app(app_dir=tmp_path, allowed_hosts=("testserver",), backend_factory=lambda cfg: fake)
+    c = TestClient(app, raise_server_exceptions=False)
+    src = tmp_path / "稿"
+    src.mkdir()
+    for name, text in STORY.items():
+        (src / name).write_text(text, encoding="utf-8")
+    c.post("/api/books", json={"title": "我的书"})
+    wait(c, c.post(f"{BOOK}/import", json={"folder": str(src)}))
+    wait(c, c.post(f"{BOOK}/steps/split/run"))
+    wait(c, c.post(f"{BOOK}/steps/dedup/run"))
+    wait(c, c.post(f"{BOOK}/steps/cards/run"))
+    assert c.get(BOOK).json()["steps"]["cards"]["status"] == "done"
+
+    r = c.post(f"{BOOK}/cards/S-0002/regenerate")
+    assert r.status_code == 202
+    jid = r.json()["id"]
+    assert started.wait(5)
+    c.app.state.runner.cancel(jid)
+    release.set()
+    job = c.app.state.runner.wait(jid)
+
+    assert job.status == "cancelled"
+    assert c.get(BOOK).json()["steps"]["cards"]["status"] == "done"
+
+
+def test_regenerate_card_after_entities_done_marks_entities_outdated(ready):
+    """cards 和 entities 都已经 done，单卡重做（卡内容变了）之后，entities 这个
+    下游步骤要变成 outdated，不能悄悄还留在 done，让作者以为实体合并结果还是最新的。"""
+    c = ready
+    wait(c, c.post(f"{BOOK}/steps/cards/run"))
+    wait(c, c.post(f"{BOOK}/steps/entities/run"))
+    assert c.get(BOOK).json()["steps"]["entities"]["status"] == "done"
+
+    wait(c, c.post(f"{BOOK}/cards/S-0002/regenerate"))
+
+    steps = c.get(BOOK).json()["steps"]
+    assert steps["cards"]["status"] == "done"
+    assert steps["entities"]["status"] == "outdated"
