@@ -102,3 +102,36 @@ def prepare(book: Book) -> Prepared:
         items[s.id] = Item(s.id, s.source, s.index, card.get("kind", "正文"), card_line(s.id, card, cmap),
                            [r for r in refs if r])
     return Prepared(items, unassigned, all_ids, fingerprint(items, unassigned))
+
+
+def segments(ids: list[str], items: dict[str, Item]) -> list[list[str]]:
+    """把一条线里的正文 / 碎片块按「源文件 + 文件内位置」排好，同一文件里位置紧挨着的连成片段。
+    只有一块的也当一个片段返回。不是正文 / 碎片的块跳过。"""
+    ordered = sorted(
+        (items[i] for i in ids if items[i].kind in ORDERED_KINDS),
+        key=lambda it: (natural_key(it.source), it.index),
+    )
+    out: list[list[str]] = []
+    prev: Item | None = None
+    for it in ordered:
+        if prev is not None and it.source == prev.source and it.index == prev.index + 1:
+            out[-1].append(it.id)
+        else:
+            out.append([it.id])
+        prev = it
+    return out
+
+
+def split_by_budget(ids: list[str], cost: dict[str, int], budget: int) -> list[list[str]]:
+    """按顺序切成几段，每段的 cost 之和不超过 budget；单个就超过 budget 的自成一段。"""
+    chunks: list[list[str]] = []
+    total = 0
+    for i in ids:
+        c = cost[i]
+        if chunks and total + c <= budget:
+            chunks[-1].append(i)
+            total += c
+        else:
+            chunks.append([i])
+            total = c
+    return chunks

@@ -1,6 +1,6 @@
 from helpers import seed_book
 
-from ligaotai.threads_input import NO_CARD, card_line, prepare
+from ligaotai.threads_input import NO_CARD, Item, card_line, prepare, segments, split_by_budget
 
 
 def test_prepare_picks_main_versions_and_uses_canonical_names(book):
@@ -36,3 +36,30 @@ def test_fingerprint_follows_what_the_model_sees(book):
     assert prepare(book).fingerprint == fp1
     seed_book(book, scenes, entities=[("person", "林小清", ["林清", "清儿"])])
     assert prepare(book).fingerprint != fp1
+
+
+def test_segments_bind_adjacent_blocks_of_the_same_file():
+    items = {
+        "S-0001": Item("S-0001", "b.txt", 0, "正文", ""),
+        "S-0002": Item("S-0002", "b.txt", 1, "碎片", ""),
+        "S-0003": Item("S-0003", "b.txt", 3, "正文", ""),  # 跟前面隔了一块
+        "S-0004": Item("S-0004", "a.txt", 0, "正文", ""),
+        "S-0005": Item("S-0005", "a.txt", 1, "提纲", ""),  # 提纲不参与，也把前后隔开
+        "S-0006": Item("S-0006", "a.txt", 2, "正文", ""),
+        "S-0007": Item("S-0007", "文件10.txt", 0, "正文", ""),
+        "S-0008": Item("S-0008", "文件2.txt", 0, "正文", ""),
+    }
+    assert segments(list(items), items) == [
+        ["S-0004"], ["S-0006"], ["S-0001", "S-0002"], ["S-0003"], ["S-0008"], ["S-0007"],
+    ]
+
+
+def test_segments_only_use_the_given_ids():
+    items = {f"S-000{i}": Item(f"S-000{i}", "a.txt", i, "正文", "") for i in range(1, 4)}
+    assert segments(["S-0001", "S-0003"], items) == [["S-0001"], ["S-0003"]]
+
+
+def test_split_by_budget():
+    cost = {"a": 4, "b": 4, "c": 4, "d": 20, "e": 1}
+    assert split_by_budget(list(cost), cost, 10) == [["a", "b"], ["c"], ["d"], ["e"]]
+    assert split_by_budget([], cost, 10) == []
