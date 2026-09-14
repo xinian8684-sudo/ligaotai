@@ -3,6 +3,7 @@
 import asyncio
 import json
 import random
+import re
 
 CHARS = (
     "天地玄黄宇宙洪荒日月盈昃辰宿列张寒来暑往秋收冬藏闰余成岁律吕调阳云腾致雨"
@@ -198,3 +199,65 @@ def seed_book(book, scenes, entities=(), groups=()):
         {"id": f"G-{i:03d}", "members": list(ms), "main": m, "main_by": "auto", "pairs": []}
         for i, (m, ms) in enumerate(groups, 1)
     ]})
+
+
+_LISTED = re.compile(r"^(?:\[[^\]]*\] )?(S-\d{4,})｜", re.M)
+_THREAD_HEAD = re.compile(r"^## (L-\d+)", re.M)
+
+
+def listed_scenes(messages) -> list[str]:
+    """归线提示词 user 消息里列出的场景编号（行首的 S-编号｜，缩进的示例行不算）。"""
+    return _LISTED.findall(messages[1]["content"])
+
+
+def threads_handler(worlds=None, lines=None, order=None, align=None, gaps=None, fallback=None):
+    """步骤 6 各次调用的假回复。每个参数是 fn(messages) -> 回复（字符串 / Reply / 异常实例）；不给就用默认：
+    全部归一个世界「世界一」、正文碎片全归一条主线（提纲挂上去）、按列出的顺序排、偏移都是 0、没有缺口。
+    认不出的提示词交给 fallback（比如 fake_ai_handler()），没有 fallback 就报错。"""
+
+    def d_worlds(m):
+        return json.dumps(
+            {"time_unit": "年", "worlds": [{"name": "世界一", "reason": "测试", "scenes": listed_scenes(m)}]},
+            ensure_ascii=False,
+        )
+
+    def d_lines(m):
+        user = m[1]["content"]
+        ids = listed_scenes(m)
+        outl = [i for i in ids if f"{i}｜提纲" in user]
+        sc = [i for i in ids if i not in outl]
+        threads = [{"name": "主线", "about": "测试", "main": True, "scenes": sc, "outlines": outl}] if sc else []
+        return json.dumps({"threads": threads, "world_outlines": [] if sc else outl}, ensure_ascii=False)
+
+    def d_order(m):
+        ids = listed_scenes(m)
+        return json.dumps(
+            {"order": ids, "times": {s: [i, "高"] for i, s in enumerate(ids)}, "end": {"state": "待定", "note": "测试"}},
+            ensure_ascii=False,
+        )
+
+    def d_align(m):
+        tids = _THREAD_HEAD.findall(m[1]["content"])
+        return json.dumps({"threads": [{"id": t, "offset": 0} for t in tids], "intersections": []})
+
+    def d_gaps(m):
+        return '{"gaps": []}'
+
+    table = [
+        ("划分世界", worlds or d_worlds),
+        ("划分支线", lines or d_lines),
+        ("线内排序", order or d_order),
+        ("跨线对齐", align or d_align),
+        ("找缺口", gaps or d_gaps),
+    ]
+
+    def handler(tier, messages):
+        system = messages[0]["content"]
+        for mark, fn in table:
+            if mark in system:
+                return fn(messages)
+        if fallback is not None:
+            return fallback(tier, messages)
+        raise AssertionError("没见过的提示词")
+
+    return handler

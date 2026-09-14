@@ -42,3 +42,31 @@ def test_real_entities_prompt():
     assert "json" in system and "人物" in system and "归成一组" in system
     assert "林清" in user
     assert "$" not in system + user
+
+
+THREAD_PROMPTS = [
+    ("threads_worlds", {"unit_rule": "x", "known": "k", "lines": "l"}, "划分世界"),
+    ("threads_lines", {"world": "w", "locked": "k", "lines": "l"}, "划分支线"),
+    ("threads_order", {"thread": "t", "unit": "年", "segments": "s", "lines": "l"}, "线内排序"),
+    ("threads_align", {"unit": "年", "main": "L-001", "threads": "t"}, "跨线对齐"),
+    ("threads_gaps", {"world": "w", "threads": "t", "refs": "r"}, "找缺口"),
+]
+
+
+@pytest.mark.parametrize("name,values,mark", THREAD_PROMPTS)
+def test_threads_prompts_render(name, values, mark):
+    from ligaotai.prompts import render
+
+    system, user = render(name, **values)
+    assert "json" in system and mark in system
+    assert "$" not in system + user
+    others = [m for _, _, m in THREAD_PROMPTS if m != mark]
+    assert not any(m in system for m in others)
+
+
+def test_threads_marks_not_in_older_prompts():
+    from ligaotai.prompts import load_prompt
+
+    for name in ("cards", "entities"):
+        system, _ = load_prompt(name)
+        assert not any(m in system.template for _, _, m in THREAD_PROMPTS)
