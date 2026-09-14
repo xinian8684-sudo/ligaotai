@@ -93,3 +93,84 @@ def clean_worlds(data: dict, expected: set[str], known: set[str]) -> tuple[list[
             by_key[wid] = entry
     missing = [s for s in sorted(expected, key=natural_key) if s not in taken]
     return out, missing, text(data.get("time_unit"))
+
+
+# --- 6.2 划支线 ---
+
+
+def check_lines(data: dict, ordered: set[str], outlines: set[str], known: set[str]) -> list[str]:
+    threads = data.get("threads")
+    if not isinstance(threads, list):
+        return ["缺少 threads 列表"]
+    problems: list[str] = []
+    scene_list: list[str] = []
+    outline_list: list[str] = str_list(data.get("world_outlines"))
+    mains = 0
+    for i, t in enumerate(threads, 1):
+        if not isinstance(t, dict):
+            problems.append(f"第 {i} 条线格式不对")
+            continue
+        tid = t.get("id")
+        if tid not in (None, "") and tid not in known:
+            problems.append(f"第 {i} 条线的 id「{tid}」不是已有的线；新线不要写 id")
+        elif tid in (None, "") and not text(t.get("name")):
+            problems.append(f"第 {i} 条线没有 name")
+        mains += t.get("main") is True
+        scene_list += str_list(t.get("scenes"))
+        outline_list += str_list(t.get("outlines"))
+    if threads and mains != 1:
+        problems.append(f"要恰好有一条线标 \"main\": true，现在有 {mains} 条")
+    problems += coverage_problems(scene_list, ordered, "正文/碎片块")
+    problems += coverage_problems(outline_list, outlines, "提纲块")
+    return problems
+
+
+def clean_lines(data: dict, ordered: set[str], outlines: set[str], known: set[str]) -> dict:
+    """返回 {"threads": [{"key", "name", "about", "main", "scenes", "outlines"}], "world_outlines", "missing"}。
+    key 是已有线的键，新线是 None。"""
+    taken: set[str] = set()
+
+    def pick(ids, allowed: set[str]) -> list[str]:
+        out = []
+        for s in str_list(ids):
+            if s in allowed and s not in taken:
+                taken.add(s)
+                out.append(s)
+        return out
+
+    threads: list[dict] = []
+    by_key: dict[str, dict] = {}
+    world_outlines: list[str] = []
+    for t in data.get("threads") or []:
+        if not isinstance(t, dict):
+            continue
+        key = t.get("id") if t.get("id") in known else None
+        scenes, outs = pick(t.get("scenes"), ordered), pick(t.get("outlines"), outlines)
+        if key is not None and key in by_key:
+            by_key[key]["scenes"] += scenes
+            by_key[key]["outlines"] += outs
+            by_key[key]["main"] = by_key[key]["main"] or t.get("main") is True
+            continue
+        if key is None and not scenes:
+            world_outlines += outs
+            continue
+        entry = {
+            "key": key,
+            "name": "" if key else (text(t.get("name")) or UNNAMED_THREAD),
+            "about": "" if key else text(t.get("about")),
+            "main": t.get("main") is True,
+            "scenes": scenes,
+            "outlines": outs,
+        }
+        threads.append(entry)
+        if key is not None:
+            by_key[key] = entry
+    world_outlines += pick(data.get("world_outlines"), outlines)
+    world_outlines += [s for s in sorted(outlines, key=natural_key) if s not in taken]
+    missing = [s for s in sorted(ordered, key=natural_key) if s not in taken]
+    first = next((t for t in threads if t["main"]), None)
+    if first is None and threads:
+        first = max(threads, key=lambda t: len(t["scenes"]))  # max 平票取第一个
+    for t in threads:
+        t["main"] = t is first
+    return {"threads": threads, "world_outlines": world_outlines, "missing": missing}
