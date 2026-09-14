@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import math
 import re
@@ -29,7 +28,7 @@ from typing import Callable
 from .book import FILE_LOCK, Book
 from .cards import is_fresh, load_cards, pick_error
 from .fsutil import natural_key, read_json, write_json
-from .llm import FatalLLMError, LLMClient, LLMError
+from .llm import FatalLLMError, LLMClient, LLMError, cache_config, cache_key
 from .prompts import render
 from .scenes import load_scenes
 
@@ -336,14 +335,12 @@ def _cache_cfg(client: LLMClient) -> dict:
     max_tokens 不算——截断由 chat_json 自动加大上限重试，改上限不改变结果，不该让付过钱的批作废；
     接口地址要算——换了服务商（比如都叫 deepseek-flash 的中转站），模型名一样也不是同一个模型。
     API key 不进缓存键。"""
-    return {**client.tier("synth").model_dump(exclude={"max_tokens"}), "api_base": client.cfg.api_base}
+    return cache_config(client, "synth")
 
 
 def _cache_key(system: str, user: str, synth_cfg: dict) -> str:
     """提示词全文 + _cache_cfg 给的配置（模型、思考开关/强度、接口地址等）的 sha256。"""
-    return hashlib.sha256(
-        json.dumps([system, user, synth_cfg], ensure_ascii=False, sort_keys=True).encode("utf-8")
-    ).hexdigest()
+    return cache_key(system, user, synth_cfg)
 
 
 def _plan_type(typ: str, mentions: dict[str, Mention], synth_cfg: dict) -> tuple[list[str], list[_Batch]]:

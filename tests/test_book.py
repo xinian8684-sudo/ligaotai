@@ -99,3 +99,9 @@ def test_add_usage_accumulates(book):
     assert usage["total"] == {"calls": 6, "prompt_tokens": 1060, "completion_tokens": 255, "cost_usd": 0.0033}
     assert usage["by_step"]["cards"]["calls"] == 4
     assert usage["by_step"]["entities"]["cost_usd"] == 0.002
+
+
+def test_threads_paths_and_setting(book):
+    assert book.threads_path.name == "世界与支线.json"
+    assert book.threads_cache_path.name == "归线缓存.json"
+    assert book.settings()["threads_max_input_tokens"] == 600000

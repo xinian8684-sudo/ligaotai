@@ -32,6 +32,7 @@ DEFAULT_SETTINGS = {
     "dedup_containment": 0.8,    # 短块有这么多内容出现在长块里，就挂到那个最佳容器上
     "dedup_min_shingles": 100,   # 太短的块（约 100 字以下）不参与查重
     "dedup_common_df": 200,      # 出现在超过这么多块里的字串当套话，不计数（真实文本 21~200 块之间几乎没有套话，调大避免误伤 21+ 份重复场景）
+    "threads_max_input_tokens": 600000,  # 归线一次调用的输入上限（按 1 个字符 1 个 token 估，偏保守），超过就分段
 }
 
 # 进程内一把可重入锁：book.json、实体.json 的「读 → 改 → 写」都在它里面串行。
@@ -83,6 +84,15 @@ class Book:
     def entities_cache_path(self) -> Path:
         """实体合并每一批模型结果的缓存：暂停、失败后重跑，做完的批不用再花钱。"""
         return self.root / "实体合并缓存.json"
+
+    @property
+    def threads_path(self) -> Path:
+        return self.root / "世界与支线.json"
+
+    @property
+    def threads_cache_path(self) -> Path:
+        """归线每次模型调用的缓存：暂停、失败后重跑，输入没变的调用不用再花钱。"""
+        return self.root / "归线缓存.json"
 
     @property
     def logs_dir(self) -> Path:

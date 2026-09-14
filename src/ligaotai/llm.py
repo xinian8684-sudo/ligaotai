@@ -7,6 +7,7 @@ LLMClient.chat_json 负责：要 JSON → 解析 → 调用方给的检查函数
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import asyncio
@@ -179,6 +180,21 @@ class LLMClient:
             )
         except OSError:
             pass  # 日志是辅助功能，写失败不该让已经花了钱的这次调用也跟着失败
+
+
+def cache_config(client: LLMClient, tier_name: str) -> dict:
+    """缓存键里的配置部分：这一档的配置（不含 max_tokens）+ 接口地址。
+    max_tokens 不算——截断由 chat_json 自动加大上限重试，改上限不改变结果，不该让付过钱的调用作废；
+    接口地址要算——换了服务商（比如都叫 deepseek-flash 的中转站），模型名一样也不是同一个模型。
+    API key 不进缓存键。"""
+    return {**client.tier(tier_name).model_dump(exclude={"max_tokens"}), "api_base": client.cfg.api_base}
+
+
+def cache_key(system: str, user: str, cfg: dict) -> str:
+    """提示词全文 + cache_config 给的配置的 sha256。"""
+    return hashlib.sha256(
+        json.dumps([system, user, cfg], ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
 
 def request_extras(tier: TierConfig) -> dict:

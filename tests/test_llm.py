@@ -245,3 +245,22 @@ def test_log_failure_does_not_fail_the_call(tmp_path, monkeypatch):
 def test_usage_cost():
     u = Usage(calls=1, prompt_tokens=1_000_000, completion_tokens=500_000)
     assert u.cost(AppConfig()) == pytest.approx(0.30 + 0.60)
+
+
+def test_cache_key_is_shared_with_entities_and_ignores_max_tokens():
+    from ligaotai import entities as ent
+    from ligaotai.llm import cache_config, cache_key
+
+    c1 = LLMClient(AppConfig(), FakeBackend())
+    c2 = LLMClient(AppConfig(synth=TierConfig(thinking="on", effort="high", max_tokens=999)), FakeBackend())
+    c3 = LLMClient(AppConfig(api_base="https://other.example"), FakeBackend())
+    assert cache_config(c1, "synth") == cache_config(c2, "synth")
+    assert cache_config(c3, "synth") != cache_config(c1, "synth")
+    assert "api_key" not in cache_config(c1, "synth")
+    assert cache_key("s", "u", cache_config(c1, "synth")) == ent._cache_key("s", "u", ent._cache_cfg(c1))
+    # 算法固定：sha256(json.dumps([system, user, cfg], ensure_ascii=False, sort_keys=True))
+    import hashlib, json
+
+    cfg = {"model": "m"}
+    raw = json.dumps(["s", "u", cfg], ensure_ascii=False, sort_keys=True).encode("utf-8")
+    assert cache_key("s", "u", cfg) == hashlib.sha256(raw).hexdigest()
