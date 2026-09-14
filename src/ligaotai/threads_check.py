@@ -174,3 +174,72 @@ def clean_lines(data: dict, ordered: set[str], outlines: set[str], known: set[st
     for t in threads:
         t["main"] = t is first
     return {"threads": threads, "world_outlines": world_outlines, "missing": missing}
+
+
+# --- 6.3 线内排序 ---
+
+END_STATES = ("完结", "待定")
+
+
+def parse_time(v) -> dict | None:
+    """[数值或 null, 把握] 或 {"t", "conf"} → {"t", "conf"}；格式不对返回 None。"""
+    if isinstance(v, dict):
+        v = [v.get("t"), v.get("conf")]
+    if not isinstance(v, (list, tuple)) or len(v) != 2:
+        return None
+    t, conf = v
+    if isinstance(t, str):
+        try:
+            t = float(t)
+        except ValueError:
+            return None
+    if t is not None and (isinstance(t, bool) or not isinstance(t, (int, float)) or not math.isfinite(t)):
+        return None
+    return {"t": t, "conf": conf if conf in CONFS else "低"}
+
+
+def expand_order(order, segs: dict[str, list[str]]) -> list[str]:
+    out: list[str] = []
+    for x in str_list(order):
+        out += segs.get(x, [x])
+    return out
+
+
+def check_order(data: dict, segs: dict[str, list[str]], expected: set[str]) -> list[str]:
+    if not isinstance(data.get("order"), list):
+        return ["缺少 order 列表"]
+    problems = coverage_problems(expand_order(data["order"], segs), expected, "场景（或片段里的场景）")
+    times = data.get("times") if isinstance(data.get("times"), dict) else {}
+    no_time = [s for s in sorted(expected, key=natural_key) if s not in times]
+    bad_time = [s for s in sorted(expected, key=natural_key) if s in times and parse_time(times[s]) is None]
+    if no_time:
+        problems.append("这些块没有给故事时间：" + "、".join(no_time[:MAX_LISTED]))
+    if bad_time:
+        problems.append("这些块的时间格式不对，要写成 [数值或 null, \"高/中/低\"]：" + "、".join(bad_time[:MAX_LISTED]))
+    end = data.get("end")
+    if not isinstance(end, dict) or end.get("state") not in END_STATES:
+        problems.append("end.state 只能是「完结」或「待定」")
+    return problems
+
+
+def clean_order(data: dict, segs: dict[str, list[str]], expected: set[str], fallback: list[str]) -> dict:
+    """返回 {"scenes", "times", "end", "missing"}；missing 按 fallback 的顺序。"""
+    scenes: list[str] = []
+    for s in expand_order(data.get("order"), segs):
+        if s in expected and s not in scenes:
+            scenes.append(s)
+    got = set(scenes)
+    raw = data.get("times") if isinstance(data.get("times"), dict) else {}
+    times = {}
+    for s in scenes:
+        t = parse_time(raw.get(s)) if s in raw else None
+        if t is not None:
+            times[s] = t
+    end = data.get("end") if isinstance(data.get("end"), dict) else {}
+    state = end.get("state") if end.get("state") in END_STATES else "待定"
+    return {
+        "scenes": scenes,
+        "times": times,
+        "end": {"state": state, "note": text(end.get("note"))},
+        "missing": [s for s in fallback if s in expected and s not in got],
+    }

@@ -102,3 +102,45 @@ def test_clean_lines_keeps_first_main_and_moves_orphan_outlines():
     assert [t["main"] for t in got["threads"]] == [True, False]
     assert got["threads"][1]["name"] == "乙"
     assert got["world_outlines"] == ["S-0009"]
+
+
+from ligaotai.threads_check import check_order, clean_order, parse_time
+
+SEGS = {"P-001": ["S-0001", "S-0002"]}
+EXP = {"S-0001", "S-0002", "S-0003"}
+
+
+def order_reply(order, times=None, state="待定"):
+    times = {s: [i, "高"] for i, s in enumerate(sorted(EXP))} if times is None else times
+    return {"order": order, "times": times, "end": {"state": state, "note": "n"}}
+
+
+def test_parse_time():
+    assert parse_time([1, "高"]) == {"t": 1, "conf": "高"}
+    assert parse_time(["2.5", "中"]) == {"t": 2.5, "conf": "中"}
+    assert parse_time([None, "很有把握"]) == {"t": None, "conf": "低"}
+    assert parse_time({"t": 3, "conf": "低"}) == {"t": 3, "conf": "低"}
+    assert parse_time([True, "高"]) is None
+    assert parse_time(["不知道", "高"]) is None
+    assert parse_time([float("nan"), "高"]) is None
+    assert parse_time(5) is None
+
+
+def test_check_order():
+    assert check_order(order_reply(["S-0003", "P-001"]), SEGS, EXP) == []
+    assert check_order(order_reply(["S-0003", "S-0002", "S-0001"]), SEGS, EXP) == []  # 片段可以拆
+    assert check_order(order_reply(["P-001", "S-0001", "S-0003"]), SEGS, EXP) != []  # 重复
+    assert check_order(order_reply(["P-001"]), SEGS, EXP) != []  # 漏
+    assert check_order(order_reply(["P-001", "S-0003", "P-009"]), SEGS, EXP) != []  # 编造
+    assert check_order(order_reply(["P-001", "S-0003"], times={}), SEGS, EXP) != []
+    assert check_order(order_reply(["P-001", "S-0003"], state="写完了"), SEGS, EXP) != []
+    assert check_order({"order": "乱写"}, SEGS, EXP) == ["缺少 order 列表"]
+
+
+def test_clean_order():
+    data = order_reply(["S-0003", "P-001", "S-0003", "S-0099"], times={"S-0003": [5, "中"], "S-0001": "乱写"}, state="?")
+    got = clean_order(data, SEGS, EXP | {"S-0004"}, ["S-0001", "S-0002", "S-0003", "S-0004"])
+    assert got["scenes"] == ["S-0003", "S-0001", "S-0002"]
+    assert got["times"] == {"S-0003": {"t": 5, "conf": "中"}}
+    assert got["end"] == {"state": "待定", "note": "n"}
+    assert got["missing"] == ["S-0004"]
