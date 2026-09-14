@@ -75,6 +75,33 @@ def test_returns_result_with_fewest_problems_not_the_last_one():
     assert (data, problems) == ({"n": 2}, ["问题0"])
 
 
+def test_score_picks_best_instead_of_problem_count():
+    """传了 score：按 score 挑，不看问题条数。第 1 次 3 条问题但只坏 1 处，第 2、3 次 1 条问题但坏 50 处
+    （比如「漏掉 50 块」合成一条）→ 应该留第 1 次。"""
+    fb = FakeBackend(['{"n": 1}', '{"n": 2}', '{"n": 3}'])
+    problems_of = {1: ["a", "b", "c"], 2: ["漏了很多"], 3: ["漏了很多"]}
+    bad_of = {1: 1, 2: 50, 3: 50}
+    data, problems = run(make(fb).chat_json(
+        "batch", "s", "u", lambda d: problems_of[d["n"]], tag="t", score=lambda d: bad_of[d["n"]]
+    ))
+    assert (data, problems) == ({"n": 1}, ["a", "b", "c"])
+
+
+def test_score_tie_keeps_the_later_one():
+    fb = FakeBackend(['{"n": 1}', '{"n": 2}', '{"n": 3}'])
+    data, _ = run(make(fb).chat_json("batch", "s", "u", lambda d: ["x"], tag="t", score=lambda d: 5 if d["n"] < 3 else 9))
+    assert data == {"n": 2}
+
+
+def test_score_is_ignored_once_there_are_no_problems():
+    """没问题就直接返回这一次，不管 score 怎么说。"""
+    fb = FakeBackend(['{"n": 1}', '{"n": 2}'])
+    data, problems = run(make(fb).chat_json(
+        "batch", "s", "u", lambda d: [] if d["n"] == 2 else ["x"], tag="t", score=lambda d: 0 if d["n"] == 1 else 99
+    ))
+    assert (data, problems, len(fb.calls)) == ({"n": 2}, [], 2)
+
+
 def test_empty_reply_retried_as_is():
     fb = FakeBackend([Reply(content=""), '{"a": 1}'])
     assert run(make(fb).chat_json("batch", "s", "u", ok, tag="t"))[0] == {"a": 1}

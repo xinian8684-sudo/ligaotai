@@ -162,6 +162,11 @@ def seed_book(book, scenes, entities=(), groups=()):
     kind（默认 正文）、summary、persons、places、refs、world、times、removed、
     no_card（不写卡）、stale_card（卡的 scene_hash 对不上）。
     entities：[(类型, 规范名, [叫法...])]，都写成 draft。groups：[(主版本, [成员...])]。
+
+    两个坑：
+    - 同一本书第二次调用时，上一次写的卡文件不会删。hash 固定是 h-<id>，所以旧卡仍然新鲜，
+      这时再带 no_card 不生效；要「没卡」就换一本书，或者用 stale_card。
+    - index 默认取整个 scenes 列表里的位置，不是按文件分别计数。多个源文件的用例要显式写 index。
     """
     from ligaotai.cards import card_path
     from ligaotai.fsutil import write_json

@@ -27,6 +27,7 @@ MAX_TOKENS_CAP = 65536
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$")
 
 Checker = Callable[[dict], list]  # 返回问题清单（字符串），空列表 = 合格；检查函数不许抛异常，有问题就返回问题清单
+Scorer = Callable[[dict], int]  # 给一次回复打分（坏了多少），越小越好；同样不许抛异常
 
 
 class LLMError(RuntimeError):
@@ -131,13 +132,19 @@ class LLMClient:
         *,
         tag: str,
         max_attempts: int = MAX_ATTEMPTS,
+        score: Scorer | None = None,
     ) -> tuple[dict, list[str]]:
-        """返回 (结果, 仍存在的问题)。见 Task 3 的流程说明。"""
+        """返回 (结果, 仍存在的问题)。见 Task 3 的流程说明。
+
+        重试用尽时返回几次里最好的一次：默认按问题条数比，传了 score 就按 score(结果) 比
+        （都是小的赢，一样时后面那次赢）。问题按类合并成一条的检查（漏 1 块和漏 1000 块都是 1 条）
+        要传 score，不然会挑中坏得多的那次。"""
         tier = self.tier(tier_name)
         base = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         messages = list(base)
         max_tokens = tier.max_tokens
         best: tuple[dict, list[str]] | None = None
+        best_score = 0
         problems: list[str] = []
         for attempt in range(1, max_attempts + 1):
             reply = await self._call(tier, messages, max_tokens)
@@ -158,10 +165,11 @@ class LLMClient:
                 problems = [f"不是合法的 JSON：{e}"]
             else:
                 problems = check(data)
-                if best is None or len(problems) <= len(best[1]):
-                    best = (data, problems)
                 if not problems:
-                    return best
+                    return data, problems
+                s = len(problems) if score is None else score(data)
+                if best is None or s <= best_score:
+                    best, best_score = (data, problems), s
             messages = base + [
                 {"role": "assistant", "content": reply.content},
                 {"role": "user", "content": feedback(problems)},
