@@ -152,3 +152,49 @@ def fake_ai_handler(groups=()):
         raise AssertionError("没见过的提示词")
 
     return handler
+
+
+def seed_book(book, scenes, entities=(), groups=()):
+    """不走导入/切场景/场景卡，直接往书里写场景文件、场景卡、实体.json、版本组.json。
+
+    scenes：字典列表。键：id（必填）、source（默认 a.txt）、index（默认在列表里的位置）、
+    kind（默认 正文）、summary、persons、places、refs、world、times、removed、
+    no_card（不写卡）、stale_card（卡的 scene_hash 对不上）。
+    entities：[(类型, 规范名, [叫法...])]，都写成 draft。groups：[(主版本, [成员...])]。
+    """
+    from ligaotai.cards import card_path
+    from ligaotai.fsutil import write_json
+    from ligaotai.scenes import Scene, write_scene
+
+    for i, s in enumerate(scenes):
+        sid = s["id"]
+        text = s.get("text", f"{sid} 的正文。")
+        h = f"h-{sid}"
+        write_scene(book, Scene(
+            id=sid, source=s.get("source", "a.txt"), index=s.get("index", i), start=0, end=len(text),
+            chars=len(text), hash=h, removed=s.get("removed", False), text=text,
+        ))
+        if s.get("no_card"):
+            continue
+        card = {
+            "summary": s.get("summary", f"{sid} 摘要"),
+            "pov": "",
+            "characters": [{"name": n, "role": "主要"} for n in s.get("persons", [])],
+            "locations": list(s.get("places", [])),
+            "organizations": [],
+            "world_hint": s.get("world", ""),
+            "time_hints": list(s.get("times", [])),
+            "refs_elsewhere": list(s.get("refs", [])),
+            "kind": s.get("kind", "正文"),
+        }
+        scene_hash = "old" if s.get("stale_card") else h
+        write_json(card_path(book, sid), {"id": sid, "scene_hash": scene_hash, "card": card})
+    ents = [
+        {"id": f"E-{i:04d}", "type": t, "canonical": c, "names": list(ns), "status": "draft", "reason": "", "scenes": []}
+        for i, (t, c, ns) in enumerate(entities, 1)
+    ]
+    write_json(book.entities_path, {"next_id": len(ents) + 1, "entities": ents})
+    write_json(book.versions_path, {"params": {}, "groups": [
+        {"id": f"G-{i:03d}", "members": list(ms), "main": m, "main_by": "auto", "pairs": []}
+        for i, (m, ms) in enumerate(groups, 1)
+    ]})
