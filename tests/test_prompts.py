@@ -62,6 +62,7 @@ def test_threads_prompts_render(name, values, mark):
     assert "$" not in system + user
     others = [m for _, _, m in THREAD_PROMPTS if m != mark]
     assert not any(m in system for m in others)
+    assert "而是" not in system  # 写给模型的话不用「不是A而是B」的句式
 
 
 def test_threads_marks_not_in_older_prompts():
@@ -70,3 +71,99 @@ def test_threads_marks_not_in_older_prompts():
     for name in ("cards", "entities"):
         system, _ = load_prompt(name)
         assert not any(m in system.template for _, _, m in THREAD_PROMPTS)
+
+
+# --- 提示词里的示例 json 送进对应的 check_*，必须一次过（review_t08 第 3 条）---
+# 示例从提示词文件里现解析，不在这里抄一份：以后改提示词或检查函数改得对不上，这里当场抓到。
+
+import json
+
+from ligaotai.fsutil import natural_key
+from ligaotai.threads_check import check_align, check_gaps, check_lines, check_order, check_worlds
+
+VALUES = {name: values for name, values, _ in THREAD_PROMPTS}
+
+
+def _objects(text: str) -> list:
+    """text 里能解析出来的顶层 json 对象，按出现顺序。"""
+    dec = json.JSONDecoder()
+    out, i = [], text.find("{")
+    while i != -1:
+        try:
+            obj, end = dec.raw_decode(text, i)
+        except ValueError:
+            i = text.find("{", i + 1)
+            continue
+        out.append(obj)
+        i = text.find("{", end)
+    return out
+
+
+def example(name: str) -> tuple[dict, list]:
+    """(「格式如下」后面的示例, 规则里夹带的 json 片段)。"""
+    system, _ = render(name, **VALUES[name])
+    rules, tail = system.split("格式如下", 1)
+    return _objects(tail)[0], _objects(rules)
+
+
+def test_worlds_example_passes_check_on_first_run():
+    ex, rules = example("threads_worlds")
+    expected = {s for w in ex["worlds"] for s in w["scenes"]}
+    assert expected
+    assert check_worlds(ex, expected, set(), True, {}) == []  # 第一次跑：已有的世界是（无）
+    # 规则里教的「归入已有的世界」写法：上面列了这个世界时，跟新世界写在一起也能过
+    refs = [o for o in rules if "id" in o]
+    assert refs
+    known = {o["id"] for o in refs}
+    expected |= {s for o in refs for s in o["scenes"]}
+    data = {**ex, "worlds": ex["worlds"] + refs}
+    assert check_worlds(data, expected, known, True, {k: "旧世界" for k in known}) == []
+
+
+def test_lines_example_passes_check_on_first_run():
+    ex, rules = example("threads_lines")
+    ordered = {s for t in ex["threads"] for s in t.get("scenes", [])}
+    outlines = {s for t in ex["threads"] for s in t.get("outlines", [])} | set(ex.get("world_outlines", []))
+    assert ordered
+    assert check_lines(ex, ordered, outlines, set(), {}) == []  # 第一次跑：已有的线是（无）
+    # 规则里教的写法：归入已有的线、已有的主线这次没新块（scenes 空、标 main）
+    refs = [o for o in rules if "id" in o]
+    assert any(o.get("main") is True and o.get("scenes") == [] for o in refs)
+    known = {o["id"] for o in refs}
+    ordered |= {s for o in refs for s in o.get("scenes", [])}
+    new = [{k: v for k, v in t.items() if k != "main"} for t in ex["threads"]]
+    data = {**ex, "threads": new + refs}
+    assert check_lines(data, ordered, outlines, known, {k: "旧线" for k in known}) == []
+
+
+def test_order_example_passes_check():
+    ex, _ = example("threads_order")
+    expected = set(ex["times"])
+    assert all(k.startswith("S-") for k in expected)  # times 按场景编号给
+    singles = [x for x in ex["order"] if x.startswith("S-")]
+    segs_ids = [x for x in ex["order"] if x.startswith("P-")]
+    assert len(segs_ids) <= 1, "示例里有几个片段时，这个测试要改成按片段分块"
+    rest = sorted(expected - set(singles), key=natural_key)
+    assert check_order(ex, {p: rest for p in segs_ids}, expected) == []
+
+
+def test_align_example_passes_check():
+    ex, _ = example("threads_align")
+    main = VALUES["threads_align"]["main"]
+    ids = {t["id"] for t in ex["threads"]}
+    assert main in ids
+    members: dict[str, set] = {t: set() for t in ids}
+    for c in ex["intersections"]:
+        members[c["thread"]].add(c["scene"])
+        members[main].add(c["main_scene"])
+    assert check_align(ex, ids, main, members) == []
+
+
+def test_gaps_example_passes_check():
+    ex, _ = example("threads_gaps")
+    refs = {s for g in ex["gaps"] for s in g["mentioned_in"]}
+    lines: dict[str, set] = {}
+    for g in ex["gaps"]:
+        lines.setdefault(g["thread"], set()).update(x for x in (g.get("after"), g.get("before")) if x)
+    ordered = {t: sorted(v, key=natural_key) for t, v in lines.items()}  # 线里的块按编号先后排
+    assert check_gaps(ex, refs, ordered) == []

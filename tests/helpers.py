@@ -218,7 +218,12 @@ def listed_scenes(messages) -> list[str]:
 def threads_handler(worlds=None, lines=None, order=None, align=None, gaps=None, fallback=None):
     """步骤 6 各次调用的假回复。每个参数是 fn(messages) -> 回复（字符串 / Reply / 异常实例）；不给就用默认：
     全部归一个世界「世界一」、正文碎片全归一条主线（提纲挂上去）、按列出的顺序排、偏移都是 0、没有缺口。
-    认不出的提示词交给 fallback（比如 fake_ai_handler()），没有 fallback 就报错。"""
+    认不出的提示词交给 fallback（比如 fake_ai_handler()），没有 fallback 就报错。
+
+    注意：默认回复永远新建世界「世界一」、新建线「主线」，从不写已有的世界 / 线的 id，
+    所以不覆盖「归入已有的世界 / 线」这条路径。分段时每段都会再开一个同名的新世界 / 新线；
+    调用方把 names 传给 check_worlds / check_lines 时，第二段起会被判「跟已有的同名」、重试到用尽。
+    涉及已有的世界 / 线、或者分段的测试，要自己传回复。"""
 
     def d_worlds(m):
         return json.dumps(

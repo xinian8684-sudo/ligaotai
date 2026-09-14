@@ -253,7 +253,7 @@ def clean_worlds(data: dict, expected: set[str], known: set[str],
 # --- 6.2 划支线 ---
 
 
-def _lines(data, ordered: set[str], outlines: set[str], known: set[str], names, held) -> _Report:
+def _lines(data, ordered: set[str], outlines: set[str], known: set[str], names, held, require_main: bool = True) -> _Report:
     r = _Report()
     data = _obj(data)
     threads = data.get("threads")
@@ -326,8 +326,10 @@ def _lines(data, ordered: set[str], outlines: set[str], known: set[str], names, 
                 FIX,
             )
     sort_in(blocks.many(data.get("world_outlines")), "world")
-    if threads and mains != 1:
+    if threads and require_main and mains != 1:
         r.add(f"要恰好有一条线标 \"main\": true，现在有 {mains} 条", FIX)
+    elif mains > 1:
+        r.add(f"最多一条线标 \"main\": true，现在有 {mains} 条", FIX)
     if to_scenes:
         ids = _uniq(to_scenes)
         r.add("这些块是正文/碎片，要放进线的 scenes，不要放 outlines：" + _listing(ids), FIX * len(ids))
@@ -347,17 +349,21 @@ def _lines(data, ordered: set[str], outlines: set[str], known: set[str], names, 
 
 
 def check_lines(data: dict, ordered: set[str], outlines: set[str], known: set[str],
-                names: dict[str, str] | None = None, held: dict[str, str] | None = None) -> list[str]:
+                names: dict[str, str] | None = None, held: dict[str, str] | None = None,
+                require_main: bool = True) -> list[str]:
     """ordered / outlines：这次要分的正文碎片块 / 提纲块；known：已有的线的键（已确认的线、前面几段新建的线）。
     names（可选）：已有的线的键 → 名字，传了就查「新线跟已有的线同名」。
     held（可选）：已经在已有的线里的块 → 那条线的键（提示词里当示例列出来的），模型又写一遍时
-    提示「不用再列」，不说成编造。"""
-    return _lines(data, ordered, outlines, known, names, held).problems
+    提示「不用再列」，不说成编造。
+    require_main：threads 不空时要不要恰好一条标 main。False 时（分段的第二段起，主线已经在前面定了）
+    不标也行，只查「最多一条」。"""
+    return _lines(data, ordered, outlines, known, names, held, require_main).problems
 
 
 def score_lines(data: dict, ordered: set[str], outlines: set[str], known: set[str],
-                names: dict[str, str] | None = None, held: dict[str, str] | None = None) -> int:
-    return _lines(data, ordered, outlines, known, names, held).bad
+                names: dict[str, str] | None = None, held: dict[str, str] | None = None,
+                require_main: bool = True) -> int:
+    return _lines(data, ordered, outlines, known, names, held, require_main).bad
 
 
 def clean_lines(data: dict, ordered: set[str], outlines: set[str], known: set[str],

@@ -261,6 +261,43 @@ def test_check_lines_block_of_an_existing_thread_written_back():
     assert len(p) == 1 and "编造" in p[0]
 
 
+def test_check_lines_require_main():
+    """require_main=False（分段的第二段起）：不标 main 也行，但最多一条；main 标在空的新线上照样报。"""
+    from ligaotai.threads_check import score_lines
+
+    none = line_reply({"name": "甲", "scenes": sorted(ORD)}, world_outlines=["S-0009"])
+    p = check_lines(none, ORD, OUT, set())
+    assert len(p) == 1 and "0 条" in p[0]
+    assert check_lines(none, ORD, OUT, set(), require_main=False) == []
+    assert score_lines(none, ORD, OUT, set(), require_main=False) == 0
+    one = line_reply({"name": "甲", "main": True, "scenes": sorted(ORD)}, world_outlines=["S-0009"])
+    assert check_lines(one, ORD, OUT, set(), require_main=False) == []
+    two = line_reply(
+        {"name": "甲", "main": True, "scenes": ["S-0001"]}, {"name": "乙", "main": True, "scenes": ["S-0002", "S-0003"]},
+        world_outlines=["S-0009"],
+    )
+    for req in (True, False):
+        p = check_lines(two, ORD, OUT, set(), require_main=req)
+        assert len(p) == 1 and "main" in p[0] and "2 条" in p[0]
+        assert score_lines(two, ORD, OUT, set(), require_main=req) > 0
+    empty_main = line_reply(
+        {"name": "甲", "scenes": sorted(ORD)}, {"name": "乙", "main": True, "scenes": []}, world_outlines=["S-0009"]
+    )
+    p = check_lines(empty_main, ORD, OUT, set(), require_main=False)
+    assert len(p) == 1 and "第 2 条线是新线" in p[0] and "main" in p[0]
+
+
+def test_check_lines_known_main_without_new_blocks():
+    """review_t08 第 2 条：本世界的主线是已有的 L-001，这次的块都归了新支线，把 L-001 列出来、scenes 写空。"""
+    data = line_reply(
+        {"id": "L-001", "main": True, "scenes": []}, {"name": "赵五寻亲", "scenes": sorted(ORD)},
+        world_outlines=["S-0009"],
+    )
+    assert check_lines(data, ORD, OUT, {"L-001"}, {"L-001": "林清入京"}) == []
+    got = clean_lines(data, ORD, OUT, {"L-001"})
+    assert [(t["key"], t["main"]) for t in got["threads"]] == [("L-001", True), (None, False)]
+
+
 from ligaotai.threads_check import check_order, clean_order, parse_time, score_order
 
 SEGS = {"P-001": ["S-0001", "S-0002"]}

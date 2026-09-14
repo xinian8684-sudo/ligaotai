@@ -157,7 +157,8 @@ def test_fuzz_lines():
                 threads[0]["scenes"] = threads[0]["scenes"] + ["S-0404"]
         data = noisy({"threads": threads, "world_outlines": left}, rng)
 
-        p = contract(check_lines, score_lines, data, ordered, outl, known, names, held)
+        require_main = rng.random() < 0.7
+        p = contract(check_lines, score_lines, data, ordered, outl, known, names, held, require_main)
         got = clean_lines(data, ordered, outl, known, names)
         sc = [s for t in got["threads"] for s in t["scenes"]] + got["missing"]
         ou = [s for t in got["threads"] for s in t["outlines"]] + got["world_outlines"]
