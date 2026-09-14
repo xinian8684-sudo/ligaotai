@@ -144,3 +144,59 @@ def test_clean_order():
     assert got["times"] == {"S-0003": {"t": 5, "conf": "中"}}
     assert got["end"] == {"state": "待定", "note": "n"}
     assert got["missing"] == ["S-0004"]
+
+
+from ligaotai.threads_check import check_align, check_gaps, clean_align, clean_gaps
+
+MEMBERS = {"L-001": {"S-0001", "S-0002"}, "L-002": {"S-0003"}, "L-003": {"S-0004"}}
+
+
+def test_check_align():
+    ok = {"threads": [{"id": "L-001", "offset": 0}, {"id": "L-002", "offset": 1.5}, {"id": "L-003", "offset": None}],
+          "intersections": [{"thread": "L-002", "scene": "S-0003", "main_scene": "S-0002", "reason": "r"}]}
+    assert check_align(ok, set(MEMBERS), "L-001", MEMBERS) == []
+    assert check_align({"threads": ok["threads"][:2]}, set(MEMBERS), "L-001", MEMBERS) != []
+    bad_offset = {"threads": [{**t, "offset": "很久"} for t in ok["threads"]]}
+    assert check_align(bad_offset, set(MEMBERS), "L-001", MEMBERS) != []
+    bad_cross = {**ok, "intersections": [{"thread": "L-001", "scene": "S-0001", "main_scene": "S-0002"}]}
+    assert check_align(bad_cross, set(MEMBERS), "L-001", MEMBERS) != []
+    assert check_align({"threads": 3}, set(MEMBERS), "L-001", MEMBERS) == ["缺少 threads 列表"]
+
+
+def test_clean_align():
+    data = {"threads": [{"id": "L-001", "offset": 9}, {"id": "L-002", "offset": "2"}, {"id": "L-003", "offset": "?"}],
+            "intersections": [
+                {"thread": "L-002", "scene": "S-0003", "main_scene": "S-0002", "reason": "r"},
+                {"thread": "L-002", "scene": "S-0003", "main_scene": "S-0002", "reason": "重复"},
+                {"thread": "L-003", "scene": "S-0003", "main_scene": "S-0002"},
+            ]}
+    offsets, cross = clean_align(data, set(MEMBERS), "L-001", MEMBERS)
+    assert offsets == {"L-001": 0, "L-002": 2.0, "L-003": None}
+    assert cross == [{"thread": "L-002", "scene": "S-0003", "main_scene": "S-0002", "reason": "r"}]
+
+
+LINES = {"L-001": ["S-0001", "S-0002", "S-0003"]}
+
+
+def test_check_gaps():
+    ok = {"gaps": [{"event": "城破", "mentioned_in": ["S-0002"], "thread": "L-001", "after": "S-0001", "before": None}]}
+    assert check_gaps(ok, {"S-0002"}, LINES) == []
+    assert check_gaps({"gaps": []}, {"S-0002"}, LINES) == []
+    assert check_gaps({"gaps": [{**ok["gaps"][0], "event": ""}]}, {"S-0002"}, LINES) != []
+    assert check_gaps({"gaps": [{**ok["gaps"][0], "mentioned_in": ["S-0003"]}]}, {"S-0002"}, LINES) != []
+    assert check_gaps({"gaps": [{**ok["gaps"][0], "thread": "L-009"}]}, {"S-0002"}, LINES) != []
+    assert check_gaps({"gaps": [{**ok["gaps"][0], "after": "S-0099"}]}, {"S-0002"}, LINES) != []
+    assert check_gaps({}, {"S-0002"}, LINES) == ["缺少 gaps 列表"]
+
+
+def test_clean_gaps():
+    data = {"gaps": [
+        {"event": "城破", "mentioned_in": ["S-0002", "S-0099"], "thread": "L-001", "after": "S-0001", "before": "S-0099"},
+        {"event": "婚宴", "mentioned_in": ["S-0002"], "thread": "L-009", "after": "S-0001"},
+        {"event": "", "mentioned_in": ["S-0002"]},
+        {"event": "没出处", "mentioned_in": ["S-0099"]},
+    ]}
+    assert clean_gaps(data, {"S-0002"}, LINES) == [
+        {"event": "城破", "mentioned_in": ["S-0002"], "thread": "L-001", "after": "S-0001", "before": None},
+        {"event": "婚宴", "mentioned_in": ["S-0002"], "thread": None, "after": None, "before": None},
+    ]

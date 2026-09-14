@@ -243,3 +243,111 @@ def clean_order(data: dict, segs: dict[str, list[str]], expected: set[str], fall
         "end": {"state": state, "note": text(end.get("note"))},
         "missing": [s for s in fallback if s in expected and s not in got],
     }
+
+
+# --- 6.4 跨线对齐 ---
+
+
+def _offset(v) -> tuple[bool, float | None]:
+    """(格式对不对, 值)。null 是合法的「对不上」。"""
+    if v is None:
+        return True, None
+    t = parse_time([v, "低"])
+    return (t is not None and t["t"] is not None), (t["t"] if t else None)
+
+
+def _cross_ok(c, thread_ids: set[str], main: str, members: dict[str, set[str]]) -> bool:
+    return (
+        isinstance(c, dict)
+        and c.get("thread") in thread_ids
+        and c.get("thread") != main
+        and c.get("scene") in members[c["thread"]]
+        and c.get("main_scene") in members[main]
+    )
+
+
+def check_align(data: dict, thread_ids: set[str], main: str, members: dict[str, set[str]]) -> list[str]:
+    threads = data.get("threads")
+    if not isinstance(threads, list):
+        return ["缺少 threads 列表"]
+    listed = [t.get("id") for t in threads if isinstance(t, dict) and isinstance(t.get("id"), str)]
+    problems = coverage_problems(listed, thread_ids, "线")
+    bad = [t.get("id") for t in threads if isinstance(t, dict) and not _offset(t.get("offset"))[0]]
+    if bad:
+        problems.append("这些线的 offset 要写数字或 null：" + "、".join(str(x) for x in bad[:MAX_LISTED]))
+    crosses = data.get("intersections", [])
+    if not isinstance(crosses, list):
+        problems.append("intersections 要是列表")
+    else:
+        for i, c in enumerate(crosses, 1):
+            if not _cross_ok(c, thread_ids, main, members):
+                problems.append(f"第 {i} 个交汇点不对：thread 要是主线以外的线，scene 在那条线里，main_scene 在主线 {main} 里")
+    return problems
+
+
+def clean_align(
+    data: dict, thread_ids: set[str], main: str, members: dict[str, set[str]]
+) -> tuple[dict[str, float | None], list[dict]]:
+    offsets: dict[str, float | None] = {t: None for t in thread_ids}
+    for t in data.get("threads") or []:
+        if isinstance(t, dict) and t.get("id") in thread_ids:
+            ok, v = _offset(t.get("offset"))
+            if ok:
+                offsets[t["id"]] = v
+    offsets[main] = 0
+    cross: list[dict] = []
+    seen: set[tuple] = set()
+    raw = data.get("intersections") if isinstance(data.get("intersections"), list) else []
+    for c in raw:
+        if not _cross_ok(c, thread_ids, main, members):
+            continue
+        k = (c["thread"], c["scene"], c["main_scene"])
+        if k in seen:
+            continue
+        seen.add(k)
+        cross.append({"thread": k[0], "scene": k[1], "main_scene": k[2], "reason": text(c.get("reason"))})
+    return offsets, cross
+
+
+# --- 6.5 找缺口 ---
+
+
+def check_gaps(data: dict, ref_scenes: set[str], lines: dict[str, list[str]]) -> list[str]:
+    gaps = data.get("gaps")
+    if not isinstance(gaps, list):
+        return ["缺少 gaps 列表"]
+    problems: list[str] = []
+    for i, g in enumerate(gaps, 1):
+        if not isinstance(g, dict):
+            problems.append(f"第 {i} 个缺口格式不对")
+            continue
+        if not text(g.get("event")):
+            problems.append(f"第 {i} 个缺口没有 event")
+        refs = str_list(g.get("mentioned_in"))
+        if not refs or any(s not in ref_scenes for s in refs):
+            problems.append(f"第 {i} 个缺口的 mentioned_in 只能用列出的出处编号，而且不能空")
+        tid = g.get("thread")
+        if tid is not None and tid not in lines:
+            problems.append(f"第 {i} 个缺口的 thread「{tid}」不是这个世界的线")
+        elif tid is not None:
+            for k in ("after", "before"):
+                if g.get(k) is not None and g.get(k) not in lines[tid]:
+                    problems.append(f"第 {i} 个缺口的 {k} 不在 {tid} 里")
+    return problems
+
+
+def clean_gaps(data: dict, ref_scenes: set[str], lines: dict[str, list[str]]) -> list[dict]:
+    out: list[dict] = []
+    for g in data.get("gaps") or []:
+        if not isinstance(g, dict):
+            continue
+        event = text(g.get("event"))
+        refs = [s for s in dict.fromkeys(str_list(g.get("mentioned_in"))) if s in ref_scenes]
+        if not event or not refs:
+            continue
+        tid = g.get("thread") if g.get("thread") in lines else None
+        members = lines.get(tid, []) if tid else []
+        after = g.get("after") if tid and g.get("after") in members else None
+        before = g.get("before") if tid and g.get("before") in members else None
+        out.append({"event": event, "mentioned_in": refs, "thread": tid, "after": after, "before": before})
+    return out
