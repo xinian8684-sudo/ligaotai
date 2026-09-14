@@ -65,6 +65,15 @@ def test_threads_prompts_render(name, values, mark):
     assert "而是" not in system  # 写给模型的话不用「不是A而是B」的句式
 
 
+def test_threads_unit_rules_have_no_ershi():
+    """threads.py 填进划世界提示词的两段时间单位规则，也不用「不是A而是B」的句式。"""
+    from ligaotai.threads import UNIT_FIXED, UNIT_PROPOSE
+
+    for rule in (UNIT_PROPOSE, UNIT_FIXED.format(unit="年")):
+        system, _ = render("threads_worlds", unit_rule=rule, known="k", lines="l")
+        assert rule in system and "而是" not in system
+
+
 def test_threads_marks_not_in_older_prompts():
     from ligaotai.prompts import load_prompt
 
