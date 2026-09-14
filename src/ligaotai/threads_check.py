@@ -3,8 +3,9 @@
 - 检查函数（check_*）只返回问题清单，空列表 = 合格。
 - 打分函数（score_*）返回这次回复「坏了多少」，越小越好，chat_json 重试用尽时拿它在几次回复里挑最好的一次。
   问题清单是按类合并的（漏 1 块和漏 1000 块都是 1 条），不能拿条数比。打分的权重：
-  - 清理后会丢掉的一个单位（块进「未分配」、时间 / 偏移置空、交汇点 / 缺口被丢掉）记 LOST；
+  - 清理后会丢掉的一个单位（块进「未分配」、偏移置空、交汇点 / 缺口被丢掉）记 LOST；
   - 清理能无损修好的一处（编造的编号、重复、放错字段、没名字、主线偏移不是 0 ……）记 FIX；
+  - 线内排序里块没给时间、时间格式不对，也记 FIX（清理时这块的时间置空，块还在）；
   - 顶层列表整个没有，按「全部单位都丢了」再加一个 LOST 算；找缺口不知道原本有几个，记 NO_LIST。
   每条问题至少记 1 分，所以「分数是 0」和「没有问题」是一回事。
 - 清理函数（clean_*）把输出修成能用的样子：编造的编号丢掉，重复的只留第一次出现的，
@@ -12,8 +13,9 @@
 
 三种函数对任何形状的模型输出都不抛异常：编号、字段写成列表、对象、数字、true、null，
 顶层列表写成数字或字符串，都当成格式不对处理（先写进缓存再清理，清理抛异常会把坏结果钉死在缓存里）。
-编号先规范化（NFKC、去空白和连字符、转大写、数字去前导 0）再比对：「s-0001」「Ｓ－０００１」「 S-0001 」
-「S-1」「W-1」都认成对应的真编号（S-0001、W-01）。
+编号先规范化（NFKC、转大写、去掉字母或 # 跟数字之间的空白 /「-」/「_」、每段数字各自去前导 0）再比对：
+「s-0001」「Ｓ－０００１」「 S-0001 」「S-1」「W-1」都认成对应的真编号（S-0001、W-01）；
+数字跟数字之间的分隔符不去，「S-0001-3」不会被拼成 S-0013。
 """
 
 from __future__ import annotations
@@ -48,12 +50,14 @@ def norm(v) -> str:
 
 
 _DIGITS = re.compile(r"[0-9]+")
+_SEP = re.compile(r"(?<=[A-Z#])[\s_-]+(?=[0-9])")  # 字母或 # 跟数字之间的分隔符
 
 
 def _id_key(v) -> str:
-    """比对用的键：规范写法再去掉空白、「-」「_」，数字去掉前导 0。
-    「W-1」「W01」「w-01」「Ｗ－０１」都跟 W-01 是同一个键；真编号的位数是固定的，不会撞。"""
-    s = "".join(ch for ch in norm(v) if ch not in "-_" and not ch.isspace())
+    """比对用的键：规范写法去掉「字母或 # 跟数字之间」的空白、「-」「_」，每段数字各自去掉前导 0。
+    「W-1」「W01」「w-01」「Ｗ－０１」都跟 W-01 是同一个键；真编号的位数是固定的，不会撞。
+    数字跟数字之间的分隔符留着：「S-0001-3」的键是 S1-3，对不上 S-0013，按编造报给模型。"""
+    s = _SEP.sub("", norm(v))
     return _DIGITS.sub(lambda m: m.group().lstrip("0") or "0", s)  # 不用 int()：超长数字串会抛 ValueError
 
 
@@ -328,8 +332,6 @@ def _lines(data, ordered: set[str], outlines: set[str], known: set[str], names, 
     sort_in(blocks.many(data.get("world_outlines")), "world")
     if threads and require_main and mains != 1:
         r.add(f"要恰好有一条线标 \"main\": true，现在有 {mains} 条", FIX)
-    elif mains > 1:
-        r.add(f"最多一条线标 \"main\": true，现在有 {mains} 条", FIX)
     if to_scenes:
         ids = _uniq(to_scenes)
         r.add("这些块是正文/碎片，要放进线的 scenes，不要放 outlines：" + _listing(ids), FIX * len(ids))
@@ -355,8 +357,8 @@ def check_lines(data: dict, ordered: set[str], outlines: set[str], known: set[st
     names（可选）：已有的线的键 → 名字，传了就查「新线跟已有的线同名」。
     held（可选）：已经在已有的线里的块 → 那条线的键（提示词里当示例列出来的），模型又写一遍时
     提示「不用再列」，不说成编造。
-    require_main：threads 不空时要不要恰好一条标 main。False 时（分段的第二段起，主线已经在前面定了）
-    不标也行，只查「最多一条」。"""
+    require_main：threads 不空时要不要恰好一条标 main。这个世界的主线已经定了时传 False：
+    标几条 main 都不查（调用方不用这次的 main，清理也只留一条，重试只花钱）。"""
     return _lines(data, ordered, outlines, known, names, held, require_main).problems
 
 
@@ -572,11 +574,14 @@ def clean_order(data: dict, segs: dict[str, list[str]], expected: set[str], fall
 
 
 def _offset(v) -> tuple[bool, float | None]:
-    """(格式对不对, 值)。null 是合法的「对不上」。"""
+    """(格式对不对, 值)。null 是合法的「对不上」。值一律转成 float：整数偏移平移时 int 减 int 可能超出
+    float 的范围，isfinite 会抛 OverflowError；float 相减溢出只得到 inf，清理时置 null。"""
     if v is None:
         return True, None
     t = parse_time([v, "低"])
-    return (t is not None and t["t"] is not None), (t["t"] if t else None)
+    if t is None or t["t"] is None:
+        return False, None
+    return True, float(t["t"])  # parse_time 已经确认 float(t) 有限，这里不会溢出
 
 
 def _cross(c, tids: _Ids, bids: _Ids, main: str, members: dict) -> tuple[tuple[str, str, str] | None, str, bool]:

@@ -98,6 +98,25 @@ def test_known_world_id_variants_map_to_the_real_id():
     assert missing == []
 
 
+def test_id_key_accepts_variants_but_never_glues_two_numbers():
+    """rereview_batch1 M-1：数字去前导 0 可以；数字跟数字之间的分隔符不能去，否则两段数字粘成一个编号，
+    对上另一个真编号，检查就不报了。"""
+    from ligaotai.threads_check import _Ids
+
+    ids = _Ids([f"S-{i:04d}" for i in range(1, 30)], ["W-01", "W-01#1", "W-01#10", "L-002"])
+    ok = {
+        "W-1": "W-01", "w-01": "W-01", "W01": "W-01", fullwidth("W-01"): "W-01", "S-4": "S-0004", "l-2": "L-002",
+        "W-01#01": "W-01#1", "S-00019": "S-0019", " s_0013 ": "S-0013", "S 13": "S-0013", "W-01# 1": "W-01#1",
+    }
+    for raw, real in ok.items():
+        assert ids.one(raw) == real, raw
+    for raw in ("S-0001-3", "S-0001 3", "S-1-3", "S-00-13", "W-01#1-0", "W-01#1 0"):
+        assert ids.one(raw) == raw, raw  # 对不上任何真编号，原样留着
+    exp = {"S-0001", "S-0013", "S-0019"}
+    p = check_worlds({"worlds": [{"name": "A", "scenes": ["S-0001", "S-0001-3", "S-00019"]}]}, exp, set(), False)
+    assert len(p) == 2 and "S-0001-3" in p[0] and "编造" in p[0] and "S-0013" in p[1] and "漏掉" in p[1]
+
+
 def test_worlds_with_the_same_name():
     exp = {"S-0001", "S-0002", "S-0003"}
     names = {"W-01": "天界"}
@@ -262,7 +281,8 @@ def test_check_lines_block_of_an_existing_thread_written_back():
 
 
 def test_check_lines_require_main():
-    """require_main=False（分段的第二段起）：不标 main 也行，但最多一条；main 标在空的新线上照样报。"""
+    """require_main=False（这个世界的主线已经定了）：标几条 main 都不查（清理只留一条，重试只花钱）；
+    main 标在空的新线上照样报（报的是新线没有正文/碎片块）。"""
     from ligaotai.threads_check import score_lines
 
     none = line_reply({"name": "甲", "scenes": sorted(ORD)}, world_outlines=["S-0009"])
@@ -276,10 +296,12 @@ def test_check_lines_require_main():
         {"name": "甲", "main": True, "scenes": ["S-0001"]}, {"name": "乙", "main": True, "scenes": ["S-0002", "S-0003"]},
         world_outlines=["S-0009"],
     )
-    for req in (True, False):
-        p = check_lines(two, ORD, OUT, set(), require_main=req)
-        assert len(p) == 1 and "main" in p[0] and "2 条" in p[0]
-        assert score_lines(two, ORD, OUT, set(), require_main=req) > 0
+    p = check_lines(two, ORD, OUT, set(), require_main=True)
+    assert len(p) == 1 and "main" in p[0] and "2 条" in p[0]
+    assert score_lines(two, ORD, OUT, set(), require_main=True) > 0
+    assert check_lines(two, ORD, OUT, set(), require_main=False) == []
+    assert score_lines(two, ORD, OUT, set(), require_main=False) == 0
+    assert [t["main"] for t in clean_lines(two, ORD, OUT, set())["threads"]] == [True, False]
     empty_main = line_reply(
         {"name": "甲", "scenes": sorted(ORD)}, {"name": "乙", "main": True, "scenes": []}, world_outlines=["S-0009"]
     )
@@ -462,6 +484,26 @@ def test_align_weird_shapes_never_raise():
         assert set(offsets) == ids and offsets["L-001"] == 0 and cross == []
 
 
+def test_align_huge_integer_offsets_never_raise():
+    """rereview_batch1 I-1：偏移写成 309 位的整数（合法 JSON，float 装得下），check 只报「主线要写 0」，
+    三次都这样时 chat_json 把它当最好的一次返回；平移时不能因为 int 减 int 超出 float 范围而抛 OverflowError。"""
+    ids = {"L-001", "L-002"}
+    members = {"L-001": {"S-0001"}, "L-002": {"S-0002"}}
+    big = "1" + "0" * 308
+    reply = '{"threads": [{"id": "L-001", "offset": ' + big + '}, {"id": "L-002", "offset": -' + big + '}], "intersections": []}'
+    client = LLMClient(AppConfig(), FakeBackend([reply] * 3))
+    data, problems = asyncio.run(client.chat_json(
+        "synth", "s", "u", lambda d: check_align(d, ids, "L-001", members), tag="t",
+        score=lambda d: score_align(d, ids, "L-001", members),
+    ))
+    assert data["threads"][0]["offset"] == 10 ** 308  # 模型给的就是整数
+    assert len(problems) == 1 and "L-001" in problems[0] and "offset" in problems[0]
+    offsets, cross = clean_align(data, ids, "L-001", members)
+    assert offsets == {"L-001": 0, "L-002": None} and cross == []  # -1e308 - 1e308 溢出成 inf，置 null
+    data = {"threads": [{"id": "L-001", "offset": 10 ** 308}, {"id": "L-002", "offset": 3}]}
+    assert clean_align(data, ids, "L-001", members)[0] == {"L-001": 0, "L-002": -1e308}  # 没溢出的照常平移
+
+
 def test_clean_align_same_thread_twice_keeps_the_first():
     data = {"threads": [{"id": "L-001", "offset": 0}, {"id": "L-002", "offset": 2}, {"id": "L-002", "offset": 7},
                         {"id": "L-003", "offset": None}]}
@@ -567,6 +609,8 @@ def test_gaps_place_and_duplicates():
     assert (got[0]["after"], got[0]["before"]) == (None, "S-0002")
     p, got = one(thread="")  # 空串当 null
     assert p == [] and got[0]["thread"] is None
+    p, got = one(thread=None, after="S-0001", before="S-0003")  # 判断不了属于哪条线：thread 写 null 合格
+    assert p == [] and (got[0]["thread"], got[0]["after"], got[0]["before"]) == (None, None, None)
     p, got = one(mentioned_in="S-0002")  # 单个字符串当成只有一项的列表
     assert p == [] and got[0]["mentioned_in"] == ["S-0002"]
     dup = {"gaps": [{**g, "mentioned_in": ["S-0002"]}, {**g, "event": "城破 ", "mentioned_in": ["S-0003", "S-0002"]}]}

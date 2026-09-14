@@ -32,7 +32,7 @@ ROUNDS = 1500
 NOISE = [0, 0, 0.03, 0.1, 0.3, 0.6]
 KEYS = ["id", "name", "scenes", "outlines", "main", "offset", "thread", "scene", "main_scene",
         "t", "conf", "event", "mentioned_in", "after", "before", "state"]
-JUNK = [None, True, False, 0, 1, -3, 2.5, 1e308, -1e308, 10**400, -(10**400), float("nan"), float("inf"),
+JUNK = [None, True, False, 0, 1, -3, 2.5, 1e308, -1e308, 10**308, -(10**308), 10**400, -(10**400), float("nan"), float("inf"),
         "", " ", "x", "高", " 高 ", "high", "完结", "待定", "?", "inf", "1e400", [], {}, [None], [[1]],
         {"a": 1}, {"id": "L-001"}, {"t": 1}, ["S-0001"], "S-0001", "S-9999", "L-001", "W-01", "P-001"]
 TOP_JUNK = [None, 5, "x", [], [1, 2], {"worlds": 5}, {"threads": True}, {"order": "乱写"}, {"gaps": 5}]

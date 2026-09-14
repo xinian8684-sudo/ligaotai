@@ -77,6 +77,7 @@ def test_threads_marks_not_in_older_prompts():
 # 示例从提示词文件里现解析，不在这里抄一份：以后改提示词或检查函数改得对不上，这里当场抓到。
 
 import json
+import re
 
 from ligaotai.fsutil import natural_key
 from ligaotai.threads_check import check_align, check_gaps, check_lines, check_order, check_worlds
@@ -134,6 +135,8 @@ def test_lines_example_passes_check_on_first_run():
     new = [{k: v for k, v in t.items() if k != "main"} for t in ex["threads"]]
     data = {**ex, "threads": new + refs}
     assert check_lines(data, ordered, outlines, known, {k: "旧线" for k in known}) == []
+    # 规则 5 靠这个标记认已有的主线；T10 的已有线列表里主线那行要照这个写法带上
+    assert "（主线）" in render("threads_lines", **VALUES["threads_lines"])[0]
 
 
 def test_order_example_passes_check():
@@ -152,6 +155,8 @@ def test_align_example_passes_check():
     main = VALUES["threads_align"]["main"]
     ids = {t["id"] for t in ex["threads"]}
     assert main in ids
+    for t in ids | {c["thread"] for c in ex["intersections"]}:  # 线的编号写成线名这类回归，下面的推法抓不到
+        assert re.fullmatch(r"L-\d{3}", t), t
     members: dict[str, set] = {t: set() for t in ids}
     for c in ex["intersections"]:
         members[c["thread"]].add(c["scene"])
@@ -162,6 +167,8 @@ def test_align_example_passes_check():
 def test_gaps_example_passes_check():
     ex, _ = example("threads_gaps")
     refs = {s for g in ex["gaps"] for s in g["mentioned_in"]}
+    for g in ex["gaps"]:  # thread 写成线名这类回归，下面的推法抓不到
+        assert g["thread"] is None or re.fullmatch(r"L-\d{3}", g["thread"]), g["thread"]
     lines: dict[str, set] = {}
     for g in ex["gaps"]:
         lines.setdefault(g["thread"], set()).update(x for x in (g.get("after"), g.get("before")) if x)
