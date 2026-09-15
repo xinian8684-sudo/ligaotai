@@ -646,3 +646,136 @@ def test_stage_gaps(book):
     assert got == []
     got, c = gaps_of(book, {"S-0003": ["青州城破"]}, [a], budget=10)
     assert got == [] and c.usage.calls == 0
+
+
+# --- 编号、主线、旧文件 ---
+
+from ligaotai.threads import (
+    EMPTY,
+    assign_thread_ids,
+    assign_world_ids,
+    choose_main,
+    content_signature,
+    next_number,
+    normalize,
+    thread_from_dict,
+)
+
+
+def test_normalize():
+    assert normalize(None) == EMPTY and normalize(None) is not EMPTY
+    got = normalize({"threads": [{"id": "L-001"}], "junk": 1})
+    assert got["threads"] == [{"id": "L-001"}] and "junk" not in got and got["worlds"] == []
+    got["worlds"].append(1)
+    assert EMPTY["worlds"] == []  # 不能改到共用的空结构
+
+
+def test_normalize_bad_types_become_defaults():
+    got = normalize({"worlds": 5, "main_thread": 3, "main_by": "xx", "time_unit": []})
+    assert got["worlds"] == [] and got["main_thread"] is None and got["main_by"] == "auto" and got["time_unit"] == ""
+    assert EMPTY["worlds"] == [] and EMPTY["main_thread"] is None and EMPTY["main_by"] == "auto" and EMPTY["time_unit"] == ""
+
+
+def test_content_signature_ignores_status():
+    a = {"threads": [{"id": "L-001", "status": "draft", "scenes": ["S-0001"]}]}
+    b = {"threads": [{"id": "L-001", "status": "confirmed", "scenes": ["S-0001"]}]}
+    c = {"threads": [{"id": "L-001", "status": "draft", "scenes": ["S-0002"]}]}
+    assert content_signature(a) == content_signature(b) != content_signature(c)
+
+
+def test_next_number():
+    assert next_number({"worlds": [{"id": "W-03"}], "next_world": 2}, "world") == 4
+    assert next_number({"worlds": [], "next_world": 9}, "world") == 9
+    assert next_number({"threads": [{"id": "L-007"}], "next_thread": True}, "thread") == 8
+    assert next_number({}, "thread") == 1
+
+
+def test_assign_world_ids():
+    old = normalize({"worlds": [
+        {"id": "W-01", "name": "甲", "status": "draft"},
+        {"id": "W-02", "name": "乙", "status": "confirmed"},
+    ]})
+    worlds = [WorldDraft("W-02", "乙"), WorldDraft("N1", "甲"), WorldDraft("N2", "丙")]
+    assert assign_world_ids(old, worlds) == ({"W-02": "W-02", "N1": "W-01", "N2": "W-03"}, 4)
+
+
+def test_assign_world_ids_never_reissues_a_world_in_use():
+    old = normalize({"worlds": [{"id": "W-01", "name": "甲", "status": "draft"}]})
+    worlds = [WorldDraft("W-01", "甲"), WorldDraft("N1", "甲")]  # W-01 因为有已确认的线而锁定
+    assert assign_world_ids(old, worlds) == ({"W-01": "W-01", "N1": "W-02"}, 3)
+
+
+def test_assign_world_ids_defends_against_dirty_old_file():
+    old = normalize({"worlds": [
+        1,
+        {"name": "甲"},  # 没有 id
+        {"id": 5, "name": "乙"},  # id 不是字符串
+        {"id": "W-01", "name": "丙", "status": "draft"},
+    ]})
+    worlds = [WorldDraft("N1", "丙"), WorldDraft("N2", "丁")]
+    assert assign_world_ids(old, worlds) == ({"N1": "W-01", "N2": "W-02"}, 3)
+
+
+def test_assign_thread_ids():
+    old = normalize({"threads": [
+        {"id": "L-001", "status": "draft", "scenes": ["S-0001", "S-0002"]},
+        {"id": "L-002", "status": "confirmed", "scenes": ["S-0003"]},
+    ]})
+    new = [ThreadDraft("W-01#1", "W-01", "a", scenes=["S-0002", "S-0001"]), ThreadDraft("W-01#2", "W-01", "b", scenes=["S-0003"])]
+    assert assign_thread_ids(old, new) == ({"W-01#1": "L-001", "W-01#2": "L-003"}, 4)
+
+
+def test_assign_thread_ids_defends_against_dirty_old_file():
+    old = normalize({"threads": [
+        1,
+        {"scenes": "S-0001"},  # 没有 id
+        {"id": "L-001", "scenes": ["S-0001", [1]], "status": "draft"},  # scenes 里有不能哈希的元素
+    ]})
+    new = [ThreadDraft("K1", "W-01", "a", scenes=["S-0001"])]
+    assert assign_thread_ids(old, new) == ({"K1": "L-001"}, 2)
+
+
+def test_thread_from_dict():
+    t = thread_from_dict({"id": "L-002", "world": "W-01", "name": "乙", "scenes": ["S-0001", "S-0009"],
+                          "outlines": ["S-0009"], "times": {"S-0001": {"t": 1, "conf": "高"}, "S-0009": {"t": 2, "conf": "高"}},
+                          "end": {"state": "完结", "note": "n", "last": "S-0009"}}, {"S-0001"})
+    assert (t.key, t.world, t.name, t.scenes, t.outlines, t.locked) == ("L-002", "W-01", "乙", ["S-0001"], [], True)
+    assert t.times == {"S-0001": {"t": 1, "conf": "高"}} and t.end["state"] == "完结"
+
+
+def test_thread_from_dict_defends_against_dirty_old_file():
+    t = thread_from_dict({
+        "id": "L-002", "world": [1, 2], "name": None, "about": True,
+        "scenes": "S-0001",   # 不是 list -> []
+        "outlines": {"x": 1},  # 不是 list -> []
+        "times": [1, 2, 3],   # 不是 dict -> {}
+        "end": 5,              # 不是 dict -> {}
+        "order_failed": "yes",
+    }, {"S-0001"})
+    assert (t.world, t.name, t.about) == ("", "", "")
+    assert t.scenes == [] and t.outlines == []
+    assert t.times == {} and t.end == {} and t.order_failed is True
+
+
+def test_thread_from_dict_drops_dirty_times():
+    t = thread_from_dict({
+        "id": "L-003", "scenes": ["S-0001", "S-0002", "S-0003", "S-0004"],
+        "times": {
+            "S-0001": {"t": "abc", "conf": "高"},  # 数字格式不对
+            "S-0002": [10**400, "高"],  # 超出 float 范围
+            "S-0003": True,  # 形状不对
+            "S-0004": {"t": 3, "conf": "高"},  # 干净
+        },
+    }, {"S-0001", "S-0002", "S-0003", "S-0004"})
+    assert t.times == {"S-0004": {"t": 3, "conf": "高"}}
+
+
+def test_choose_main():
+    a = ThreadDraft("L-001", "W-01", "a", scenes=["S-0001"])
+    b = ThreadDraft("L-002", "W-02", "b", scenes=["S-0002", "S-0003"])
+    c = ThreadDraft("L-003", "W-02", "c", scenes=["S-0004"])
+    threads, order = [a, b, c], ["W-01", "W-02"]
+    assert choose_main(normalize({"main_thread": "L-001", "main_by": "author"}), threads, {}, order) == ("L-001", "author")
+    assert choose_main(normalize({"main_thread": "L-009", "main_by": "author"}), threads, {"W-02": "L-003"}, order) == ("L-003", "auto")
+    assert choose_main(normalize(None), threads, {"W-02": "L-404"}, order) == ("L-002", "auto")
+    assert choose_main(normalize(None), [], {}, []) == (None, "auto")

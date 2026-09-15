@@ -11,7 +11,10 @@
 
 from __future__ import annotations
 
+import copy
+import json
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -31,11 +34,14 @@ from .threads_check import (
     clean_lines,
     clean_order,
     clean_worlds,
+    parse_time,
     score_align,
     score_gaps,
     score_lines,
     score_order,
     score_worlds,
+    str_list,
+    text,
 )
 from .threads_input import ORDERED_KINDS, OUTLINE, Item, segments, split_by_budget
 
@@ -458,3 +464,172 @@ async def stage_gaps(
     if got is None:
         return []
     return [{"world": world_key, **g} for g in got]
+
+
+# --- 编号、主线、旧文件 ---
+
+EMPTY: dict = {
+    "next_world": 1,
+    "next_thread": 1,
+    "time_unit": "",
+    "main_thread": None,
+    "main_by": "auto",
+    "worlds": [],
+    "threads": [],
+    "intersections": [],
+    "gaps": [],
+    "unassigned": [],
+    "pending": [],
+}
+_LIST_KEYS = ("worlds", "threads", "intersections", "gaps", "unassigned", "pending")
+_KINDS = {"world": ("W", "worlds", "next_world"), "thread": ("L", "threads", "next_thread")}
+
+
+def normalize(data) -> dict:
+    """旧文件读进来：补齐缺的键、丢掉不认识的键、类型不对的值换成空结构的默认值；不是 dict 就当空的。"""
+    out = copy.deepcopy(EMPTY)
+    if isinstance(data, dict):
+        out.update({k: copy.deepcopy(v) for k, v in data.items() if k in EMPTY})
+    for k in _LIST_KEYS:
+        if not isinstance(out[k], list):
+            out[k] = []
+    if not isinstance(out["time_unit"], str):
+        out["time_unit"] = ""
+    if not isinstance(out["main_thread"], str):
+        out["main_thread"] = None
+    if out["main_by"] != "author":
+        out["main_by"] = "auto"
+    return out
+
+
+def content_signature(data: dict) -> str:
+    """去掉所有 status 后的内容：只确认、不改内容时签名不变。"""
+
+    def strip(x):
+        if isinstance(x, dict):
+            return {k: strip(v) for k, v in x.items() if k != "status"}
+        if isinstance(x, list):
+            return [strip(v) for v in x]
+        return x
+
+    return json.dumps(strip(data), ensure_ascii=False, sort_keys=True)
+
+
+def _id_num(oid, prefix: str) -> int:
+    m = re.fullmatch(rf"{prefix}-(\d+)", oid) if isinstance(oid, str) else None
+    return int(m.group(1)) if m else 0
+
+
+def next_number(data: dict, kind: str) -> int:
+    prefix, key, field_name = _KINDS[kind]
+    top = max((_id_num(x.get("id"), prefix) for x in data.get(key, []) if isinstance(x, dict)), default=0)
+    n = data.get(field_name)
+    if not isinstance(n, int) or isinstance(n, bool):
+        n = 0
+    return max(n, top + 1)
+
+
+def world_id(n: int) -> str:
+    return f"W-{n:02d}"
+
+
+def thread_id(n: int) -> str:
+    return f"L-{n:03d}"
+
+
+def assign_world_ids(old: dict, worlds: list[WorldDraft]) -> tuple[dict[str, str], int]:
+    """临时键 N… → 正式编号；已确认世界的键本来就是正式编号。草稿世界按名字沿用旧的草稿世界编号。
+
+    old 里的元素形状不一定干净（作者手改或旧版本写的）：不是 dict、没有字符串 id 的一律跳过。
+    """
+    in_use = {w.key for w in worlds if not w.key.startswith("N")}
+    reuse: dict[str, str] = {}
+    for w in old["worlds"]:
+        if not isinstance(w, dict):
+            continue
+        wid = w.get("id")
+        if not isinstance(wid, str) or w.get("status") == CONFIRMED or wid in in_use:
+            continue
+        reuse.setdefault(w.get("name"), wid)
+    n = next_number(old, "world")
+    out: dict[str, str] = {}
+    for w in worlds:
+        if w.key in in_use:
+            out[w.key] = w.key
+            continue
+        wid = reuse.pop(w.name, None)
+        if wid is None:
+            wid, n = world_id(n), n + 1
+        out[w.key] = wid
+    return out, n
+
+
+def assign_thread_ids(old: dict, threads: list[ThreadDraft]) -> tuple[dict[str, str], int]:
+    """新线的临时键 → 正式编号。块集合跟旧的某条草稿线一样就沿用它的编号。
+
+    old 里的元素形状不一定干净：不是 dict、没有字符串 id 的跳过；scenes 不是 list，
+    或者里面有不能哈希 / 不是字符串的元素，只取字符串元素建 frozenset（不让 frozenset 抛异常）。
+    """
+    reuse: dict[frozenset, str] = {}
+    for t in old["threads"]:
+        if not isinstance(t, dict):
+            continue
+        tid = t.get("id")
+        if not isinstance(tid, str) or t.get("status") == CONFIRMED:
+            continue
+        reuse.setdefault(frozenset(str_list(t.get("scenes"))), tid)
+    n = next_number(old, "thread")
+    out: dict[str, str] = {}
+    for t in threads:
+        tid = reuse.pop(frozenset(t.scenes), None)
+        if tid is None:
+            tid, n = thread_id(n), n + 1
+        out[t.key] = tid
+    return out, n
+
+
+def thread_from_dict(t: dict, all_ids: set[str]) -> ThreadDraft:
+    """旧文件里已确认的线 → ThreadDraft(locked=True)。块和提纲只留还是没删除的主版本的（all_ids）；
+    时间过一遍 parse_time，脏值丢掉，免得下游的算术碰到脏值。"""
+    scenes = [s for s in str_list(t.get("scenes")) if s in all_ids]
+    outlines = [s for s in str_list(t.get("outlines")) if s in all_ids]
+    times_raw = t.get("times")
+    times: dict = {}
+    if isinstance(times_raw, dict):
+        for k, v in times_raw.items():
+            if k in scenes:
+                parsed = parse_time(v)
+                if parsed is not None:
+                    times[k] = parsed
+    end = t.get("end")
+    return ThreadDraft(
+        key=t["id"],
+        world=text(t.get("world")),
+        name=text(t.get("name")),
+        about=text(t.get("about")),
+        scenes=scenes,
+        outlines=outlines,
+        times=times,
+        end=dict(end) if isinstance(end, dict) else {},
+        order_failed=bool(t.get("order_failed")),
+        locked=True,
+    )
+
+
+def choose_main(
+    old: dict, threads: list[ThreadDraft], world_mains: dict[str, str | None], world_order: list[str]
+) -> tuple[str | None, str]:
+    """作者设过（main_by == "author"）且那条线还在就留；否则在块最多的世界里（平票取靠前的世界）
+    取这个世界被标 main 的线，那条线不在了就取这个世界里块最多的线。"""
+    ids = {t.key for t in threads}
+    if old.get("main_by") == "author" and old.get("main_thread") in ids:
+        return old["main_thread"], "author"
+    if not threads:
+        return None, "auto"
+    size = {w: sum(len(t.scenes) for t in threads if t.world == w) for w in world_order}
+    best = max(world_order, key=lambda w: size[w])  # max 平票取第一个
+    main = world_mains.get(best)
+    if main not in ids:
+        mine = [t for t in threads if t.world == best] or threads
+        main = max(mine, key=lambda t: len(t.scenes)).key
+    return main, "auto"
