@@ -251,6 +251,19 @@ def test_new_world_number_does_not_collide_with_placeholder(seeded):
     assert len(thread_ids) == len(set(thread_ids))  # 每条线只出现一次
 
 
+def test_new_world_temp_key_skips_a_confirmed_world_keyed_like_one(seeded):
+    """已确认线所属的世界编号被手改成 "N2"：划世界给新世界起临时键时不能也起成 N2，
+    不然两个世界都叫 N2、这条线在 threads 里出现两次（批次 5/6 复查的 Minor）。"""
+    run_threads(seeded, client(seeded))
+    edit(seeded, lambda d: d["threads"][0].update(status="confirmed", world="N2"))
+    run_threads(seeded, client(seeded))
+    data = result(seeded)
+    world_ids = [w["id"] for w in data["worlds"]]
+    assert len(world_ids) == len(set(world_ids))  # 世界编号不重复
+    thread_ids = [t["id"] for t in data["threads"]]
+    assert len(thread_ids) == len(set(thread_ids))  # 每条线只出现一次
+
+
 def test_worlds_prompt_marks_confirmed_main_thread(seeded):
     """已确认的全书主线在划支线的提示词里要标「（主线）」，不然模型不知道哪条是主线
     （修复批次 5 第 4 条 notes 1）。"""

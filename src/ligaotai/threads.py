@@ -249,7 +249,9 @@ async def stage_worlds(
             if g["key"] is not None:
                 by_key[g["key"]].scenes += g["scenes"]
             else:
-                worlds.append(WorldDraft(f"N{sum(w.key.startswith('N') for w in worlds) + 1}", g["name"], g["reason"], g["scenes"]))
+                taken = {w.key for w in worlds}  # 已确认世界的键可能被手改成 N 开头，临时键要跳过用掉的
+                key = next(f"N{i}" for i in range(1, len(worlds) + 2) if f"N{i}" not in taken)
+                worlds.append(WorldDraft(key, g["name"], g["reason"], g["scenes"]))
     if failed == len(chunks):
         raise LLMError(f"划世界失败：{caller.failed[-1]['error']}")
     return worlds, missing, unit
