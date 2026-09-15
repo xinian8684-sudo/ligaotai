@@ -6,7 +6,7 @@ from helpers import FakeBackend, listed_scenes, seed_book, threads_handler
 
 from ligaotai.config import AppConfig
 from ligaotai.llm import FatalLLMError, LLMClient, LLMError
-from ligaotai.threads import Caller, ThreadDraft, WorldDraft, known_threads_text, stage_lines, stage_worlds
+from ligaotai.threads import Caller, ThreadDraft, WorldDraft, known_threads_text, stage_lines, stage_order, stage_worlds
 from ligaotai.threads_input import Item
 
 
@@ -435,3 +435,78 @@ def test_stage_lines_require_main_still_needed_after_first_chunk_fails(book):
     caller = Caller(book, c, lambda *a: None)
     asyncio.run(stage_lines(caller, world, items, [], 20))
     assert [u["call"] for u in caller.unresolved] == ["lines-W-01-2"]
+
+
+# --- 线内排序 ---
+
+
+def order_items():
+    """S-0001、S-0002 是 b.txt 里挨着的两块（一个片段），S-0003 在 a.txt。"""
+    return {
+        "S-0001": Item("S-0001", "b.txt", 0, "正文", "S-0001｜正文｜甲"),
+        "S-0002": Item("S-0002", "b.txt", 1, "正文", "S-0002｜正文｜乙"),
+        "S-0003": Item("S-0003", "a.txt", 0, "正文", "S-0003｜正文｜丙"),
+    }
+
+
+def order_of(book, scenes, **handlers):
+    c = client(book, **handlers)
+    caller = Caller(book, c, lambda *a: None)
+    t = ThreadDraft("W-01#1", "W-01", "主线", "说明", scenes=list(scenes))
+    missing = asyncio.run(stage_order(caller, t, order_items(), "年"))
+    return t, missing, c
+
+
+def test_stage_order_default(book):
+    t, missing, c = order_of(book, ["S-0001", "S-0002", "S-0003"])
+    user = users(c, "线内排序")[0]
+    assert "- P-001：S-0001 → S-0002（同一个文件里紧挨着）" in user
+    assert user.index("S-0003｜") < user.index("S-0001｜")  # 场景块按片段顺序列：a.txt 在 b.txt 前面
+    assert t.scenes == ["S-0003", "S-0001", "S-0002"] and missing == []
+    assert t.times == {"S-0003": {"t": 0, "conf": "高"}, "S-0001": {"t": 1, "conf": "高"}, "S-0002": {"t": 2, "conf": "高"}}
+    assert t.end == {"state": "待定", "note": "测试"} and t.order_failed is False
+    assert "「主线（说明）」" in c.backend.calls[0]["messages"][0]["content"]
+
+
+def test_stage_order_uses_segment_ids(book):
+    def reply(m):
+        return json.dumps({"order": ["P-001", "S-0003"], "times": {"S-0001": [0, "高"], "S-0002": [1, "高"], "S-0003": [5, "中"]},
+                           "end": {"state": "完结", "note": "收尾了"}}, ensure_ascii=False)
+
+    t, missing, _ = order_of(book, ["S-0001", "S-0002", "S-0003"], order=reply)
+    assert t.scenes == ["S-0001", "S-0002", "S-0003"] and t.end["state"] == "完结"
+
+
+def test_stage_order_missing_scene(book):
+    def reply(m):
+        return json.dumps({"order": ["P-001"], "times": {"S-0001": [0, "高"], "S-0002": [1, "高"]},
+                           "end": {"state": "待定", "note": ""}}, ensure_ascii=False)
+
+    t, missing, c = order_of(book, ["S-0001", "S-0002", "S-0003"], order=reply)
+    assert t.scenes == ["S-0001", "S-0002"] and missing == ["S-0003"] and c.usage.calls == 3
+
+
+def test_stage_order_failed_falls_back_to_file_order(book):
+    t, missing, _ = order_of(book, ["S-0001", "S-0002", "S-0003"], order=lambda m: LLMError("坏了"))
+    assert t.scenes == ["S-0003", "S-0001", "S-0002"] and t.order_failed is True
+    assert t.times == {} and t.end == {"state": "待定", "note": ""} and missing == []
+
+
+def test_stage_order_single_scene_needs_no_call(book):
+    t, missing, c = order_of(book, ["S-0002"])
+    assert c.usage.calls == 0 and t.scenes == ["S-0002"]
+    assert t.times == {"S-0002": {"t": 0, "conf": "低"}} and t.end == {"state": "待定", "note": ""}
+
+
+def test_stage_order_unusable_reply_marks_failed_and_records_caller_failure(book):
+    """回复的 order 不是列表（3 次都这样）：跟调用直接失败不同路——这次是「回复解析出来了，
+    但清理判定没法用」，除了标 order_failed，还要往 caller.failed 记一条，方便作者在结果里看到。"""
+    c = client(book, order=lambda m: json.dumps({"order": "乱写"}))
+    caller = Caller(book, c, lambda *a: None)
+    t = ThreadDraft("W-01#1", "W-01", "主线", "说明", scenes=["S-0001", "S-0002", "S-0003"])
+    missing = asyncio.run(stage_order(caller, t, order_items(), "年"))
+    assert t.order_failed is True
+    assert t.scenes == ["S-0003", "S-0001", "S-0002"]
+    assert t.times == {} and t.end == {"state": "待定", "note": ""} and missing == []
+    assert c.usage.calls == 3
+    assert [f["call"] for f in caller.failed] == ["order-W-01#1"]

@@ -19,8 +19,18 @@ from .fsutil import natural_key, read_json, write_json
 from .jobs import JobCancelled
 from .llm import FatalLLMError, LLMClient, LLMError, cache_config, cache_key
 from .prompts import render
-from .threads_check import check_lines, check_worlds, clean_lines, clean_worlds, score_lines, score_worlds
-from .threads_input import ORDERED_KINDS, OUTLINE, Item, split_by_budget
+from .threads_check import (
+    check_lines,
+    check_order,
+    check_worlds,
+    clean_lines,
+    clean_order,
+    clean_worlds,
+    score_lines,
+    score_order,
+    score_worlds,
+)
+from .threads_input import ORDERED_KINDS, OUTLINE, Item, segments, split_by_budget
 
 DRAFT, CONFIRMED = "draft", "confirmed"
 MISSED = "模型没分配"
@@ -307,3 +317,50 @@ async def stage_lines(
             if g["main"] and res.main is None:
                 res.main = key
     return res
+
+
+# --- 6.3 线内排序 ---
+
+
+def segments_text(segs: dict[str, list[str]]) -> str:
+    if not segs:
+        return "（无）"
+    return "\n".join(f"- {p}：{' → '.join(ss)}（同一个文件里紧挨着）" for p, ss in segs.items())
+
+
+async def stage_order(caller: Caller, t: ThreadDraft, items: dict[str, Item], unit: str) -> list[str]:
+    """线内排序（一条线一次）。直接改 t 的 scenes / times / end / order_failed，返回漏掉的块。"""
+    parts = segments(t.scenes, items)
+    fallback = [s for p in parts for s in p]
+    if len(fallback) <= 1:
+        t.scenes = fallback
+        t.times = {s: {"t": 0, "conf": "低"} for s in fallback}
+        t.end = {"state": "待定", "note": ""}
+        return []
+    segs = {f"P-{i:03d}": p for i, p in enumerate((p for p in parts if len(p) > 1), 1)}
+    expected = set(fallback)
+    values = {
+        "thread": f"{t.name}（{t.about}）" if t.about else t.name,
+        "unit": unit or "年",
+        "segments": segments_text(segs),
+        "lines": "\n".join(items[s].line for s in fallback),
+    }
+    caller.plan(1)
+    got = await caller.call(
+        "threads_order",
+        values,
+        lambda d: check_order(d, segs, expected),
+        f"order-{t.key}",
+        score=lambda d: score_order(d, segs, expected),
+        clean=lambda d: clean_order(d, segs, expected, fallback),
+    )
+    if got is None:
+        t.scenes, t.times, t.order_failed = fallback, {}, True
+        t.end = {"state": "待定", "note": ""}
+        return []
+    if got["failed"]:
+        t.scenes, t.times, t.end, t.order_failed = got["scenes"], {}, got["end"], True
+        caller.failed.append({"call": f"order-{t.key}", "error": "排序回复没法用，按原稿位置暂排"})
+        return []
+    t.scenes, t.times, t.end = got["scenes"], got["times"], got["end"]
+    return got["missing"]
