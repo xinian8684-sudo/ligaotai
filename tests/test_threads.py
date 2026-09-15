@@ -169,12 +169,41 @@ def test_caller_does_not_swallow_fatal_or_cancel(book, exc):
     def boom(d):
         raise err
 
-    for kw in ({"check": boom}, {"clean": boom}):
+    for kw in ({"check": boom}, {"clean": boom}, {"usable": boom}):
         caller = Caller(book, client(book), lambda *a: None)
         check = kw.get("check", lambda d: [])
         with pytest.raises(type(err)):
-            asyncio.run(caller.call("threads_gaps", GAPS_ARGS, check, "gaps-x", clean=kw.get("clean")))
+            asyncio.run(
+                caller.call("threads_gaps", GAPS_ARGS, check, "gaps-x", clean=kw.get("clean"), usable=kw.get("usable"))
+            )
         assert caller.failed == []
+
+
+def test_caller_usable_false_drops_cache_and_marks_failed(book):
+    """usable 返回假：跟清理出错一样处理——记 failed、缓存里没有这条，下次同样的调用会重新调模型。"""
+
+    def cache():
+        return json.loads(book.threads_cache_path.read_text(encoding="utf-8"))
+
+    caller = Caller(book, client(book), lambda *a: None)
+    got = asyncio.run(caller.call("threads_gaps", GAPS_ARGS, lambda d: [], "gaps-x", usable=lambda r: False))
+    assert got is None
+    assert caller.failed == [{"call": "gaps-x", "error": "模型回复没法用（重试后仍然没有可用的结果）"}]
+    assert caller.done == 1 and not caller.unresolved and cache() == {}
+
+    again = Caller(book, client(book), lambda *a: None)
+    got2 = asyncio.run(again.call("threads_gaps", GAPS_ARGS, lambda d: [], "gaps-x", usable=lambda r: True))
+    assert got2 == {"gaps": []} and again.client.usage.calls == 1 and len(cache()) == 1
+
+
+def test_caller_usable_error_is_a_failure(book):
+    def boom(r):
+        raise ValueError("坏了")
+
+    caller = Caller(book, client(book), lambda *a: None)
+    assert asyncio.run(caller.call("threads_gaps", GAPS_ARGS, lambda d: [], "gaps-x", usable=boom)) is None
+    assert caller.failed == [{"call": "gaps-x", "error": "检查或清理出错：ValueError: 坏了"}]
+    assert caller.done == 1 and not caller.unresolved
 
 
 # --- 划世界 ---
@@ -253,6 +282,20 @@ def test_stage_worlds_one_chunk_failed(book):
     assert [w.scenes for w in worlds] == [["S-0001"]] and missing == ["S-0002"] and len(caller.failed) == 1
 
 
+def test_stage_worlds_unusable_reply_raises_and_is_not_cached(book):
+    """划世界回复是合法 JSON 但没有 worlds 列表：一块都没分进任何世界就算没法用；
+    唯一一段没法用就等于整段失败，抛 LLMError；不进缓存，换成正常回复重跑会重新调模型。"""
+    items = items_of("S-0001", "S-0002")
+    bad = lambda m: json.dumps({"time_unit": "年"})
+    with pytest.raises(LLMError):
+        worlds_of(book, items, worlds=bad)
+    assert json.loads(book.threads_cache_path.read_text(encoding="utf-8")) == {}
+
+    (worlds, missing, unit), c, _ = worlds_of(book, items)
+    assert missing == [] and c.usage.calls == 1
+    assert [(w.key, w.scenes) for w in worlds] == [("N1", ["S-0001", "S-0002"])]
+
+
 def test_stage_worlds_nothing_free(book):
     known = [WorldDraft("W-01", "人间")]
     (worlds, missing, unit), c, _ = worlds_of(book, {}, known, unit="年")
@@ -319,6 +362,22 @@ def test_stage_lines_failed_call(book):
     res, _, caller = lines_of(book, world, items, lines=lambda m: LLMError("坏了"))
     assert res.threads == [] and res.missing == ["S-0001"] and res.world_outlines == ["S-0002"]
     assert len(caller.failed) == 1
+
+
+def test_stage_lines_unusable_reply_is_not_cached_and_rerun_retries(book):
+    """划支线回复 threads 是空列表（这段有正文块，一块都没归进线）：这段块进 missing、
+    failed 有记录、缓存里没有；重跑会重新调模型。"""
+    items = items_of("S-0001", "S-0002")
+    world = WorldDraft("W-01", "人间", scenes=list(items))
+    empty = lambda m: json.dumps({"threads": []})
+    res, c, caller = lines_of(book, world, items, lines=empty)
+    assert res.threads == [] and sorted(res.missing) == ["S-0001", "S-0002"]
+    assert len(caller.failed) == 1 and c.usage.calls == 3
+    assert json.loads(book.threads_cache_path.read_text(encoding="utf-8")) == {}
+
+    res2, c2, _ = lines_of(book, world, items)
+    assert c2.usage.calls == 1
+    assert [(t.key, t.scenes) for t in res2.threads] == [("W-01#1", ["S-0001", "S-0002"])]
 
 
 def test_stage_lines_only_outlines_or_notes(book):
@@ -503,6 +562,23 @@ def test_stage_order_failed_falls_back_to_file_order(book):
     assert t.times == {} and t.end == {"state": "待定", "note": ""} and missing == []
 
 
+def test_stage_order_unusable_reply_is_not_cached_and_rerun_retries(book):
+    """排序回复没法用（order 不是列表）：不钉死缓存，换成正常回复重跑会重新调模型、排出正确结果。"""
+    c1 = client(book, order=lambda m: json.dumps({"order": "乱写"}))
+    caller1 = Caller(book, c1, lambda *a: None)
+    t1 = ThreadDraft("W-01#1", "W-01", "主线", "说明", scenes=["S-0001", "S-0002", "S-0003"])
+    asyncio.run(stage_order(caller1, t1, order_items(), "年"))
+    assert t1.order_failed is True and c1.usage.calls == 3
+    assert json.loads(book.threads_cache_path.read_text(encoding="utf-8")) == {}
+
+    c2 = client(book)
+    caller2 = Caller(book, c2, lambda *a: None)
+    t2 = ThreadDraft("W-01#1", "W-01", "主线", "说明", scenes=["S-0001", "S-0002", "S-0003"])
+    asyncio.run(stage_order(caller2, t2, order_items(), "年"))
+    assert t2.order_failed is False and c2.usage.calls == 1
+    assert t2.scenes == ["S-0003", "S-0001", "S-0002"]
+
+
 def test_stage_order_single_scene_needs_no_call(book):
     t, missing, c = order_of(book, ["S-0002"])
     assert c.usage.calls == 0 and t.scenes == ["S-0002"]
@@ -552,6 +628,21 @@ def test_thread_block_defends_against_bad_times():
     })
     block = thread_block(t, items)
     assert block.count("[?]") == 5
+
+
+def test_thread_block_and_known_threads_text_collapse_newlines_in_names():
+    """线名 / 说明带换行（来自模型输出或者作者手改）：拼进提示词前压成一行，
+    不然 thread_block 会多出一个假的 `## ` 标题、known_threads_text 会多出一个假的列表条目。"""
+    items = items_of("S-0001")
+    t = ThreadDraft("L-001", "W-01", "甲\n## L-999 假线", "备注\n多行", scenes=["S-0001"])
+
+    block = thread_block(t, items)
+    heads = [ln for ln in block.split("\n") if ln.startswith("## ")]
+    assert heads == ["## L-001 甲 ## L-999 假线"]
+
+    text = known_threads_text([t], items)
+    entries = [ln for ln in text.split("\n") if ln.startswith("- ")]
+    assert entries == ["- L-001 甲 ## L-999 假线：备注 多行"]
 
 
 def test_num_formats_finite_numbers_with_g():
@@ -625,27 +716,28 @@ def gaps_of(book, refs, threads, budget=10**6, **handlers):
     c = client(book, **handlers)
     caller = Caller(book, c, lambda *a: None)
     got = asyncio.run(stage_gaps(caller, "W-01", "人间", threads, list(items), items, budget))
-    return got, c
+    return got, c, caller
 
 
 def test_stage_gaps(book):
     _, a, _ = two_threads()
-    got, c = gaps_of(book, {}, [a])
+    got, c, _ = gaps_of(book, {}, [a])
     assert got == [] and c.usage.calls == 0
 
     def reply(m):
         return json.dumps({"gaps": [{"event": "城破", "mentioned_in": ["S-0003"], "thread": "L-001", "after": "S-0001", "before": None}]},
                           ensure_ascii=False)
 
-    got, c = gaps_of(book, {"S-0003": ["青州城破"]}, [a], gaps=reply)
+    got, c, _ = gaps_of(book, {"S-0003": ["青州城破"]}, [a], gaps=reply)
     assert got == [{"world": "W-01", "event": "城破", "mentioned_in": ["S-0003"], "thread": "L-001", "after": "S-0001", "before": None}]
     assert "- 青州城破｜S-0003" in users(c, "找缺口")[0]
     # 换一件不一样的事：跟上面那次调用的提示词不同，避免命中同一本书缓存里刚写的那条，
     # 真的走到 gaps=lambda 这个失败处理分支（计划原文重用同一个 refs，会命中缓存、测不到失败路径）
-    got, c = gaps_of(book, {"S-0003": ["另一件没写的事"]}, [a], gaps=lambda m: LLMError("坏了"))
+    got, c, _ = gaps_of(book, {"S-0003": ["另一件没写的事"]}, [a], gaps=lambda m: LLMError("坏了"))
     assert got == []
-    got, c = gaps_of(book, {"S-0003": ["青州城破"]}, [a], budget=10)
+    got, c, caller = gaps_of(book, {"S-0003": ["青州城破"]}, [a], budget=10)
     assert got == [] and c.usage.calls == 0
+    assert [f["call"] for f in caller.failed] == ["gaps-W-01"]
 
 
 # --- 编号、主线、旧文件 ---

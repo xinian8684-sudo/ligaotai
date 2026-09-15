@@ -78,6 +78,12 @@ def _broken(e: Exception) -> str:
     return f"检查或清理出错：{type(e).__name__}: {e}"
 
 
+def _one_line(v) -> str:
+    """名字 / 说明拼进提示词前压成一行，免得里面的换行被模型看成一个假的 `## ` 标题
+    或者列表条目（不改存进 ThreadDraft / WorldDraft 的值，只在拼提示词的地方用）。"""
+    return " ".join(str(v).split())
+
+
 class Caller:
     """一次运行里所有模型调用共用：缓存、失败清单、没解决的问题、进度。"""
 
@@ -104,13 +110,17 @@ class Caller:
         except OSError:
             pass  # 缓存写失败不该让已经花了钱的这次调用也跟着失败
 
-    async def call(self, prompt: str, values: dict, check, tag: str, *, score=None, clean=None):
+    async def call(self, prompt: str, values: dict, check, tag: str, *, score=None, clean=None, usable=None):
         """调一次综合档（先查缓存）。返回 clean(模型输出)，没给 clean 就返回模型输出；失败返回 None。
 
-        失败有两种，都记进 failed、返回 None，由调用方兜底：
+        失败有三种，都记进 failed、返回 None，由调用方兜底：
         - 这一次调用失败（LLMError）；
         - 检查 / 打分 / 清理抛了异常（本不该发生）：这条缓存删掉，免得坏结果钉死在缓存里，
-          下次同样的调用会重新调模型。
+          下次同样的调用会重新调模型；
+        - 传了 usable（清理结果 → 这次回复能不能用）：清理之后调 usable(结果)，返回假、或者
+          usable 自己抛异常，都当「这次回复没法用」——跟清理出错走同一条路：缓存删掉、记
+          「模型回复没法用（重试后仍然没有可用的结果）」，下次同样的调用会重新调模型（重跑正是
+          作者想要的：花钱换一次新的重试）。
         FatalLLMError（欠费、key 失效）、JobCancelled（暂停）和 BaseException 系照样往外抛。"""
         system, user = render(prompt, **values)
         key = cache_key(system, user, self.cfg)
@@ -144,6 +154,21 @@ class Caller:
                     self.cache.pop(key, None)
                     self._save()
                     entry = result = None
+        if entry is not None and usable is not None:
+            try:
+                bad = not usable(result)
+            except (FatalLLMError, JobCancelled):
+                raise
+            except Exception as e:
+                self.failed.append({"call": tag, "error": _broken(e)})
+                bad = True
+            else:
+                if bad:
+                    self.failed.append({"call": tag, "error": "模型回复没法用（重试后仍然没有可用的结果）"})
+            if bad:
+                self.cache.pop(key, None)
+                self._save()
+                entry = result = None
         if entry is not None:
             self.used.add(key)
             if entry["problems"]:
@@ -175,7 +200,7 @@ class WorldDraft:
 def known_worlds_text(worlds: list[WorldDraft]) -> str:
     if not worlds:
         return "已有的世界：（无）"
-    return "已有的世界：\n" + "\n".join(f"- {w.key} {w.name}：{w.reason}" for w in worlds)
+    return "已有的世界：\n" + "\n".join(f"- {w.key} {_one_line(w.name)}：{_one_line(w.reason)}" for w in worlds)
 
 
 async def stage_worlds(
@@ -208,6 +233,7 @@ async def stage_worlds(
             f"worlds-{no}",
             score=lambda d: score_worlds(d, expected, keys, need_unit, names),
             clean=lambda d: clean_worlds(d, expected, keys, names),
+            usable=lambda r: len(r[1]) < len(expected),  # 一块都没分进任何世界就算没法用
         )
         if got_all is None:
             failed += 1
@@ -256,7 +282,8 @@ def known_threads_text(threads: list[ThreadDraft], items: dict[str, Item], main:
     out = ["已有的线（块属于它就写它的 id）："]
     for t in threads:
         tag = "（主线）" if t.key == main else ""
-        out.append(f"- {t.key} {t.name}{tag}：{t.about}" if t.about else f"- {t.key} {t.name}{tag}")
+        name, about = _one_line(t.name), _one_line(t.about)
+        out.append(f"- {t.key} {name}{tag}：{about}" if about else f"- {t.key} {name}{tag}")
         out += [f"  {items[s].line}" for s in _examples(t, items)]
     return "\n".join(out)
 
@@ -305,6 +332,8 @@ async def stage_lines(
             f"lines-{world.key}-{no}",
             score=lambda d: score_lines(d, exp_o, exp_l, known, names, held, need_main),
             clean=lambda d: clean_lines(d, exp_o, exp_l, known, names),
+            # 这段有正文/碎片却一块都没归进线就算没法用；只有提纲的段永远可用。
+            usable=lambda r: not exp_o or len(r["missing"]) < len(exp_o),
         )
         if got is None:
             res.missing += sorted(exp_o, key=natural_key)
@@ -352,8 +381,9 @@ async def stage_order(caller: Caller, t: ThreadDraft, items: dict[str, Item], un
         return []
     segs = {f"P-{i:03d}": p for i, p in enumerate((p for p in parts if len(p) > 1), 1)}
     expected = set(fallback)
+    name, about = _one_line(t.name), _one_line(t.about)
     values = {
-        "thread": f"{t.name}（{t.about}）" if t.about else t.name,
+        "thread": f"{name}（{about}）" if about else name,
         "unit": unit or "年",
         "segments": segments_text(segs),
         "lines": "\n".join(items[s].line for s in fallback),
@@ -366,14 +396,11 @@ async def stage_order(caller: Caller, t: ThreadDraft, items: dict[str, Item], un
         f"order-{t.key}",
         score=lambda d: score_order(d, segs, expected),
         clean=lambda d: clean_order(d, segs, expected, fallback),
+        usable=lambda r: not r["failed"],
     )
     if got is None:
         t.scenes, t.times, t.order_failed = fallback, {}, True
         t.end = {"state": "待定", "note": ""}
-        return []
-    if got["failed"]:
-        t.scenes, t.times, t.end, t.order_failed = got["scenes"], {}, got["end"], True
-        caller.failed.append({"call": f"order-{t.key}", "error": "排序回复没法用，按原稿位置暂排"})
         return []
     t.scenes, t.times, t.end = got["scenes"], got["times"], got["end"]
     return got["missing"]
@@ -404,7 +431,7 @@ def _time_of(times, s: str):
 
 
 def thread_block(t: ThreadDraft, items: dict[str, Item], main: bool = False) -> str:
-    head = f"## {t.key} {t.name}" + ("（主线）" if main else "")
+    head = f"## {t.key} {_one_line(t.name)}" + ("（主线）" if main else "")
     rows = [
         f"[{_num(_time_of(t.times, s))}] {items[s].line if s in items else s}"
         for s in t.scenes
@@ -456,7 +483,7 @@ async def stage_gaps(
     lines = {t.key: list(t.scenes) for t in threads}
     caller.plan(1)
     got = await caller.call(
-        "threads_gaps", {"world": world_name, "threads": text, "refs": ref_text},
+        "threads_gaps", {"world": _one_line(world_name), "threads": text, "refs": ref_text},
         lambda d: check_gaps(d, ref_scenes, lines), f"gaps-{world_key}",
         score=lambda d: score_gaps(d, ref_scenes, lines),
         clean=lambda d: clean_gaps(d, ref_scenes, lines),
