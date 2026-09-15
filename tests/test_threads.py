@@ -6,7 +6,7 @@ from helpers import FakeBackend, listed_scenes, seed_book, threads_handler
 
 from ligaotai.config import AppConfig
 from ligaotai.llm import FatalLLMError, LLMClient, LLMError
-from ligaotai.threads import Caller, WorldDraft, stage_worlds
+from ligaotai.threads import Caller, ThreadDraft, WorldDraft, known_threads_text, stage_lines, stage_worlds
 from ligaotai.threads_input import Item
 
 
@@ -246,3 +246,192 @@ def test_stage_worlds_nothing_free(book):
     known = [WorldDraft("W-01", "人间")]
     (worlds, missing, unit), c, _ = worlds_of(book, {}, known, unit="年")
     assert [w.key for w in worlds] == ["W-01"] and c.usage.calls == 0 and unit == "年"
+
+
+# --- 划支线 ---
+
+
+def lines_of(book, world, items, locked=(), budget=10**6, **handlers):
+    c = client(book, **handlers)
+    caller = Caller(book, c, lambda *a: None)
+    return asyncio.run(stage_lines(caller, world, items, list(locked), budget)), c, caller
+
+
+def test_stage_lines_default(book):
+    items = items_of("S-0001", ("S-0002", "碎片"), ("S-0003", "提纲"), ("S-0004", "设定笔记"))
+    world = WorldDraft("W-01", "人间", scenes=list(items))
+    res, c, _ = lines_of(book, world, items)
+    assert [(t.key, t.world, t.name, t.scenes, t.outlines) for t in res.threads] == [
+        ("W-01#1", "W-01", "主线", ["S-0001", "S-0002"], ["S-0003"]),
+    ]
+    assert res.main == "W-01#1" and res.pending == [] and res.world_outlines == [] and res.missing == []
+    user = users(c, "划分支线")[0]
+    assert "S-0004" not in user and "已有的线：（无）" in user
+
+
+def test_stage_lines_locked_thread_gets_pending(book):
+    items = items_of("S-0001", "S-0002", "S-0009")
+    locked = [ThreadDraft("L-003", "W-01", "旧线", "旧说明", scenes=["S-0009", "S-0404"], locked=True)]
+
+    def reply(m):
+        return json.dumps({"threads": [
+            {"id": "L-003", "main": True, "scenes": ["S-0001"]},
+            {"name": "新线", "about": "a", "scenes": ["S-0002"]},
+        ]}, ensure_ascii=False)
+
+    world = WorldDraft("W-01", "人间", scenes=["S-0001", "S-0002"])
+    res, c, _ = lines_of(book, world, items, locked, lines=reply)
+    assert res.pending == [{"scene": "S-0001", "thread": "L-003", "reason": "模型建议归入已确认的线"}]
+    assert [(t.key, t.scenes) for t in res.threads] == [("W-01#1", ["S-0002"])]
+    assert res.main == "L-003"
+    user = users(c, "划分支线")[0]
+    assert "- L-003 旧线：旧说明" in user and "  S-0009｜正文" in user and "S-0404" not in user
+
+
+def test_stage_lines_chunks_carry_new_threads(book):
+    def reply(m):
+        ids = listed_scenes(m)
+        if "W-01#1" in m[1]["content"]:
+            return json.dumps({"threads": [{"id": "W-01#1", "main": True, "scenes": ids}]})
+        return json.dumps({"threads": [{"name": "甲", "main": True, "scenes": ids}]}, ensure_ascii=False)
+
+    items = items_of("S-0001", "S-0002")
+    world = WorldDraft("W-01", "人间", scenes=list(items))
+    res, c, _ = lines_of(book, world, items, budget=20, lines=reply)
+    assert c.usage.calls == 2
+    assert [(t.key, t.scenes) for t in res.threads] == [("W-01#1", ["S-0001", "S-0002"])]
+
+
+def test_stage_lines_failed_call(book):
+    items = items_of("S-0001", ("S-0002", "提纲"))
+    world = WorldDraft("W-01", "人间", scenes=list(items))
+    res, _, caller = lines_of(book, world, items, lines=lambda m: LLMError("坏了"))
+    assert res.threads == [] and res.missing == ["S-0001"] and res.world_outlines == ["S-0002"]
+    assert len(caller.failed) == 1
+
+
+def test_stage_lines_only_outlines_or_notes(book):
+    items = items_of(("S-0001", "提纲"), ("S-0002", "设定笔记"))
+    res, c, _ = lines_of(book, WorldDraft("W-01", "人间", scenes=["S-0001"]), items)
+    assert res.threads == [] and res.world_outlines == ["S-0001"]
+    res2, c2, _ = lines_of(book, WorldDraft("W-01", "人间", scenes=["S-0002"]), items)
+    assert res2.threads == [] and c2.usage.calls == 0
+
+
+# --- 划支线：主线标记 / 已有线示例（held）/ 同名（names）/ require_main ---
+
+
+def test_known_threads_text_marks_main():
+    items = items_of("S-0001")
+    with_about = [ThreadDraft("L-001", "W-01", "线一", "说明")]
+    without_about = [ThreadDraft("L-002", "W-01", "线二")]
+    assert known_threads_text(with_about, items, "L-001") == (
+        "已有的线（块属于它就写它的 id）：\n- L-001 线一（主线）：说明"
+    )
+    assert known_threads_text(without_about, items, "L-002") == (
+        "已有的线（块属于它就写它的 id）：\n- L-002 线二（主线）"
+    )
+    assert known_threads_text(with_about, items, None) == (
+        "已有的线（块属于它就写它的 id）：\n- L-001 线一：说明"
+    )
+
+
+def test_stage_lines_main_param_marks_locked_thread_if_present(book):
+    items = items_of("S-0001", "S-0009")
+    locked = [ThreadDraft("L-003", "W-01", "旧线", "旧说明", scenes=["S-0009"])]
+    world = WorldDraft("W-01", "人间", scenes=["S-0001"])
+
+    c = client(book)
+    caller = Caller(book, c, lambda *a: None)
+    asyncio.run(stage_lines(caller, world, items, locked, 10**6, main="L-003"))
+    user = users(c, "划分支线")[0]
+    assert "- L-003 旧线（主线）：旧说明" in user
+
+    c2 = client(book)
+    caller2 = Caller(book, c2, lambda *a: None)
+    asyncio.run(stage_lines(caller2, world, items, locked, 10**6, main="L-404"))
+    user2 = users(c2, "划分支线")[0]
+    assert "（主线）" not in user2
+
+
+def test_stage_lines_chunk_marks_new_main_thread(book):
+    def reply(m):
+        ids = listed_scenes(m)
+        if "W-01#1" in m[1]["content"]:
+            return json.dumps({"threads": [{"id": "W-01#1", "main": True, "scenes": ids}]})
+        return json.dumps({"threads": [{"name": "甲", "main": True, "scenes": ids}]}, ensure_ascii=False)
+
+    items = items_of("S-0001", "S-0002")
+    world = WorldDraft("W-01", "人间", scenes=list(items))
+    c = client(book, lines=reply)
+    caller = Caller(book, c, lambda *a: None)
+    res = asyncio.run(stage_lines(caller, world, items, [], 20))
+    assert c.usage.calls == 2
+    assert "- W-01#1 甲（主线）" in users(c, "划分支线")[1]
+
+
+def test_stage_lines_held_conflict_retries_then_dedupes(book):
+    """第二段回复把第一段已经在 W-01#1 里的示例块 S-0001 又写了一遍：检查报「不用再列」，
+    重试到用尽（1 + 3 = 4 次调用），最终 W-01#1 的 scenes 里 S-0001 不重复。"""
+
+    def reply(m):
+        ids = listed_scenes(m)
+        if "W-01#1" in m[1]["content"]:
+            return json.dumps({"threads": [{"id": "W-01#1", "main": True, "scenes": ["S-0001"] + ids}]})
+        return json.dumps({"threads": [{"name": "甲", "main": True, "scenes": ids}]}, ensure_ascii=False)
+
+    items = items_of("S-0001", "S-0002")
+    world = WorldDraft("W-01", "人间", scenes=list(items))
+    c = client(book, lines=reply)
+    caller = Caller(book, c, lambda *a: None)
+    res = asyncio.run(stage_lines(caller, world, items, [], 20))
+    assert c.usage.calls == 4
+    assert [u["call"] for u in caller.unresolved] == ["lines-W-01-2"]
+    assert "不用再列" in caller.unresolved[0]["problems"][0]
+    assert [(t.key, t.scenes) for t in res.threads] == [("W-01#1", ["S-0001", "S-0002"])]
+
+
+def test_stage_lines_names_conflict_retries_then_merges(book):
+    """默认假回复分两段：第二段又新建「主线」跟第一段新建的 W-01#1 同名，检查报同名、
+    重试到用尽（4 次调用），最后只有一条线 W-01#1，两块都在里面。"""
+    items = items_of("S-0001", "S-0002")
+    world = WorldDraft("W-01", "人间", scenes=list(items))
+    c = client(book)
+    caller = Caller(book, c, lambda *a: None)
+    res = asyncio.run(stage_lines(caller, world, items, [], 20))
+    assert c.usage.calls == 4
+    assert [(t.key, sorted(t.scenes)) for t in res.threads] == [("W-01#1", ["S-0001", "S-0002"])]
+    assert [u["call"] for u in caller.unresolved] == ["lines-W-01-2"]
+
+
+def test_stage_lines_require_main_only_first_chunk(book):
+    """第一段标了 main、第二段回复一条 main 都没标：不重试（2 次调用）。"""
+
+    def reply(m):
+        ids = listed_scenes(m)
+        if "W-01#1" in m[1]["content"]:
+            return json.dumps({"threads": [{"id": "W-01#1", "scenes": ids}]})
+        return json.dumps({"threads": [{"name": "甲", "main": True, "scenes": ids}]}, ensure_ascii=False)
+
+    items = items_of("S-0001", "S-0002")
+    world = WorldDraft("W-01", "人间", scenes=list(items))
+    c = client(book, lines=reply)
+    caller = Caller(book, c, lambda *a: None)
+    asyncio.run(stage_lines(caller, world, items, [], 20))
+    assert c.usage.calls == 2 and not caller.unresolved
+
+
+def test_stage_lines_require_main_still_needed_after_first_chunk_fails(book):
+    """第一段调用失败（整段没定出主线）、第二段回复没标 main：第二段检查会报（还要标 main）。"""
+
+    def reply(m):
+        if "S-0001" in listed_scenes(m):
+            return LLMError("坏了")
+        return json.dumps({"threads": [{"name": "甲", "scenes": listed_scenes(m)}]}, ensure_ascii=False)
+
+    items = items_of("S-0001", "S-0002")
+    world = WorldDraft("W-01", "人间", scenes=list(items))
+    c = client(book, lines=reply)
+    caller = Caller(book, c, lambda *a: None)
+    asyncio.run(stage_lines(caller, world, items, [], 20))
+    assert [u["call"] for u in caller.unresolved] == ["lines-W-01-2"]

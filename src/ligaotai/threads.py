@@ -15,15 +15,17 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .book import Book
-from .fsutil import read_json, write_json
+from .fsutil import natural_key, read_json, write_json
 from .jobs import JobCancelled
 from .llm import FatalLLMError, LLMClient, LLMError, cache_config, cache_key
 from .prompts import render
-from .threads_check import check_worlds, clean_worlds, score_worlds
-from .threads_input import Item, split_by_budget
+from .threads_check import check_lines, check_worlds, clean_lines, clean_worlds, score_lines, score_worlds
+from .threads_input import ORDERED_KINDS, OUTLINE, Item, split_by_budget
 
 DRAFT, CONFIRMED = "draft", "confirmed"
 MISSED = "模型没分配"
+PENDING = "模型建议归入已确认的线"
+LOCKED_EXAMPLES = 3  # 已有的线在提示词里带几行示例
 UNIT_PROPOSE = "time_unit 填一个适合本书的故事时间单位（「年」「月」「天」等），全书统一用它。"
 UNIT_FIXED = "故事时间单位已经定为「{unit}」，time_unit 照填「{unit}」。"
 
@@ -200,3 +202,108 @@ async def stage_worlds(
     if failed == len(chunks):
         raise LLMError(f"划世界失败：{caller.failed[-1]['error']}")
     return worlds, missing, unit
+
+
+# --- 6.2 划支线 ---
+
+
+@dataclass
+class ThreadDraft:
+    key: str  # 已确认线的 id，或者临时键 <世界键>#<n>（组装时换成正式编号）
+    world: str
+    name: str
+    about: str = ""
+    scenes: list[str] = field(default_factory=list)
+    outlines: list[str] = field(default_factory=list)
+    times: dict = field(default_factory=dict)
+    end: dict = field(default_factory=dict)
+    order_failed: bool = False
+    locked: bool = False
+
+
+def _examples(t: ThreadDraft, items: dict[str, Item]) -> list[str]:
+    """已有的线在提示词里带的示例块：跟提示词里真列出来的一模一样，held 也要用它。"""
+    return [s for s in t.scenes if s in items][:LOCKED_EXAMPLES]
+
+
+def known_threads_text(threads: list[ThreadDraft], items: dict[str, Item], main: str | None = None) -> str:
+    """main：这个世界已知的主线的键，那一行加「（主线）」标记。"""
+    if not threads:
+        return "已有的线：（无）"
+    out = ["已有的线（块属于它就写它的 id）："]
+    for t in threads:
+        tag = "（主线）" if t.key == main else ""
+        out.append(f"- {t.key} {t.name}{tag}：{t.about}" if t.about else f"- {t.key} {t.name}{tag}")
+        out += [f"  {items[s].line}" for s in _examples(t, items)]
+    return "\n".join(out)
+
+
+@dataclass
+class LinesResult:
+    threads: list[ThreadDraft] = field(default_factory=list)  # 新线
+    main: str | None = None  # 这个世界的主线的键（可能是已确认线的 id）
+    pending: list[dict] = field(default_factory=list)
+    world_outlines: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
+
+
+async def stage_lines(
+    caller: Caller, world: WorldDraft, items: dict[str, Item], locked: list[ThreadDraft], budget: int,
+    *, main: str | None = None,
+) -> LinesResult:
+    """划支线（一个世界一次，太大就分段）。locked：这个世界里已确认的线。
+    main：调用方已知的这个世界的全书主线的键（T14 组装时传旧文件里的全书主线）；不在 locked 里就忽略。"""
+    res = LinesResult()
+    ids = [s for s in world.scenes if items[s].kind in ORDERED_KINDS or items[s].kind == OUTLINE]
+    if not ids:
+        return res
+    locked_keys = {t.key for t in locked}
+    known_main = main if main in locked_keys else None
+    chunks = split_by_budget(ids, {s: len(items[s].line) + 1 for s in ids}, budget)
+    caller.plan(len(chunks))
+    for no, chunk in enumerate(chunks, 1):
+        ref = locked + res.threads
+        known = {t.key for t in ref}
+        names = {t.key: t.name for t in ref}
+        held = {s: t.key for t in ref for s in _examples(t, items)}
+        need_main = res.main is None
+        exp_o = {s for s in chunk if items[s].kind in ORDERED_KINDS}
+        exp_l = {s for s in chunk if items[s].kind == OUTLINE}
+        mark = res.main if res.main is not None else known_main
+        values = {
+            "world": world.name,
+            "locked": known_threads_text(ref, items, mark),
+            "lines": "\n".join(items[s].line for s in chunk),
+        }
+        got = await caller.call(
+            "threads_lines",
+            values,
+            lambda d: check_lines(d, exp_o, exp_l, known, names, held, need_main),
+            f"lines-{world.key}-{no}",
+            score=lambda d: score_lines(d, exp_o, exp_l, known, names, held, need_main),
+            clean=lambda d: clean_lines(d, exp_o, exp_l, known, names),
+        )
+        if got is None:
+            res.missing += sorted(exp_o, key=natural_key)
+            res.world_outlines += sorted(exp_l, key=natural_key)
+            continue
+        res.missing += got["missing"]
+        res.world_outlines += got["world_outlines"]
+        by_key = {t.key: t for t in res.threads}
+        for g in got["threads"]:
+            if g["key"] in locked_keys:
+                key = g["key"]
+                res.pending += [{"scene": s, "thread": key, "reason": PENDING} for s in g["scenes"] + g["outlines"]]
+            elif g["key"] in by_key:
+                t = by_key[g["key"]]
+                t.scenes += g["scenes"]
+                t.outlines += g["outlines"]
+                key = t.key
+            else:
+                t = ThreadDraft(f"{world.key}#{len(res.threads) + 1}", world.key, g["name"], g["about"], g["scenes"], g["outlines"])
+                res.threads.append(t)
+                by_key[t.key] = t
+                key = t.key
+            if g["main"] and res.main is None:
+                res.main = key
+    return res
