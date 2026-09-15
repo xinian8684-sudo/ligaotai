@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import math
@@ -18,7 +19,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable
 
-from .book import Book
+from .book import FILE_LOCK, Book
+from .cards import pick_error
 from .fsutil import natural_key, read_json, write_json
 from .jobs import JobCancelled
 from .llm import FatalLLMError, LLMClient, LLMError, cache_config, cache_key
@@ -43,7 +45,7 @@ from .threads_check import (
     str_list,
     text,
 )
-from .threads_input import ORDERED_KINDS, OUTLINE, Item, segments, split_by_budget
+from .threads_input import NOTE, ORDERED_KINDS, OUTLINE, Item, prepare, segments, split_by_budget
 
 DRAFT, CONFIRMED = "draft", "confirmed"
 MISSED = "模型没分配"
@@ -660,3 +662,185 @@ def choose_main(
         mine = [t for t in threads if t.world == best] or threads
         main = max(mine, key=lambda t: len(t.scenes)).key
     return main, "auto"
+
+
+# --- 组装、run_threads ---
+
+
+def run_threads(book: Book, client: LLMClient, progress: Progress = _noop) -> dict:
+    return asyncio.run(_run_threads(book, client, progress))
+
+
+async def _all(coros) -> list:
+    async with asyncio.TaskGroup() as tg:
+        tasks = [tg.create_task(c) for c in coros]
+    return [t.result() for t in tasks]
+
+
+def _thread_dict(t: ThreadDraft, offset) -> dict:
+    return {
+        "id": t.key,
+        "world": t.world,
+        "name": t.name,
+        "about": t.about,
+        "status": CONFIRMED if t.locked else DRAFT,
+        "scenes": t.scenes,
+        "times": t.times,
+        "outlines": t.outlines,
+        "offset": offset,
+        "end": {"state": t.end.get("state", "待定"), "note": t.end.get("note", ""), "last": t.scenes[-1] if t.scenes else None},
+        "order_failed": t.order_failed,
+    }
+
+
+def _world_dicts(
+    worlds: list[WorldDraft], old_worlds: dict[str, dict], locked_ids: set[str],
+    items: dict[str, Item], world_outlines: dict[str, list[str]], all_ids: set[str],
+) -> list[dict]:
+    out = []
+    for w in worlds:
+        notes = [s for s in w.scenes if items[s].kind == NOTE]
+        outs = world_outlines.get(w.key, [])
+        if w.key in locked_ids:
+            o = old_worlds[w.key]
+            out.append({
+                **o,
+                "status": CONFIRMED,
+                "notes": [s for s in str_list(o.get("notes")) if s in all_ids] + notes,
+                "outlines": [s for s in str_list(o.get("outlines")) if s in all_ids] + outs,
+            })
+        else:
+            out.append({"id": w.key, "name": w.name, "reason": w.reason, "status": DRAFT, "notes": notes, "outlines": outs})
+    return out
+
+
+def _world_scenes(w: dict, threads: list[ThreadDraft]) -> list[str]:
+    inside = [s for t in threads if t.world == w["id"] for s in t.scenes + t.outlines]
+    return inside + w["notes"] + w["outlines"]
+
+
+def _remap_order_tags(entries: list[dict], tmap: dict[str, str]) -> None:
+    """失败 / 没解决清单里 `order-<临时键>` 的 call：定完线编号后换成 `order-<正式编号>`，
+    免得作者在结果里对不上号。排空被丢掉的线不在 tmap 里，原样留着。"""
+    for e in entries:
+        call = e.get("call")
+        if isinstance(call, str) and call.startswith("order-"):
+            key = call[len("order-"):]
+            if key in tmap:
+                e["call"] = f"order-{tmap[key]}"
+
+
+async def _run_threads(book: Book, client: LLMClient, progress: Progress) -> dict:
+    prep = prepare(book)
+    items = prep.items
+    budget = book.settings()["threads_max_input_tokens"]
+    snapshot = read_json(book.threads_path, None)
+    old = normalize(snapshot)
+
+    locked = [
+        thread_from_dict(t, prep.all_ids)
+        for t in old["threads"]
+        if isinstance(t, dict) and isinstance(t.get("id"), str) and t.get("id") and t.get("status") == CONFIRMED
+    ]
+    old_worlds = {
+        w["id"]: w for w in old["worlds"] if isinstance(w, dict) and isinstance(w.get("id"), str) and w.get("id")
+    }
+    locked_world_ids = {wid for wid, w in old_worlds.items() if w.get("status") == CONFIRMED} | {t.world for t in locked}
+    for wid in sorted(locked_world_ids - set(old_worlds)):  # 旧文件里找不到的世界：补个占位，别把线弄丢
+        old_worlds[wid] = {"id": wid, "name": wid, "reason": "", "status": CONFIRMED, "notes": [], "outlines": []}
+    locked_worlds = [w for wid, w in old_worlds.items() if wid in locked_world_ids]
+    held = {s for t in locked for s in t.scenes + t.outlines}
+    held |= {s for w in locked_worlds for s in str_list(w.get("notes")) + str_list(w.get("outlines")) if s in prep.all_ids}
+    free = [it for sid, it in items.items() if sid not in held]
+    unit = old["time_unit"] if any(t.times for t in locked) else ""
+
+    caller = Caller(book, client, progress)
+    try:
+        known = [WorldDraft(w["id"], text(w.get("name")), text(w.get("reason"))) for w in locked_worlds]
+        worlds, missing, unit = await stage_worlds(caller, free, known, unit, budget)
+        wmap, next_world = assign_world_ids(old, worlds)
+        for w in worlds:
+            w.key = wmap[w.key]
+        results = await _all(
+            stage_lines(caller, w, items, [t for t in locked if t.world == w.key], budget, main=old["main_thread"])
+            for w in worlds
+        )
+        new = [t for r in results for t in r.threads]
+        lost = await _all(stage_order(caller, t, items, unit) for t in new)
+        missing += [s for r in results for s in r.missing] + [s for m in lost for s in m]
+        world_outlines = {w.key: list(r.world_outlines) for w, r in zip(worlds, results)}
+        for t in new + locked:
+            if not t.scenes:  # 排空了（或者块都没了）的线丢掉，提纲挂回世界
+                world_outlines.setdefault(t.world, []).extend(t.outlines)
+        new = [t for t in new if t.scenes]
+        tmap, next_thread = assign_thread_ids(old, new)
+        _remap_order_tags(caller.failed, tmap)
+        _remap_order_tags(caller.unresolved, tmap)
+        for t in new:
+            t.key = tmap[t.key]
+        world_mains = {w.key: tmap.get(r.main, r.main) for w, r in zip(worlds, results)}
+        alive = [t for t in locked if t.scenes] + new
+        threads = [t for w in worlds for t in alive if t.world == w.key]
+        main, main_by = choose_main(old, threads, world_mains, [w.key for w in worlds])
+        offsets, intersections = await stage_align(caller, threads, main, items, unit, budget)
+        world_dicts = _world_dicts(worlds, old_worlds, locked_world_ids, items, world_outlines, prep.all_ids)
+        gap_lists = await _all(
+            stage_gaps(caller, w["id"], w["name"], [t for t in threads if t.world == w["id"]],
+                       _world_scenes(w, threads), items, budget)
+            for w in world_dicts
+        )
+    except BaseExceptionGroup as eg:
+        raise pick_error(eg) from None  # 欠费 / key 失效要让作者看到，不能被「已暂停」盖住
+    finally:
+        u = client.usage
+        book.add_usage("threads", u.calls, u.prompt_tokens, u.completion_tokens, u.cost(client.cfg))
+
+    no_card = [u for u in prep.unassigned if u["scene"] not in held]
+    unassigned = no_card + [{"scene": s, "reason": MISSED} for s in dict.fromkeys(missing)]
+    unassigned.sort(key=lambda u: natural_key(u["scene"]))
+    pending = [p for r in results for p in r.pending]
+    thread_dicts = [_thread_dict(t, offsets.get(t.key)) for t in threads]
+    gaps = [{"id": f"Q-{i:03d}", **g} for i, g in enumerate((g for gs in gap_lists for g in gs), 1)]
+    data = {
+        "next_world": next_world,
+        "next_thread": next_thread,
+        "time_unit": unit or "年",
+        "main_thread": main,
+        "main_by": main_by,
+        "worlds": world_dicts,
+        "threads": thread_dicts,
+        "intersections": intersections,
+        "gaps": gaps,
+        "unassigned": unassigned,
+        "pending": pending,
+    }
+
+    fp_end = prepare(book).fingerprint
+    # 只把「重新读文件 → 比对 → 写回」放进锁里，都是毫秒级的本地操作；调模型在上面，绝不能进锁。
+    with FILE_LOCK:
+        not_written = read_json(book.threads_path, None) != snapshot
+        changed = not not_written and content_signature(old) != content_signature(data)
+        if not not_written:
+            write_json(book.threads_path, data)
+    if not not_written:
+        caller.prune_cache()
+    input_changed = fp_end != prep.fingerprint
+    summary = {
+        "worlds": len(world_dicts),
+        "threads": len(thread_dicts),
+        "confirmed_threads": sum(t["status"] == CONFIRMED for t in thread_dicts),
+        "scenes": len(items),
+        "unassigned": len(unassigned),
+        "pending": len(pending),
+        "gaps": len(gaps),
+        "order_failed": [t["id"] for t in thread_dicts if t["order_failed"]],
+        "failed_calls": caller.failed,
+        "unresolved": caller.unresolved,
+        "input_changed": input_changed,
+        "not_written": not_written,
+        "calls": client.usage.calls,
+        "cost_usd": round(client.usage.cost(client.cfg), 4),
+    }
+    status = "outdated" if (input_changed or not_written) else "done"
+    book.set_step("threads", status, summary, changed=changed)
+    return summary
