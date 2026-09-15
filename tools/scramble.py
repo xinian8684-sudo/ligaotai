@@ -239,6 +239,8 @@ def scramble(
         candidates = [
             num for num, (heading, body) in after_truncate.items() if a["replaces"] in heading + body
         ]
+        if not candidates:
+            raise ValueError(f"replaces not found in source: {a['replaces']!r}")
         chosen = sorted(rng.sample(candidates, min(alias_chapters, len(candidates))))
         alias_log.append({**a, "chapters": chosen})
 

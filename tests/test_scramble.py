@@ -102,6 +102,14 @@ def test_alias_collision_raises(tmp_path):
         scramble(chapters, tmp_path / "x", seed=3, **SMALL)
 
 
+def test_alias_replaces_not_in_source_raises(tmp_path):
+    """replaces 写的词原文里一回都没有：抛 ValueError，不悄悄生成一个出现 0 回的别名（T17-1）。"""
+    chapters = make_chapters(20)
+    aliases = [{"replaces": "不存在的人名", "alias": "某某郎", "canonical": "某某"}]
+    with pytest.raises(ValueError, match="不存在的人名"):
+        scramble(chapters, tmp_path / "x", seed=3, aliases=aliases, **SMALL)
+
+
 def test_alias_candidates_require_term(tmp_path):
     """别名章节必须真的含有被替换的词，别名候选要在截断之后的正文里挑（Fix 1）。"""
     chapters = make_chapters(20)

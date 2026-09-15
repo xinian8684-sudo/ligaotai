@@ -186,3 +186,83 @@ def test_move_scenes_target_without_times_key(tbook):
     d = data_of(tbook)
     assert d["threads"][2]["scenes"] == ["S-0005", "S-0006"]
     assert d["threads"][2]["times"] == {}
+
+
+# --- 修复批次 6（T15，见 reports/review_t15_18.md）---
+
+
+def test_gap_world_follows_moved_thread(tbook):
+    """缺口的 world 跟着线走：线还在，缺口的 world 改成线现在所在的世界（T15-1）。"""
+    data = data_of(tbook)
+    data["gaps"] = [{"id": "Q-001", "world": "W-02", "event": "e", "mentioned_in": ["S-0005"],
+                      "thread": "L-003", "after": "S-0005", "before": None}]
+    write_json(tbook.threads_path, data)
+    ops.move_thread(tbook, "L-003", "W-01")
+    d = data_of(tbook)
+    assert d["gaps"][0]["world"] == "W-01"
+
+
+def test_gap_world_becomes_none_when_its_world_is_gone(tbook):
+    """线没了、缺口挂着的世界也整理掉了：缺口的 world 置 None，不挂在已删的世界上（T15-1）。"""
+    data = data_of(tbook)
+    data["gaps"] = [{"id": "Q-001", "world": "W-02", "event": "e", "mentioned_in": ["S-0005"],
+                      "thread": "L-003", "after": "S-0005", "before": None}]
+    write_json(tbook.threads_path, data)
+    ops.move_scenes(tbook, ["S-0005"], "L-001")  # L-003 唯一的块挪走，线被整理掉，W-02 也没了
+    d = data_of(tbook)
+    assert "W-02" not in [w["id"] for w in d["worlds"]]
+    assert d["gaps"][0]["world"] is None and d["gaps"][0]["thread"] is None
+
+
+def test_split_thread_end_follows_the_tail(tbook):
+    """拆线时结局跟着尾巴走：新线拿走原线的 end，原线的 end 变回待定（T15-2）。"""
+    data = data_of(tbook)
+    data["threads"][0]["end"] = {"state": "完结", "note": "结尾", "last": "S-0003"}
+    write_json(tbook.threads_path, data)
+    new = ops.split_thread(tbook, "L-001", "S-0002")
+    d = data_of(tbook)
+    assert new["end"] == {"state": "完结", "note": "结尾", "last": "S-0003"}
+    assert d["threads"][0]["end"] == {"state": "待定", "note": "", "last": "S-0001"}
+
+
+def test_move_scenes_as_outline_emptying_thread_raises(tbook):
+    """挪完目标线就没有正文块了：改动前抛 ValueError，文件不动（T15-3）。"""
+    before = data_of(tbook)
+    with pytest.raises(ValueError):
+        ops.move_scenes(tbook, ["S-0004"], "L-002", as_outline=True)  # S-0004 是 L-002 唯一的块
+    assert data_of(tbook) == before
+
+
+def test_merge_threads_repoints_intersections(tbook):
+    """合并时交汇点改指留下的线（T15-4）。"""
+    data = data_of(tbook)
+    data["main_thread"] = "L-003"
+    data["intersections"] = [{"thread": "L-002", "scene": "S-0004", "main_scene": "S-0005", "reason": "r"}]
+    write_json(tbook.threads_path, data)
+    ops.merge_threads(tbook, ["L-001", "L-002"])
+    d = data_of(tbook)
+    assert d["intersections"] == [{"thread": "L-001", "scene": "S-0004", "main_scene": "S-0005", "reason": "r"}]
+
+
+def test_set_main_recomputes_offsets_numeric_base(tbook):
+    """设主线重算偏移：新主线的 offset 是数字，所有数字 offset 都减去它，新主线变 0（T15-5）。"""
+    ops.set_main(tbook, "L-002")  # L-002 offset 是 1
+    d = data_of(tbook)
+    offsets = {t["id"]: t["offset"] for t in d["threads"]}
+    assert offsets == {"L-001": -1, "L-002": 0, "L-003": None}  # L-003 本来就是 None（非数字当没有）
+
+
+def test_set_main_recomputes_offsets_none_base(tbook):
+    """设主线重算偏移：新主线的 offset 是 None，自己记 0，别的线全置 None（T15-5）。"""
+    ops.set_main(tbook, "L-003")  # L-003 offset 是 None
+    d = data_of(tbook)
+    offsets = {t["id"]: t["offset"] for t in d["threads"]}
+    assert offsets == {"L-001": None, "L-002": None, "L-003": 0}
+
+
+def test_set_main_on_already_main_thread_does_not_outdate(tbook):
+    """对已经是主线的线再设主线：main_by 从 auto 变成 author，但内容没变，下游不该过期（T15-6）。"""
+    ops.set_main(tbook, "L-001")  # L-001 本来就是主线，offset 已经是 0
+    assert archive(tbook) == "done"
+    d = data_of(tbook)
+    assert (d["main_thread"], d["main_by"]) == ("L-001", "author")

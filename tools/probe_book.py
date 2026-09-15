@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 from ligaotai.config import AppConfig, load_config
-from ligaotai.llm import ChatBackend, LLMClient, NoKeyError, OpenAIBackend
+from ligaotai.llm import ChatBackend, FatalLLMError, LLMClient, LLMError, NoKeyError, OpenAIBackend
 from ligaotai.threads_check import text
 from tools.scramble import Chapter, parse_chapters, strip_gutenberg
 
@@ -89,8 +89,19 @@ def main(argv: list[str] | None = None) -> None:
     except NoKeyError:
         sys.exit("no API key configured (config.json api_key or env LIGAOTAI_API_KEY)")
     raw = Path(args.src).read_text(encoding="utf-8")
-    report = probe(args.title, parse_chapters(strip_gutenberg(raw)), cfg, backend)
-    Path(args.report).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    chapters = parse_chapters(strip_gutenberg(raw))
+    report_path = Path(args.report)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    error_path = report_path.with_name(report_path.stem + "-error.json")
+    try:
+        report = probe(args.title, chapters, cfg, backend)
+    except LLMError as e:
+        partial = {"error": f"{type(e).__name__}: {e}"}
+        error_path.write_text(json.dumps(partial, ensure_ascii=False, indent=2), encoding="utf-8")
+        kind = "fatal" if isinstance(e, FatalLLMError) else "a step"
+        sys.exit(f"{kind} model error, see the -error report next to your --report path")
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    error_path.unlink(missing_ok=True)
     print(f"answered={report['answered']}/{report['chapters']} calls={report['calls']} cost_usd={report['cost_usd']}")
 
 

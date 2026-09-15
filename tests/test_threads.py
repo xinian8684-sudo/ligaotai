@@ -776,6 +776,14 @@ def test_content_signature_ignores_status():
     assert content_signature(a) == content_signature(b) != content_signature(c)
 
 
+def test_content_signature_ignores_top_level_main_by():
+    """只改 main_by（主线是怎么定下来的）不算内容：签名不变；main_thread 本身还算内容（修复批次 6 T15-6）。"""
+    a = {"main_thread": "L-001", "main_by": "auto", "threads": []}
+    b = {"main_thread": "L-001", "main_by": "author", "threads": []}
+    c = {"main_thread": "L-002", "main_by": "auto", "threads": []}
+    assert content_signature(a) == content_signature(b) != content_signature(c)
+
+
 def test_next_number():
     assert next_number({"worlds": [{"id": "W-03"}], "next_world": 2}, "world") == 4
     assert next_number({"worlds": [], "next_world": 9}, "world") == 9

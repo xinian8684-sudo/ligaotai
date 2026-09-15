@@ -532,7 +532,8 @@ def normalize(data) -> dict:
 
 
 def content_signature(data: dict) -> str:
-    """去掉所有 status 后的内容：只确认、不改内容时签名不变。"""
+    """去掉所有 status、顶层 main_by 后的内容：status 和 main_by 是元信息，不算内容。
+    只确认、或者只改主线是怎么定下来的（不改 main_thread 本身）时，签名不变。"""
 
     def strip(x):
         if isinstance(x, dict):
@@ -541,7 +542,10 @@ def content_signature(data: dict) -> str:
             return [strip(v) for v in x]
         return x
 
-    return json.dumps(strip(data), ensure_ascii=False, sort_keys=True)
+    stripped = strip(data)
+    if isinstance(stripped, dict):
+        stripped.pop("main_by", None)
+    return json.dumps(stripped, ensure_ascii=False, sort_keys=True)
 
 
 def _id_num(oid, prefix: str) -> int:

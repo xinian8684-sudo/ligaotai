@@ -111,11 +111,15 @@ def _tidy(data: dict) -> None:
         and c["scene"] in by_id[c["thread"]]["scenes"]
         and main is not None and c["main_scene"] in main["scenes"]
     ]
+    world_ids = {w["id"] for w in data["worlds"]}
     for g in data.get("gaps", []):
         t = by_id.get(g.get("thread"))
         if t is None:
             g["thread"] = g["after"] = g["before"] = None
+            if g.get("world") not in world_ids:
+                g["world"] = None
             continue
+        g["world"] = t["world"]
         for k in ("after", "before"):
             if g.get(k) not in t["scenes"]:
                 g[k] = None
@@ -172,6 +176,8 @@ def move_scenes(book: Book, ids: list[str], tid: str, position: int | None = Non
         target = t["outlines"] if as_outline else t["scenes"]
         pos = len(target) if position is None else max(0, min(position, len(target)))
         target[pos:pos] = ids
+        if as_outline and not t["scenes"]:
+            raise ValueError("挪完这条线就没有正文块了")
         if not as_outline:
             t.setdefault("times", {}).update(own_times)  # 线可能没有 times 键
         _touch(data, t)
@@ -198,6 +204,9 @@ def merge_threads(book: Book, ids: list[str]) -> dict:
         for g in data.get("gaps", []):
             if g.get("thread") in gone:
                 g["thread"] = keep["id"]
+        for c in data.get("intersections", []):
+            if c.get("thread") in gone:
+                c["thread"] = keep["id"]
         if data.get("main_thread") in gone:
             data["main_thread"] = keep["id"]
         _touch(data, keep)
@@ -218,25 +227,44 @@ def split_thread(book: Book, tid: str, from_scene: str) -> dict:
         data["next_thread"] = n + 1
         moving = t["scenes"][i:]
         times = t.get("times") or {}
+        old_end = t.get("end") or {}
         new = {
             "id": thread_id(n), "world": t["world"], "name": f"{t['name']}（拆出）", "about": "",
             "status": CONFIRMED, "scenes": moving, "times": {s: v for s, v in times.items() if s in moving},
-            "outlines": [], "offset": t.get("offset"), "end": {"state": "待定", "note": ""}, "order_failed": False,
+            "outlines": [], "offset": t.get("offset"),
+            "end": {"state": old_end.get("state", "待定"), "note": old_end.get("note", "")}, "order_failed": False,
         }
         t["scenes"] = t["scenes"][:i]
         t["times"] = {s: v for s, v in times.items() if s in t["scenes"]}
+        t["end"] = {"state": "待定", "note": ""}
         _touch(data, t)
         data["threads"].insert(data["threads"].index(t) + 1, new)
         _save(book, data, before)
     return new
 
 
+def _numeric(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
 def set_main(book: Book, tid: str) -> dict:
     """设主线也算动过这条线：不确认的话，这条线之后重跑可能因为块集合变了换成新编号，
-    choose_main 找不到旧编号就把作者的选择悄悄换回 auto。"""
+    choose_main 找不到旧编号就把作者的选择悄悄换回 auto。
+
+    顺带重算 offset，让新主线变 0（threads_check 的约定：主线 offset 是 0）：新主线的 offset
+    是数字就拿它当基准，所有数字 offset 都减去基准，非数字（脏值）的当没有；新主线的 offset
+    本来就是 None，就只记新主线是 0，别的线跟它的关系不知道，全置 None。"""
     with FILE_LOCK:
         data, before = _load_tidy(book)
         t = _thread(data, tid)
+        base = t.get("offset")
+        base = base if _numeric(base) else None
+        for th in data["threads"]:
+            if base is not None:
+                off = th.get("offset")
+                th["offset"] = (off - base) if _numeric(off) else None
+            else:
+                th["offset"] = 0 if th["id"] == tid else None
         data["main_thread"], data["main_by"] = tid, "author"
         _touch(data, t)
         _save(book, data, before)

@@ -1,8 +1,11 @@
 import json
 
-from helpers import FakeBackend
+import pytest
+from helpers import FakeBackend, make_chapters
 
+import tools.probe_book as probe_book
 from ligaotai.config import AppConfig
+from ligaotai.llm import FatalLLMError
 from tools.probe_book import probe
 from tools.scramble import Chapter
 
@@ -72,3 +75,47 @@ def test_probe_known_missing_becomes_empty_string():
     r = probe("某书", chapters, AppConfig(), FakeBackend(replies=[reply]))
     assert r["known"] == ""
     assert r["rows"] == [{"n": 1, "heading": "第一回 甲", "model": None}]
+
+
+# --- 修复批次 6（T17-2，见 reports/review_t15_18.md）---
+
+
+def test_main_writes_error_report_on_llm_error(tmp_path, monkeypatch):
+    """三次都回不出能用的 JSON：main 接住 LLMError，写 -error.json，终端提示是 ASCII（T17-2）。"""
+    chapters = make_chapters(3)
+    src = tmp_path / "book.txt"
+    src.write_text("\n".join(f"{c.heading}\n\n{c.body}\n" for c in chapters), encoding="utf-8")
+    report_path = tmp_path / "报告.json"
+
+    fake = FakeBackend(replies=["not json", "not json", "not json"])
+    monkeypatch.setattr(probe_book, "load_config", lambda: AppConfig())
+    monkeypatch.setattr(probe_book, "OpenAIBackend", lambda cfg: fake)
+
+    with pytest.raises(SystemExit) as ei:
+        probe_book.main(["--title", "某书", "--src", str(src), "--report", str(report_path)])
+    assert str(ei.value).isascii()
+
+    error_path = report_path.with_name(report_path.stem + "-error.json")
+    data = json.loads(error_path.read_text(encoding="utf-8"))
+    assert data["error"].startswith("LLMError")
+    assert not report_path.exists()  # 没跑成功，正式报告不该写出来
+
+
+def test_main_does_not_treat_fatal_error_as_plain(tmp_path, monkeypatch):
+    """FatalLLMError（欠费 / key 失效）也走同一条报告路径，提示分「fatal」（T17-2）。"""
+    chapters = make_chapters(3)
+    src = tmp_path / "book.txt"
+    src.write_text("\n".join(f"{c.heading}\n\n{c.body}\n" for c in chapters), encoding="utf-8")
+    report_path = tmp_path / "报告.json"
+
+    fake = FakeBackend(replies=[FatalLLMError("欠费了")])
+    monkeypatch.setattr(probe_book, "load_config", lambda: AppConfig())
+    monkeypatch.setattr(probe_book, "OpenAIBackend", lambda cfg: fake)
+
+    with pytest.raises(SystemExit) as ei:
+        probe_book.main(["--title", "某书", "--src", str(src), "--report", str(report_path)])
+    assert str(ei.value).startswith("fatal")
+
+    error_path = report_path.with_name(report_path.stem + "-error.json")
+    data = json.loads(error_path.read_text(encoding="utf-8"))
+    assert data["error"].startswith("FatalLLMError")
