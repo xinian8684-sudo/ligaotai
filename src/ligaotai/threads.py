@@ -566,12 +566,16 @@ def thread_id(n: int) -> str:
     return f"L-{n:03d}"
 
 
-def assign_world_ids(old: dict, worlds: list[WorldDraft]) -> tuple[dict[str, str], int]:
+def assign_world_ids(old: dict, worlds: list[WorldDraft], locked: set[str] | None = None) -> tuple[dict[str, str], int]:
     """临时键 N… → 正式编号；已确认世界的键本来就是正式编号。草稿世界按名字沿用旧的草稿世界编号。
 
-    old 里的元素形状不一定干净（作者手改或旧版本写的）：不是 dict、没有字符串 id 的一律跳过。
+    old 里的元素形状不一定干净（作者手改或旧版本写的）：不是 dict、没有字符串 id 的一律跳过；
+    name 不是字符串就过 text() 当空名字，空名字不参与按名沿用。
+    locked：已锁定（已确认 / 已确认线所属）的世界键集合，传了就原样保留、不当临时键判断；
+    不传才退回按 "N" 前缀认临时键的老规则（作者手改文件把已确认世界的键改成 "N…" 开头时，
+    不传 locked 会把这个已确认世界错当成临时键换号，导致它和它的线一起从结果里消失）。
     """
-    in_use = {w.key for w in worlds if not w.key.startswith("N")}
+    in_use = set(locked) if locked is not None else {w.key for w in worlds if not w.key.startswith("N")}
     reuse: dict[str, str] = {}
     for w in old["worlds"]:
         if not isinstance(w, dict):
@@ -579,8 +583,12 @@ def assign_world_ids(old: dict, worlds: list[WorldDraft]) -> tuple[dict[str, str
         wid = w.get("id")
         if not isinstance(wid, str) or w.get("status") == CONFIRMED or wid in in_use:
             continue
-        reuse.setdefault(w.get("name"), wid)
-    n = next_number(old, "world")
+        name = text(w.get("name"))
+        if name:
+            reuse.setdefault(name, wid)
+    # 发号起点：不能只看旧文件（next_number），还要避开这次原样保留的编号（locked / 已在用的编号），
+    # 免得旧文件丢了 next_world 时，新世界的编号撞上已确认世界的编号（同一个编号出现两次、块被算两遍）。
+    n = max(next_number(old, "world"), max((_id_num(k, "W") for k in in_use), default=0) + 1)
     out: dict[str, str] = {}
     for w in worlds:
         if w.key in in_use:
@@ -758,7 +766,7 @@ async def _run_threads(book: Book, client: LLMClient, progress: Progress) -> dic
     try:
         known = [WorldDraft(w["id"], text(w.get("name")), text(w.get("reason"))) for w in locked_worlds]
         worlds, missing, unit = await stage_worlds(caller, free, known, unit, budget)
-        wmap, next_world = assign_world_ids(old, worlds)
+        wmap, next_world = assign_world_ids(old, worlds, locked=locked_world_ids)
         for w in worlds:
             w.key = wmap[w.key]
         results = await _all(

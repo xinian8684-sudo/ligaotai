@@ -804,9 +804,18 @@ def test_assign_world_ids_defends_against_dirty_old_file():
         {"name": "甲"},  # 没有 id
         {"id": 5, "name": "乙"},  # id 不是字符串
         {"id": "W-01", "name": "丙", "status": "draft"},
+        {"id": "W-02", "name": ["x"], "status": "draft"},  # name 是列表，不能当 dict 的 key
+        {"id": "W-03", "name": {"t": 1}, "status": "draft"},  # name 是字典
     ]})
     worlds = [WorldDraft("N1", "丙"), WorldDraft("N2", "丁")]
-    assert assign_world_ids(old, worlds) == ({"N1": "W-01", "N2": "W-02"}, 3)
+    assert assign_world_ids(old, worlds) == ({"N1": "W-01", "N2": "W-04"}, 5)
+
+
+def test_assign_world_ids_with_locked_keeps_key_even_if_n_prefixed():
+    """已确认世界的键手改成以 N 开头（比如 "N1"）：传 locked 就原样保留，不当临时键换号。"""
+    old = normalize({"worlds": [{"id": "N1", "name": "甲", "status": "confirmed"}]})
+    worlds = [WorldDraft("N1", "甲"), WorldDraft("N2", "乙")]
+    assert assign_world_ids(old, worlds, locked={"N1"}) == ({"N1": "N1", "N2": "W-01"}, 2)
 
 
 def test_assign_thread_ids():

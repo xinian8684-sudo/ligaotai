@@ -178,6 +178,8 @@ def create_app(
             raise HTTPException(404, "没有这条线或这个世界")
         except FileNotFoundError as e:
             raise HTTPException(404, str(e))
+        except tops.BrokenThreadsFile as e:
+            raise HTTPException(409, str(e))
         except ValueError as e:
             raise HTTPException(400, str(e))
 
@@ -342,7 +344,10 @@ def create_app(
     @app.get("/api/books/{name}/threads")
     def threads(name: str) -> dict:
         b = get_book(name)
-        return normalize(read_json(b.threads_path, None))
+        try:
+            return normalize(tops.read_threads(b))
+        except tops.BrokenThreadsFile as e:
+            raise HTTPException(409, str(e))
 
     @app.post("/api/books/{name}/threads/confirm")
     def confirm_threads(name: str, req: IdsReq) -> list:

@@ -196,6 +196,107 @@ def test_run_threads_defends_against_dirty_old_file(seeded):
     summary = run_threads(seeded, client(seeded))
     assert summary is not None
     assert seeded.step("threads")["status"] in ("done", "outdated")
+    data = result(seeded)
+    # id 是列表的那条线不是合法的已确认线，不能沿用旧编号也不算已确认（它的块被重新划线）
+    assert all(isinstance(t["id"], str) for t in data["threads"])
+    assert all(t["status"] != "confirmed" for t in data["threads"])
+    # W-01 的 notes / outlines 是脏值（5、字符串），读回来清成了列表
+    [w] = [w for w in data["worlds"] if w["id"] == "W-01"]
+    assert isinstance(w["notes"], list) and isinstance(w["outlines"], list)
+
+
+def test_draft_world_with_non_string_name_does_not_crash(seeded):
+    """旧文件里一个草稿世界的 name 被手改成列表（不是字符串）：assign_world_ids 不能因为
+    拿它当 dict 的 key 而抛 TypeError，run_threads 照常跑完（修复批次 5 第 1 条）。"""
+    run_threads(seeded, client(seeded))
+    edit(seeded, lambda d: d["worlds"][0].update(name=["世界一"]))
+    summary = run_threads(seeded, client(seeded))
+    assert summary is not None
+    assert seeded.step("threads")["status"] in ("done", "outdated")
+
+
+def test_confirmed_thread_in_n_prefixed_world_is_not_dropped(seeded):
+    """已确认线所属的世界编号被手改成以 "N" 开头（比如 "N1"）：assign_world_ids 不能把它当成
+    这次新分配的临时键，不然这条线连同它的块会从结果里消失、也不报错（修复批次 5 第 2 条）。"""
+    run_threads(seeded, client(seeded))
+    edit(seeded, lambda d: d["threads"][0].update(status="confirmed", world="N1"))
+    before_ids = [t["id"] for t in result(seeded)["threads"]]
+    run_threads(seeded, client(seeded))
+    data = result(seeded)
+    after_ids = [t["id"] for t in data["threads"]]
+    assert after_ids == before_ids  # 线还在
+    [t] = data["threads"]
+    assert t["world"] == "N1" and t["status"] == "confirmed"
+    placed = {s for t in data["threads"] for s in t["scenes"]} | {u["scene"] for u in data["unassigned"]}
+    assert {"S-0001", "S-0002", "S-0003"} <= placed  # 它的块也还在（不是丢了、也不是没归位）
+
+
+def test_new_world_number_does_not_collide_with_placeholder(seeded):
+    """旧文件同时丢了 worlds 列表和 next_world，只剩一条已确认的线指向 W-01：run_threads 会给它
+    补一个占位世界 W-01；新分配的世界编号不能也发成 W-01，不然两个世界都叫 W-01、这条线在
+    threads 里会出现两次（修复批次 5 第 3 条）。"""
+    run_threads(seeded, client(seeded))
+
+    def drop_worlds(d):
+        d["threads"][0]["status"] = "confirmed"
+        d["worlds"] = []
+        del d["next_world"]
+
+    edit(seeded, drop_worlds)
+    run_threads(seeded, client(seeded))
+    data = result(seeded)
+    world_ids = [w["id"] for w in data["worlds"]]
+    assert len(world_ids) == len(set(world_ids))  # 世界编号不重复
+    thread_ids = [t["id"] for t in data["threads"]]
+    assert len(thread_ids) == len(set(thread_ids))  # 每条线只出现一次
+
+
+def test_worlds_prompt_marks_confirmed_main_thread(seeded):
+    """已确认的全书主线在划支线的提示词里要标「（主线）」，不然模型不知道哪条是主线
+    （修复批次 5 第 4 条 notes 1）。"""
+    run_threads(seeded, client(seeded))
+    edit(seeded, lambda d: d["threads"][0].update(status="confirmed"))
+    seed_book(seeded, SCENES + [{"id": "S-0007", "source": "c.txt", "index": 0}], entities=ENTS)
+
+    def worlds(m):
+        return json.dumps({"worlds": [{"id": "W-01", "scenes": listed_scenes(m)}]})
+
+    def lines(m):
+        return json.dumps({"threads": [{"id": "L-001", "main": True, "scenes": listed_scenes(m)}]})
+
+    c = client(seeded, worlds=worlds, lines=lines)
+    run_threads(seeded, c)
+    lines_prompts = [x["messages"][1]["content"] for x in c.backend.calls if "划分支线" in x["messages"][0]["content"]]
+    assert lines_prompts and any("- L-001 主线（主线）：测试" in p for p in lines_prompts)
+
+
+def test_time_unit_falls_back_to_year_when_model_never_gives_one(seeded):
+    """模型划世界的回复一直不带 time_unit（3 次重试都不带）：检查会报问题，但 worlds 字段本身能用，
+    最后写文件时兜底成「年」，步骤照常算 done（修复批次 5 第 4 条 notes 2）。"""
+
+    def worlds(m):
+        return json.dumps(
+            {"worlds": [{"name": "世界一", "reason": "r", "scenes": listed_scenes(m)}]}, ensure_ascii=False
+        )
+
+    summary = run_threads(seeded, client(seeded, worlds=worlds))
+    data = result(seeded)
+    assert data["time_unit"] == "年"
+    assert seeded.step("threads")["status"] == "done"
+    assert summary["unresolved"]  # time_unit 缺失被记成没解决的问题，但不影响这次结果能用
+
+
+def test_set_main_survives_rerun(seeded):
+    """作者用 set_main 把一条草稿线设成主线，之后来了新块重跑：这条线还是主线、main_by 还是
+    author（修复批次 5 第 5 条：set_main 也算动过这条线，得确认，不然重跑换了号就悄悄变回 auto）。"""
+    from ligaotai import threads_ops as ops
+
+    run_threads(seeded, client(seeded))
+    ops.set_main(seeded, "L-001")
+    seed_book(seeded, SCENES + [{"id": "S-0007", "source": "c.txt", "index": 0}], entities=ENTS)
+    run_threads(seeded, client(seeded))
+    data = result(seeded)
+    assert data["main_thread"] == "L-001" and data["main_by"] == "author"
 
 
 def test_pause_then_rerun_uses_the_cache(seeded):

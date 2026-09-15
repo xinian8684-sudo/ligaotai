@@ -1,7 +1,7 @@
 """步骤 6 的作者调整：确认、改名、挪块、合并线、拆线、设主线、挪线。
 
 每个操作「读 → 改 → 写」整段在 FILE_LOCK 里，跟 run_threads 的写回、跟彼此都串行。
-作者动过的线（和它所在的世界）都算已确认，重跑时原样保留。
+作者动过的线（和它所在的世界）都算已确认，重跑时原样保留；设主线也算动过这条线。
 内容真的变了（不只是确认状态）才把下游（步骤 7）标过期。"""
 
 from __future__ import annotations
@@ -13,8 +13,22 @@ from .threads import CONFIRMED, content_signature, next_number, normalize, threa
 GONE_PENDING = "建议归入的线已被删除"
 
 
+class BrokenThreadsFile(Exception):
+    """世界与支线.json 不是合法 JSON（作者手改坏了 / 写到一半）：读不出来，不能覆盖，
+    也不能假装它是空的，得让作者自己去处理。"""
+
+
+def read_threads(book: Book) -> dict | None:
+    """读 世界与支线.json 的原始内容（没规范化）：文件不存在返回 None；JSON 解析失败抛
+    BrokenThreadsFile（GET /threads 和 load_threads 都走这条读法，行为一致）。"""
+    try:
+        return read_json(book.threads_path)
+    except ValueError as e:
+        raise BrokenThreadsFile("世界与支线.json 格式坏了，要手动修好或删掉后重跑步骤 6") from e
+
+
 def load_threads(book: Book) -> dict:
-    data = read_json(book.threads_path)
+    data = read_threads(book)
     if data is None:
         raise FileNotFoundError("还没有归线结果，先跑步骤 6")
     return normalize(data)
@@ -218,10 +232,13 @@ def split_thread(book: Book, tid: str, from_scene: str) -> dict:
 
 
 def set_main(book: Book, tid: str) -> dict:
+    """设主线也算动过这条线：不确认的话，这条线之后重跑可能因为块集合变了换成新编号，
+    choose_main 找不到旧编号就把作者的选择悄悄换回 auto。"""
     with FILE_LOCK:
         data, before = _load_tidy(book)
         t = _thread(data, tid)
         data["main_thread"], data["main_by"] = tid, "author"
+        _touch(data, t)
         _save(book, data, before)
     return t
 

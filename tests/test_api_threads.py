@@ -81,6 +81,26 @@ def test_threads_errors(ready):
     assert c.put(f"{BOOK}/threads/main", json={"thread": "L-099"}).status_code == 404
 
 
+def test_threads_broken_file_returns_409(ready, tmp_path):
+    """世界与支线.json 被手改坏了（不是合法 JSON）：GET 和作者操作都返回 409，不是 500，
+    文件内容不会被接口悄悄覆盖（修复批次 5 第 6 条）。"""
+    from ligaotai.book import open_book
+    from ligaotai.config import library_path, load_config
+
+    c = ready
+    wait(c, c.post(f"{BOOK}/steps/threads/run"))
+    lib = library_path(load_config(tmp_path), tmp_path)
+    path = open_book(lib, "我的书").threads_path
+    before = path.read_text(encoding="utf-8")
+    path.write_text("{不是合法 json", encoding="utf-8")
+    try:
+        assert c.get(f"{BOOK}/threads").status_code == 409
+        assert c.post(f"{BOOK}/threads/confirm", json={"ids": ["L-001"]}).status_code == 409
+        assert path.read_text(encoding="utf-8") == "{不是合法 json"  # 没被覆盖
+    finally:
+        path.write_text(before, encoding="utf-8")
+
+
 def test_threads_get_before_run_has_full_shape(ready):
     """还没跑过步骤 6 时，GET /threads 也给完整结构（含 pending / unassigned / main_thread 等键），
     前端不用猜哪些键可能没有（task16_notes.md 第 1 条）。"""

@@ -50,6 +50,13 @@ def test_nothing_to_adjust_before_step_6(book):
         ops.load_threads(book)
 
 
+def test_load_threads_raises_broken_threads_file_on_bad_json(book):
+    book.threads_path.parent.mkdir(parents=True, exist_ok=True)
+    book.threads_path.write_text("{不是合法 json", encoding="utf-8")
+    with pytest.raises(ops.BrokenThreadsFile):
+        ops.load_threads(book)
+
+
 def test_confirm_does_not_outdate_downstream(tbook):
     [t] = ops.confirm(tbook, ["L-001", "L-001"])
     d = data_of(tbook)
@@ -132,6 +139,7 @@ def test_set_main_and_move_thread(tbook):
     ops.set_main(tbook, "L-003")
     d = data_of(tbook)
     assert (d["main_thread"], d["main_by"]) == ("L-003", "author") and archive(tbook) == "outdated"
+    assert d["threads"][2]["status"] == "confirmed" and d["worlds"][1]["status"] == "confirmed"  # 设主线也算动过这条线
     ops.move_thread(tbook, "L-003", "W-01")
     d = data_of(tbook)
     assert d["threads"][2]["world"] == "W-01" and [w["id"] for w in d["worlds"]] == ["W-01"]
