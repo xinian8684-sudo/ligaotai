@@ -2,6 +2,7 @@
 
 用法：
   uv run python tools/scramble.py --src data/xiyouji-pg23962.txt --out data/乱稿-西游记 --seed 7
+  uv run python tools/scramble.py --src data/pg26739.txt --out data/乱稿-雪月梅 --seed 7 --aliases data/别名-雪月梅.json
 生成乱稿文件夹 <out>/ 和标准答案 <out>-答案.json（答案放在文件夹外面，免得被一起导入）。
 """
 
@@ -310,13 +311,15 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--src", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--aliases", help="JSON 文件：替换规则列表，每条有 replaces / alias / canonical；不给就用西游记的默认别名")
     args = ap.parse_args(argv)
     out = Path(args.out)
     if out.exists() and any(out.iterdir()):
         sys.exit("output folder is not empty")
     raw = Path(args.src).read_text(encoding="utf-8")
     chapters = parse_chapters(strip_gutenberg(raw))
-    key = scramble(chapters, out, args.seed)
+    aliases = json.loads(Path(args.aliases).read_text(encoding="utf-8")) if args.aliases else DEFAULT_ALIASES
+    key = scramble(chapters, out, args.seed, aliases=aliases)
     key_path = out.parent / f"{out.name}-答案.json"
     key_path.write_text(json.dumps(key, ensure_ascii=False, indent=2), encoding="utf-8")
     print(

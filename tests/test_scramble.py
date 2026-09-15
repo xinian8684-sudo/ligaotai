@@ -216,3 +216,17 @@ def test_cli_writes_key_outside_folder(tmp_path):
     key = json.loads((tmp_path / "乱稿-答案.json").read_text(encoding="utf-8"))
     assert key["chapters"] == 30
     assert not (out / "乱稿-答案.json").exists()
+
+
+def test_main_accepts_custom_aliases(tmp_path):
+    chapters = make_chapters(30)
+    src = tmp_path / "book.txt"
+    src.write_text("\n".join(f"{c.heading}\n{c.body}" for c in chapters), encoding="utf-8")
+    aliases = tmp_path / "aliases.json"
+    aliases.write_text(
+        json.dumps([{"replaces": "八戒", "alias": "豬先生", "canonical": "豬八戒"}], ensure_ascii=False), encoding="utf-8"
+    )
+    out = tmp_path / "乱稿"
+    main(["--src", str(src), "--out", str(out), "--seed", "5", "--aliases", str(aliases)])
+    key = json.loads((tmp_path / "乱稿-答案.json").read_text(encoding="utf-8"))
+    assert [a["alias"] for a in key["aliases"]] == ["豬先生"] and key["aliases"][0]["chapters"]
