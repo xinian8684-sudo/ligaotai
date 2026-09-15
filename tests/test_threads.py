@@ -204,6 +204,7 @@ def test_caller_usable_error_is_a_failure(book):
     assert asyncio.run(caller.call("threads_gaps", GAPS_ARGS, lambda d: [], "gaps-x", usable=boom)) is None
     assert caller.failed == [{"call": "gaps-x", "error": "检查或清理出错：ValueError: 坏了"}]
     assert caller.done == 1 and not caller.unresolved
+    assert json.loads(book.threads_cache_path.read_text(encoding="utf-8")) == {}
 
 
 # --- 划世界 ---
