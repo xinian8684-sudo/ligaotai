@@ -6,7 +6,18 @@ from helpers import FakeBackend, listed_scenes, seed_book, threads_handler
 
 from ligaotai.config import AppConfig
 from ligaotai.llm import FatalLLMError, LLMClient, LLMError
-from ligaotai.threads import Caller, ThreadDraft, WorldDraft, known_threads_text, stage_lines, stage_order, stage_worlds
+from ligaotai.threads import (
+    Caller,
+    ThreadDraft,
+    WorldDraft,
+    known_threads_text,
+    stage_align,
+    stage_gaps,
+    stage_lines,
+    stage_order,
+    stage_worlds,
+    thread_block,
+)
 from ligaotai.threads_input import Item
 
 
@@ -510,3 +521,128 @@ def test_stage_order_unusable_reply_marks_failed_and_records_caller_failure(book
     assert t.times == {} and t.end == {"state": "待定", "note": ""} and missing == []
     assert c.usage.calls == 3
     assert [f["call"] for f in caller.failed] == ["order-W-01#1"]
+
+
+# --- 跨线对齐 + 找缺口 ---
+
+
+def two_threads():
+    items = items_of("S-0001", "S-0002", "S-0003")
+    a = ThreadDraft("L-001", "W-01", "甲", scenes=["S-0001", "S-0002"], times={"S-0001": {"t": 0, "conf": "高"}})
+    b = ThreadDraft("L-002", "W-01", "乙", scenes=["S-0003", "S-0404"])
+    return items, a, b
+
+
+def test_thread_block():
+    items, a, b = two_threads()
+    assert thread_block(a, items, main=True) == "## L-001 甲（主线）\n[0] S-0001｜正文｜摘要S-0001\n[?] S-0002｜正文｜摘要S-0002"
+    assert thread_block(b, items) == "## L-002 乙\n[?] S-0003｜正文｜摘要S-0003\n[?] S-0404"
+
+
+def test_thread_block_defends_against_bad_times():
+    """已确认的线的 times 是从 世界与支线.json 读回来的，形状不一定干净：bool、非数字字符串、
+    超大整数、NaN、times[s] 本身不是字典，都当没有时间显示 [?]，不抛异常。"""
+    items = items_of("S-0001", "S-0002", "S-0003", "S-0004", "S-0005")
+    t = ThreadDraft("L-001", "W-01", "甲", scenes=["S-0001", "S-0002", "S-0003", "S-0004", "S-0005"], times={
+        "S-0001": {"t": True, "conf": "高"},
+        "S-0002": {"t": "abc", "conf": "高"},
+        "S-0003": {"t": 10**400, "conf": "高"},
+        "S-0004": {"t": float("nan"), "conf": "高"},
+        "S-0005": 5,  # times["S-0005"] 本身不是字典
+    })
+    block = thread_block(t, items)
+    assert block.count("[?]") == 5
+
+
+def test_num_formats_finite_numbers_with_g():
+    items = items_of("S-0001", "S-0002")
+    t = ThreadDraft("L-001", "W-01", "甲", scenes=["S-0001", "S-0002"], times={
+        "S-0001": {"t": 3, "conf": "高"}, "S-0002": {"t": 2.5, "conf": "高"},
+    })
+    block = thread_block(t, items)
+    assert "[3]" in block and "[2.5]" in block
+
+
+def align_of(book, threads, main, budget=10**6, **handlers):
+    c = client(book, **handlers)
+    caller = Caller(book, c, lambda *a: None)
+    items = items_of("S-0001", "S-0002", "S-0003")
+    return asyncio.run(stage_align(caller, threads, main, items, "年", budget)), c, caller
+
+
+def test_stage_align_default(book):
+    _, a, b = two_threads()
+    (offsets, cross), c, _ = align_of(book, [a, b], "L-001")
+    assert offsets == {"L-001": 0, "L-002": 0} and cross == []
+    assert "## L-001 甲（主线）" in users(c, "跨线对齐")[0]
+
+
+def test_stage_align_reply(book):
+    _, a, b = two_threads()
+
+    def reply(m):
+        return json.dumps({"threads": [{"id": "L-001", "offset": 0}, {"id": "L-002", "offset": None}],
+                           "intersections": [{"thread": "L-002", "scene": "S-0003", "main_scene": "S-0002", "reason": "同一场"}]},
+                          ensure_ascii=False)
+
+    (offsets, cross), _, _ = align_of(book, [a, b], "L-001", align=reply)
+    assert offsets == {"L-001": 0, "L-002": None}
+    assert cross == [{"thread": "L-002", "scene": "S-0003", "main_scene": "S-0002", "reason": "同一场"}]
+
+
+def test_stage_align_shifts_offsets_relative_to_main(book):
+    """主线 offset 不是 0（模型没照规则写）：clean_align 把其他线平移，保持相对关系，主线固定 0。"""
+    _, a, b = two_threads()
+
+    def reply(m):
+        return json.dumps({"threads": [{"id": "L-001", "offset": 5}, {"id": "L-002", "offset": 7}],
+                           "intersections": []}, ensure_ascii=False)
+
+    (offsets, cross), _, _ = align_of(book, [a, b], "L-001", align=reply)
+    assert offsets == {"L-001": 0, "L-002": 2} and cross == []
+
+
+def test_stage_align_skips(book):
+    _, a, b = two_threads()
+    (offsets, _), c, _ = align_of(book, [a], "L-001")
+    assert offsets == {"L-001": 0} and c.usage.calls == 0
+    (offsets, _), c, _ = align_of(book, [a, b], None)
+    assert offsets == {"L-001": None, "L-002": None} and c.usage.calls == 0
+    (offsets, _), c, caller = align_of(book, [a, b], "L-001", budget=10)
+    assert offsets == {"L-001": 0, "L-002": None} and c.usage.calls == 0 and caller.failed
+
+
+def test_stage_align_failed(book):
+    _, a, b = two_threads()
+    (offsets, cross), _, caller = align_of(book, [a, b], "L-001", align=lambda m: LLMError("坏了"))
+    assert offsets == {"L-001": 0, "L-002": None} and cross == [] and len(caller.failed) == 1
+
+
+def gaps_of(book, refs, threads, budget=10**6, **handlers):
+    items = items_of("S-0001", "S-0002", "S-0003")
+    for sid, rs in refs.items():
+        items[sid].refs = rs
+    c = client(book, **handlers)
+    caller = Caller(book, c, lambda *a: None)
+    got = asyncio.run(stage_gaps(caller, "W-01", "人间", threads, list(items), items, budget))
+    return got, c
+
+
+def test_stage_gaps(book):
+    _, a, _ = two_threads()
+    got, c = gaps_of(book, {}, [a])
+    assert got == [] and c.usage.calls == 0
+
+    def reply(m):
+        return json.dumps({"gaps": [{"event": "城破", "mentioned_in": ["S-0003"], "thread": "L-001", "after": "S-0001", "before": None}]},
+                          ensure_ascii=False)
+
+    got, c = gaps_of(book, {"S-0003": ["青州城破"]}, [a], gaps=reply)
+    assert got == [{"world": "W-01", "event": "城破", "mentioned_in": ["S-0003"], "thread": "L-001", "after": "S-0001", "before": None}]
+    assert "- 青州城破｜S-0003" in users(c, "找缺口")[0]
+    # 换一件不一样的事：跟上面那次调用的提示词不同，避免命中同一本书缓存里刚写的那条，
+    # 真的走到 gaps=lambda 这个失败处理分支（计划原文重用同一个 refs，会命中缓存、测不到失败路径）
+    got, c = gaps_of(book, {"S-0003": ["另一件没写的事"]}, [a], gaps=lambda m: LLMError("坏了"))
+    assert got == []
+    got, c = gaps_of(book, {"S-0003": ["青州城破"]}, [a], budget=10)
+    assert got == [] and c.usage.calls == 0

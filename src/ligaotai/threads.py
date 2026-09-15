@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -20,12 +21,18 @@ from .jobs import JobCancelled
 from .llm import FatalLLMError, LLMClient, LLMError, cache_config, cache_key
 from .prompts import render
 from .threads_check import (
+    check_align,
+    check_gaps,
     check_lines,
     check_order,
     check_worlds,
+    clean_align,
+    clean_gaps,
     clean_lines,
     clean_order,
     clean_worlds,
+    score_align,
+    score_gaps,
     score_lines,
     score_order,
     score_worlds,
@@ -364,3 +371,90 @@ async def stage_order(caller: Caller, t: ThreadDraft, items: dict[str, Item], un
         return []
     t.scenes, t.times, t.end = got["scenes"], got["times"], got["end"]
     return got["missing"]
+
+
+# --- 6.4 跨线对齐 / 6.5 找缺口 ---
+
+
+def _num(t) -> str:
+    """线内时间格式化成一行里的 [数字] 或 [?]。防御：已确认的线的 times 是从 世界与支线.json 读回来的
+    （作者 / 旧版本写的，不一定干净）：None、bool、非 int/float/str、转 float 失败或超出范围、
+    非有限数（NaN、inf）都当没有时间。"""
+    if t is None or isinstance(t, bool) or not isinstance(t, (int, float, str)):
+        return "?"
+    try:
+        f = float(t)
+    except (ValueError, OverflowError, TypeError):
+        return "?"
+    if not math.isfinite(f):
+        return "?"
+    return f"{f:g}"
+
+
+def _time_of(times, s: str):
+    """t.times.get(s) 拿 "t" 字段；times 或者 times[s] 形状不对（不是字典）也当没有时间。"""
+    v = times.get(s) if isinstance(times, dict) else None
+    return v.get("t") if isinstance(v, dict) else None
+
+
+def thread_block(t: ThreadDraft, items: dict[str, Item], main: bool = False) -> str:
+    head = f"## {t.key} {t.name}" + ("（主线）" if main else "")
+    rows = [
+        f"[{_num(_time_of(t.times, s))}] {items[s].line if s in items else s}"
+        for s in t.scenes
+    ]
+    return "\n".join([head, *rows])
+
+
+async def stage_align(
+    caller: Caller, threads: list[ThreadDraft], main: str | None, items: dict[str, Item], unit: str, budget: int
+) -> tuple[dict[str, float | None], list[dict]]:
+    offsets: dict[str, float | None] = {t.key: None for t in threads}
+    if main is None or main not in offsets:
+        return offsets, []
+    offsets[main] = 0
+    if len(threads) == 1:
+        return offsets, []
+    text = "\n\n".join(thread_block(t, items, t.key == main) for t in threads)
+    if len(text) > budget:
+        caller.failed.append({"call": "align", "error": "输入太大，跳过跨线对齐"})
+        return offsets, []
+    members = {t.key: set(t.scenes) for t in threads}
+    ids = set(members)
+    caller.plan(1)
+    got = await caller.call(
+        "threads_align", {"unit": unit or "年", "main": main, "threads": text},
+        lambda d: check_align(d, ids, main, members), "align",
+        score=lambda d: score_align(d, ids, main, members),
+        clean=lambda d: clean_align(d, ids, main, members),
+    )
+    if got is None:
+        return offsets, []
+    return got
+
+
+async def stage_gaps(
+    caller: Caller, world_key: str, world_name: str, threads: list[ThreadDraft],
+    world_scenes: list[str], items: dict[str, Item], budget: int,
+) -> list[dict]:
+    """找缺口（一个世界一次）。world_scenes：这个世界的全部块（线里的、提纲、设定笔记）。"""
+    refs = [(r, s) for s in world_scenes if s in items for r in items[s].refs]
+    if not refs or not threads:
+        return []
+    text = "\n\n".join(thread_block(t, items) for t in threads)
+    ref_text = "\n".join(f"- {r}｜{s}" for r, s in refs)
+    if len(text) + len(ref_text) > budget:
+        caller.failed.append({"call": f"gaps-{world_key}", "error": "输入太大，跳过找缺口"})
+        return []
+    ref_scenes = {s for _, s in refs}
+    lines = {t.key: list(t.scenes) for t in threads}
+    caller.plan(1)
+    got = await caller.call(
+        "threads_gaps", {"world": world_name, "threads": text, "refs": ref_text},
+        lambda d: check_gaps(d, ref_scenes, lines), f"gaps-{world_key}",
+        score=lambda d: score_gaps(d, ref_scenes, lines),
+        clean=lambda d: clean_gaps(d, ref_scenes, lines),
+    )
+    if got is None:
+        return []
+    return [{"world": world_key, **g} for g in got]
