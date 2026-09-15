@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from . import __version__
 from . import entities as ent
+from . import threads_ops as tops
 from .book import STEP_LABELS, STEPS, Book, create_book, list_books, open_book, recover_interrupted
 from .cards import is_fresh, load_card, load_cards, run_cards
 from .config import (
@@ -29,8 +30,9 @@ from .jobs import BusyError, JobCancelled, JobRunner
 from .llm import ChatBackend, LLMClient, NoKeyError, OpenAIBackend, check_model
 from .readers import read_text
 from .scenes import SCENE_ID_RE, get_scene, load_scenes, run_split
+from .threads import normalize, run_threads
 
-RUNNABLE = ("split", "dedup", "cards", "entities")
+RUNNABLE = ("split", "dedup", "cards", "entities", "threads")
 PAUSED = "已暂停：做完的部分已经保存，重跑会接着做"
 
 
@@ -61,6 +63,28 @@ class RenameReq(BaseModel):
 
 class SplitReq(BaseModel):
     names: list[str]
+
+
+class NameReq(BaseModel):
+    name: str
+
+
+class MoveReq(BaseModel):
+    ids: list[str]
+    position: int | None = None
+    as_outline: bool = False
+
+
+class SplitThreadReq(BaseModel):
+    from_scene: str
+
+
+class MainThreadReq(BaseModel):
+    thread: str
+
+
+class WorldReq(BaseModel):
+    world: str
 
 
 def create_app(
@@ -133,6 +157,8 @@ def create_app(
         client = make_client(book)
         if step == "cards":
             return lambda p: run_cards(book, client, p)
+        if step == "threads":
+            return lambda p: run_threads(book, client, p)
         return lambda p: ent.run_entities(book, client, p)
 
     def entity_op(fn: Callable[[], object]):
@@ -140,6 +166,16 @@ def create_app(
             return fn()
         except KeyError:
             raise HTTPException(404, "没有这个实体")
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    def thread_op(fn: Callable[[], object]):
+        try:
+            return fn()
+        except KeyError:
+            raise HTTPException(404, "没有这条线或这个世界")
         except FileNotFoundError as e:
             raise HTTPException(404, str(e))
         except ValueError as e:
@@ -302,6 +338,46 @@ def create_app(
     def split_entity(name: str, eid: str, req: SplitReq) -> dict:
         b = get_book(name)
         return entity_op(lambda: ent.split(b, eid, req.names))
+
+    @app.get("/api/books/{name}/threads")
+    def threads(name: str) -> dict:
+        b = get_book(name)
+        return normalize(read_json(b.threads_path, None))
+
+    @app.post("/api/books/{name}/threads/confirm")
+    def confirm_threads(name: str, req: IdsReq) -> list:
+        b = get_book(name)
+        return thread_op(lambda: tops.confirm(b, req.ids))
+
+    @app.put("/api/books/{name}/threads/main")
+    def set_main_thread(name: str, req: MainThreadReq) -> dict:
+        b = get_book(name)
+        return thread_op(lambda: tops.set_main(b, req.thread))
+
+    @app.post("/api/books/{name}/threads/merge")
+    def merge_threads(name: str, req: IdsReq) -> dict:
+        b = get_book(name)
+        return thread_op(lambda: tops.merge_threads(b, req.ids))
+
+    @app.put("/api/books/{name}/threads/{oid}/name")
+    def rename_thread(name: str, oid: str, req: NameReq) -> dict:
+        b = get_book(name)
+        return thread_op(lambda: tops.rename(b, oid, req.name))
+
+    @app.post("/api/books/{name}/threads/{tid}/scenes")
+    def move_scenes(name: str, tid: str, req: MoveReq) -> dict:
+        b = get_book(name)
+        return thread_op(lambda: tops.move_scenes(b, req.ids, tid, req.position, req.as_outline))
+
+    @app.post("/api/books/{name}/threads/{tid}/split")
+    def split_thread(name: str, tid: str, req: SplitThreadReq) -> dict:
+        b = get_book(name)
+        return thread_op(lambda: tops.split_thread(b, tid, req.from_scene))
+
+    @app.put("/api/books/{name}/threads/{tid}/world")
+    def move_thread(name: str, tid: str, req: WorldReq) -> dict:
+        b = get_book(name)
+        return thread_op(lambda: tops.move_thread(b, tid, req.world))
 
     @app.get("/api/books/{name}/versions")
     def versions(name: str) -> dict:
