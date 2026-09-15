@@ -19,7 +19,10 @@ from pathlib import Path
 from ligaotai.config import AppConfig, load_config
 from ligaotai.llm import ChatBackend, FatalLLMError, LLMClient, LLMError, NoKeyError, OpenAIBackend
 from ligaotai.threads_check import text
-from tools.scramble import Chapter, parse_chapters, strip_gutenberg
+
+if __package__ in (None, ""):  # 按脚本路径跑（uv run python tools/probe_book.py）时，仓库根不在 sys.path 里
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from tools.scramble import Chapter, parse_chapters, strip_gutenberg  # noqa: E402
 
 SYSTEM = "你是中国古典小说专家。只凭记忆回答，记不清就老实说记不清，不要编。只输出一个 json 对象。"
 USER = (

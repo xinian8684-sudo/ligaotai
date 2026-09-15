@@ -30,7 +30,10 @@ from ligaotai.llm import ChatBackend, FatalLLMError, LLMClient, LLMError, NoKeyE
 from ligaotai.scenes import load_scenes, run_split
 from ligaotai.threads import run_threads
 from ligaotai.threads_input import prepare
-from tools.eval_entities import TITLE_PREFIX, _check_manifest, open_or_create
+
+if __package__ in (None, ""):  # 按脚本路径跑（uv run python tools/eval_threads.py）时，仓库根不在 sys.path 里
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from tools.eval_entities import TITLE_PREFIX, _check_manifest, open_or_create  # noqa: E402
 
 PASS_TAU = 0.8
 # ②a 验收实测（西游记 268 张卡）：每次调用约 6.6k 输入、1.24k 输出，平均每卡 1.75 次调用；实体合并约每个场景 $0.0013
