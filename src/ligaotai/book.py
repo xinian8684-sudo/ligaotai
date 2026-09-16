@@ -95,6 +95,36 @@ class Book:
         return self.root / "归线缓存.json"
 
     @property
+    def archive_dir(self) -> Path:
+        return self.root / "档案"
+
+    @property
+    def thread_archive_dir(self) -> Path:
+        return self.archive_dir / "支线"
+
+    @property
+    def world_archive_dir(self) -> Path:
+        return self.archive_dir / "世界"
+
+    @property
+    def archive_index_path(self) -> Path:
+        """每份档案对应的编号、输入签名、是否过期。"""
+        return self.archive_dir / "index.json"
+
+    @property
+    def contradictions_path(self) -> Path:
+        return self.root / "矛盾.json"
+
+    @property
+    def map_path(self) -> Path:
+        return self.root / "全书地图.md"
+
+    @property
+    def archive_cache_path(self) -> Path:
+        """步骤 7 每次模型调用的缓存。"""
+        return self.root / "档案缓存.json"
+
+    @property
     def logs_dir(self) -> Path:
         return self.root / "日志"
 
