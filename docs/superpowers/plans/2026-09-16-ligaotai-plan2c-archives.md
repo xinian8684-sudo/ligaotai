@@ -192,7 +192,8 @@ from ligaotai.facts import FactRow, collect_facts, group_facts
 
 
 def test_主语走实体表归一():
-    cmap = {("人物", "行者"): "孙悟空", ("人物", "孫大聖"): "孙悟空"}
+    # 键是英文类型码，跟 entities._cmap 的真实形状一致——别写成中文
+    cmap = {("person", "行者"): "孙悟空", ("person", "孫大聖"): "孙悟空"}
     cards = {
         "S-0001": {"facts": [{"subject": "行者", "attribute": "兵器", "value": "金箍棒", "quote": "行者取出金箍棒"}]},
         "S-0002": {"facts": [{"subject": "孫大聖", "attribute": "兵器", "value": "降妖宝杖", "quote": "大圣使降妖宝杖"}]},
@@ -209,7 +210,7 @@ def test_映不上的主语保持原样不硬凑():
 
 
 def test_分组按规范主语和受控属性():
-    cmap = {("人物", "行者"): "孙悟空", ("人物", "孫大聖"): "孙悟空"}
+    cmap = {("person", "行者"): "孙悟空", ("person", "孫大聖"): "孙悟空"}
     cards = {
         "S-0001": {"facts": [{"subject": "行者", "attribute": "兵器", "value": "金箍棒", "quote": "甲"}]},
         "S-0002": {"facts": [{"subject": "孫大聖", "attribute": "兵器", "value": "降妖宝杖", "quote": "乙"}]},
@@ -228,13 +229,15 @@ Expected: FAIL，`ImportError: cannot import name 'FactRow'`
 
 - [ ] **Step 3: 写实现**
 
-`cmap` 的形状跟 `entities.canonical_map(book)` 一致：`dict[tuple[str, str], str]`，键是 `(类型, 原文名)`，类型是「人物」/「地点」/「组织」。归一时三类都试。
+`cmap` 的形状跟 `entities.canonical_map(book)` 一致：`dict[tuple[str, str], str]`，键是 `(类型, 原文名)`。
+
+**类型是英文码，不是中文**：`entities.py:34` 是 `TYPES = ("person", "location", "organization")`，`entities.py:575` 的 `_cmap` 直接拿 `e["type"]` 当键；`TYPE_LABELS`（中文）只用来渲染提示词。仓库里另一个消费者 `threads_input.py:71-73` 用的也是 `cmap.get(("person", n))`。**写测试时别自己捏中文键的假 cmap**——那是在测自己的假设，不是测真实契约，测试全绿也挡不住这个 bug。归一时三类都试。
 
 ```python
 # src/ligaotai/facts.py 追加
 from dataclasses import dataclass
 
-_KINDS = ("人物", "地点", "组织")
+_KINDS = ("person", "location", "organization")
 
 
 @dataclass(frozen=True)
