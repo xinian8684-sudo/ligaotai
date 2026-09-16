@@ -5,9 +5,12 @@ from ligaotai.facts import (
     OTHER,
     VALUE_LIMIT,
     FactRow,
+    candidates,
     collect_facts,
     group_facts,
+    merge_values,
     norm_attr,
+    norm_number,
     to_simplified,
 )
 
@@ -84,3 +87,57 @@ def test_分组按规范主语和受控属性():
     assert ("孙悟空", "兵器") in groups
     assert ("孙悟空", "其他") not in groups, "落「其他」的不参与分组"
     assert len(groups[("孙悟空", "兵器")]) == 2
+
+
+def test_数字规范化():
+    assert norm_number("十六") == "16"
+    assert norm_number("十六岁") == "16岁"
+    assert norm_number("16") == "16"
+    assert norm_number("二十四") == "24"
+    assert norm_number("三千") == "3000"
+    assert norm_number("金箍棒") == "金箍棒"
+
+
+def test_子串的值合并到长的那个():
+    rows = [
+        FactRow("S-0001", "孙悟空", "兵器", "金箍棒", "甲"),
+        FactRow("S-0002", "孙悟空", "兵器", "如意金箍棒", "乙"),
+    ]
+    merged = merge_values(rows)
+    assert len(merged) == 1
+    assert merged[0]["value"] == "如意金箍棒"
+    assert sorted(s["id"] for s in merged[0]["scenes"]) == ["S-0001", "S-0002"]
+
+
+def test_数字相同的值合并():
+    rows = [
+        FactRow("S-0001", "林清", "年龄", "十六", "甲"),
+        FactRow("S-0002", "林清", "年龄", "16岁", "乙"),
+        FactRow("S-0003", "林清", "年龄", "十六岁", "丙"),
+    ]
+    assert len(merge_values(rows)) == 1
+
+
+def test_合并后只剩一种值的组不进候选():
+    groups = {
+        ("孙悟空", "兵器"): [
+            FactRow("S-0001", "孙悟空", "兵器", "金箍棒", "甲"),
+            FactRow("S-0002", "孙悟空", "兵器", "如意金箍棒", "乙"),
+        ],
+        ("孙悟空", "外貌"): [
+            FactRow("S-0003", "孙悟空", "外貌", "毛脸雷公嘴", "丙"),
+            FactRow("S-0004", "孙悟空", "外貌", "白面书生", "丁"),
+        ],
+    }
+    cands = candidates(groups)
+    assert [c["subject"] + c["attribute"] for c in cands] == ["孙悟空外貌"]
+    assert cands[0]["merged"] == 0
+
+
+def test_候选按值种类数和场景数排序():
+    groups = {
+        ("甲", "兵器"): [FactRow(f"S-000{i}", "甲", "兵器", f"v{i}", "q") for i in range(1, 4)],
+        ("乙", "兵器"): [FactRow(f"S-001{i}", "乙", "兵器", f"w{i}", "q") for i in range(1, 3)],
+    }
+    cands = candidates(groups)
+    assert cands[0]["subject"] == "甲", "值种类多的排前面"

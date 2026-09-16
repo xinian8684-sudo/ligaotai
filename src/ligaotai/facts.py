@@ -103,3 +103,81 @@ def group_facts(rows: list[FactRow]) -> dict[tuple[str, str], list[FactRow]]:
             continue
         groups.setdefault((r.subject, r.attribute), []).append(r)
     return groups
+
+
+_CN_DIGITS = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+              "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_UNITS = {"十": 10, "百": 100, "千": 1000, "万": 10000}
+_CN_NUM = re.compile(r"[零一二两三四五六七八九十百千万]+")
+
+
+def _cn_to_int(s: str) -> int | None:
+    """「十六」→ 16，「二十四」→ 24，「三千」→ 3000。看不懂就返回 None。"""
+    total, section, digit = 0, 0, 0
+    seen = False
+    for ch in s:
+        if ch in _CN_DIGITS:
+            digit = _CN_DIGITS[ch]
+            seen = True
+        elif ch in _CN_UNITS:
+            unit = _CN_UNITS[ch]
+            if unit == 10000:
+                total = (total + section + (digit or 0)) * unit
+                section = digit = 0
+            else:
+                section += (digit if digit or ch != "十" else 1) * unit
+                digit = 0
+            seen = True
+        else:
+            return None
+    return total + section + digit if seen else None
+
+
+def norm_number(value: str) -> str:
+    """把值里的中文数字换成阿拉伯数字，好让「十六」「16岁」「十六岁」归到一起。"""
+    def sub(m: re.Match) -> str:
+        n = _cn_to_int(m.group(0))
+        return str(n) if n is not None else m.group(0)
+    return _CN_NUM.sub(sub, value or "")
+
+
+def merge_values(rows: list[FactRow]) -> list[dict]:
+    """组内把明显同义的值合掉（spec 6.1 ④），返回
+    [{"value": 代表值, "scenes": [{"id","quote"}...]}]，按代表值排序。
+
+    三种合并：完全相同、一个是另一个的连续子串（合到长的）、数字规范化后相同。
+    """
+    buckets: list[dict] = []  # {"value": str, "keys": set[str], "scenes": list}
+    for r in sorted(rows, key=lambda r: (-len(r.value), r.value, r.scene)):
+        key = norm_number(r.value)
+        hit = None
+        for b in buckets:
+            if key in b["keys"] or any(key in k or k in key for k in b["keys"]):
+                hit = b
+                break
+        if hit is None:
+            hit = {"value": r.value, "keys": set(), "scenes": []}
+            buckets.append(hit)
+        hit["keys"].add(key)
+        hit["scenes"].append({"id": r.scene, "quote": r.quote})
+    out = [{"value": b["value"], "scenes": sorted(b["scenes"], key=lambda s: s["id"])} for b in buckets]
+    return sorted(out, key=lambda b: b["value"])
+
+
+def candidates(groups: dict[tuple[str, str], list[FactRow]]) -> list[dict]:
+    """合并后仍有 ≥2 种值的组才进候选。按 (值种类数 × 涉及场景数) 从大到小排，
+    上限截断时先保住信息量大的（spec 6.2）。"""
+    out = []
+    for (subject, attribute), rows in groups.items():
+        values = merge_values(rows)
+        if len(values) < 2:
+            continue
+        scenes = sum(len(v["scenes"]) for v in values)
+        out.append({
+            "subject": subject,
+            "attribute": attribute,
+            "values": values,
+            "merged": len({r.value for r in rows}) - len(values),
+            "weight": len(values) * scenes,
+        })
+    return sorted(out, key=lambda c: (-c["weight"], c["subject"], c["attribute"]))
