@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 # 受控属性表，24 项。改这里必须同步改 prompts/cards.md（tests/test_prompts.py 守着）。
 ATTRS: tuple[str, ...] = (
@@ -52,3 +53,53 @@ def norm_attr(attr: str) -> str:
     """属性名归一到受控表；对不上的一律落「其他」（不参与矛盾分组）。"""
     s = _EDGE.sub("", to_simplified(attr or ""))
     return s if s in ATTRS else OTHER
+
+
+_KINDS = ("人物", "地点", "组织")
+
+
+@dataclass(frozen=True)
+class FactRow:
+    scene: str      # S-0001
+    subject: str    # 已归一的规范主语
+    attribute: str  # 已归一的受控属性（可能是 OTHER）
+    value: str
+    quote: str
+
+
+def canon_subject(name: str, cmap: dict[tuple[str, str], str]) -> str:
+    """人物 / 地点 / 组织三类都试着映；映不上保持原样。"""
+    for kind in _KINDS:
+        hit = cmap.get((kind, name))
+        if hit:
+            return hit
+    return name
+
+
+def collect_facts(cards: dict[str, dict], cmap: dict[tuple[str, str], str]) -> list[FactRow]:
+    """把 {场景编号: 场景卡 card 部分} 摊平成归一后的 FactRow 列表，按场景编号排序。"""
+    rows: list[FactRow] = []
+    for sid in sorted(cards):
+        for f in cards[sid].get("facts") or []:
+            subject = (f.get("subject") or "").strip()
+            if not subject:
+                continue
+            rows.append(FactRow(
+                scene=sid,
+                subject=canon_subject(subject, cmap),
+                attribute=norm_attr(f.get("attribute") or ""),
+                value=(f.get("value") or "").strip(),
+                quote=f.get("quote") or "",
+            ))
+    return rows
+
+
+def group_facts(rows: list[FactRow]) -> dict[tuple[str, str], list[FactRow]]:
+    """按 (规范主语, 受控属性) 分组。落「其他」的不参与——它们本来就是模型没想清楚的东西，
+    送去比对只会制造误报（spec 6.1 ②）。"""
+    groups: dict[tuple[str, str], list[FactRow]] = {}
+    for r in rows:
+        if r.attribute == OTHER or not r.value:
+            continue
+        groups.setdefault((r.subject, r.attribute), []).append(r)
+    return groups

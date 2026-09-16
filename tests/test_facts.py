@@ -1,6 +1,15 @@
 import pytest
 
-from ligaotai.facts import ATTRS, OTHER, VALUE_LIMIT, norm_attr, to_simplified
+from ligaotai.facts import (
+    ATTRS,
+    OTHER,
+    VALUE_LIMIT,
+    FactRow,
+    collect_facts,
+    group_facts,
+    norm_attr,
+    to_simplified,
+)
 
 
 def test_attrs_是24项加兜底():
@@ -45,3 +54,33 @@ def test_value_limit是15():
 ])
 def test_受控表每一项的繁体写法都能归一(繁, 简):
     assert norm_attr(繁) == 简
+
+
+def test_主语走实体表归一():
+    cmap = {("人物", "行者"): "孙悟空", ("人物", "孫大聖"): "孙悟空"}
+    cards = {
+        "S-0001": {"facts": [{"subject": "行者", "attribute": "兵器", "value": "金箍棒", "quote": "行者取出金箍棒"}]},
+        "S-0002": {"facts": [{"subject": "孫大聖", "attribute": "兵器", "value": "降妖宝杖", "quote": "大圣使降妖宝杖"}]},
+    }
+    rows = collect_facts(cards, cmap)
+    assert [r.subject for r in rows] == ["孙悟空", "孙悟空"]
+    assert [r.scene for r in rows] == ["S-0001", "S-0002"]
+
+
+def test_映不上的主语保持原样不硬凑():
+    rows = collect_facts({"S-0001": {"facts": [
+        {"subject": "某不知名小妖", "attribute": "兵器", "value": "钢叉", "quote": "小妖持钢叉"}]}}, {})
+    assert rows[0].subject == "某不知名小妖"
+
+
+def test_分组按规范主语和受控属性():
+    cmap = {("人物", "行者"): "孙悟空", ("人物", "孫大聖"): "孙悟空"}
+    cards = {
+        "S-0001": {"facts": [{"subject": "行者", "attribute": "兵器", "value": "金箍棒", "quote": "甲"}]},
+        "S-0002": {"facts": [{"subject": "孫大聖", "attribute": "兵器", "value": "降妖宝杖", "quote": "乙"}]},
+        "S-0003": {"facts": [{"subject": "行者", "attribute": "行動", "value": "打妖怪", "quote": "丙"}]},
+    }
+    groups = group_facts(collect_facts(cards, cmap))
+    assert ("孙悟空", "兵器") in groups
+    assert ("孙悟空", "其他") not in groups, "落「其他」的不参与分组"
+    assert len(groups[("孙悟空", "兵器")]) == 2
