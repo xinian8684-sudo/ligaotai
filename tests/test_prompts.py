@@ -1,5 +1,8 @@
+from pathlib import Path
+
 import pytest
 
+from ligaotai.facts import ATTRS, OTHER, VALUE_LIMIT
 from ligaotai.prompts import render
 
 
@@ -183,3 +186,19 @@ def test_gaps_example_passes_check():
         lines.setdefault(g["thread"], set()).update(x for x in (g.get("after"), g.get("before")) if x)
     ordered = {t: sorted(v, key=natural_key) for t, v in lines.items()}  # 线里的块按编号先后排
     assert check_gaps(ex, refs, ordered) == []
+
+
+# --- 2c task05: 场景卡提示词与受控属性表一致 ---
+
+
+def test_提示词里的受控属性表和代码一致():
+    text = Path("prompts/cards.md").read_text(encoding="utf-8")
+    for a in ATTRS:
+        assert a in text, f"prompts/cards.md 里缺属性「{a}」"
+    assert OTHER in text
+    assert str(VALUE_LIMIT) in text
+
+
+def test_提示词写明只记稳定设定():
+    text = Path("prompts/cards.md").read_text(encoding="utf-8")
+    assert "稳定" in text and "events" in text
