@@ -291,7 +291,10 @@ def create_app(
                 "kind": card.get("kind"),
                 "summary": card.get("summary") or "",
                 "problems": len(problems),
-                "dropped": sum(len(v) for v in dropped.values()),
+                # 2c task04：dropped 里加了 attrs / long_values 两个 int 计数键，不是列表；
+                # attrs 只是归一不算丢弹，long_values 已经并进了 facts 列表，这里只数
+                # facts / names 两项真正被丢掉的东西，跟原来的语义一致。
+                "dropped": len(dropped.get("facts") or []) + len(dropped.get("names") or []),
             })
         return out
 

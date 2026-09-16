@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from .book import Book, now_iso
 from .dedup import normalize
+from .facts import VALUE_LIMIT, norm_attr
 from .fsutil import read_json, write_json
 from .jobs import JobCancelled
 from .llm import FatalLLMError, LLMClient, LLMError
@@ -268,6 +269,23 @@ def clean_card(card: Card, text: str) -> tuple[Card, dict]:
     kept_facts = [f for f in card.facts if keep_fact(f)]
     dropped_facts = [f.model_dump() for f in card.facts if not keep_fact(f)]
 
+    # 受控属性表（spec 2.4）：属性对不上归「其他」，不当失败也不重试——为这种小事
+    # 重试 3 次不划算；value 超长说明模型又在写流水账，这条直接丢。
+    # 放在 keep_fact 过滤之后，这样被 quote / subject 刷掉的不重复计数。
+    n_attrs = 0
+    normalized: list[Fact] = []
+    long_values: list[dict] = []
+    for f in kept_facts:
+        a = norm_attr(f.attribute)
+        if a != f.attribute:
+            n_attrs += 1
+        if len(f.value) > VALUE_LIMIT:
+            long_values.append(f.model_dump())
+            continue
+        normalized.append(f.model_copy(update={"attribute": a}))
+    kept_facts = normalized
+    dropped_facts += long_values
+
     summary = card.summary[:SUMMARY_LIMIT] if len(card.summary) > SUMMARY_LIMIT else card.summary
 
     cleaned = card.model_copy(
@@ -280,7 +298,12 @@ def clean_card(card: Card, text: str) -> tuple[Card, dict]:
             "summary": summary,
         }
     )
-    dropped = {"facts": dropped_facts, "names": dropped_names}
+    dropped = {
+        "facts": dropped_facts,
+        "names": dropped_names,
+        "attrs": n_attrs,
+        "long_values": len(long_values),
+    }
     return cleaned, dropped
 
 
@@ -373,7 +396,7 @@ async def _run_cards(book: Book, client: LLMClient, progress: Progress, only: li
             failed.append({"id": sid, "error": "场景不存在或已删除"})
     else:
         todo = [s for s in scenes if not is_fresh(records.get(s.id), s)]
-    counts = {"done": 0, "written": 0, "with_problems": 0}
+    counts = {"done": 0, "written": 0, "with_problems": 0, "attrs_normalized": 0, "long_values_dropped": 0}
     progress(0, len(todo))
 
     async def one(scene: Scene) -> None:
@@ -386,8 +409,14 @@ async def _run_cards(book: Book, client: LLMClient, progress: Progress, only: li
         else:
             records[scene.id] = record
             counts["written"] += 1
-            if record["problems"] or any(record["dropped"].values()):
+            # with_problems 只算「靠不住」的信号（quote/名字对不上被丢掉的 fact，或
+            # check_card 报过问题）；attrs / long_values 是模型没听受控表话的正常小事，
+            # 不该重试也不该算进这个「这张卡不可靠」的指标里（否则几乎每张卡都会中）。
+            dropped = record["dropped"]
+            if record["problems"] or dropped["facts"] or dropped["names"]:
                 counts["with_problems"] += 1
+            counts["attrs_normalized"] += dropped["attrs"]
+            counts["long_values_dropped"] += dropped["long_values"]
         counts["done"] += 1
         progress(counts["done"], len(todo))
 
@@ -409,6 +438,8 @@ async def _run_cards(book: Book, client: LLMClient, progress: Progress, only: li
         "missing_count": len(missing),
         "written": counts["written"],
         "with_problems": counts["with_problems"],
+        "attrs_normalized": counts["attrs_normalized"],
+        "long_values_dropped": counts["long_values_dropped"],
         "failed": failed,
         "calls": client.usage.calls,
         "cost_usd": round(client.usage.cost(client.cfg), 4),

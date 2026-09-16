@@ -78,10 +78,11 @@ def test_clean_card_drops_unverifiable_items():
     assert card.locations == ["青州城外"] and card.pov == ""
     assert [f.quote for f in card.facts] == ["林清年方十六"]
     # A8：dropped 里的 facts 存整条 fact（dict），不再只存 quote 字符串。
-    assert dropped == {
-        "facts": [{"subject": "林清", "attribute": "年龄", "value": "十七", "quote": "林清年方十七"}],
-        "names": ["孙悟空", "张三", "花果山"],
-    }
+    assert dropped["facts"] == [{"subject": "林清", "attribute": "年龄", "value": "十七", "quote": "林清年方十七"}]
+    assert dropped["names"] == ["孙悟空", "张三", "花果山"]
+    # 2c task04：受控属性表接入后 dropped 多了 attrs / long_values 两个计数键，
+    # 这条 fact 本身没有触发它们。
+    assert dropped["attrs"] == 0 and dropped["long_values"] == 0
 
 
 # --- A1: 宽松 validator ---
@@ -387,10 +388,11 @@ def test_unverifiable_items_dropped_after_retries(story_book):
     c = client_for(story_book, handler)
     s = run_cards(story_book, c)
     record = load_card(story_book, "S-0001")
-    assert record["problems"] and record["dropped"] == {
-        "facts": [{"subject": "林清", "attribute": "a", "value": "v", "quote": "不存在的话"}],
-        "names": ["孙悟空"],
-    }
+    dropped = record["dropped"]
+    assert record["problems"]
+    assert dropped["facts"] == [{"subject": "林清", "attribute": "a", "value": "v", "quote": "不存在的话"}]
+    assert dropped["names"] == ["孙悟空"]
+    assert dropped["attrs"] == 0 and dropped["long_values"] == 0
     assert record["card"]["characters"] == [{"name": "林清", "role": "主要"}]
     assert s["with_problems"] == 1
     assert c.usage.calls == 3 + 2
@@ -498,3 +500,44 @@ def test_only_mode_keeps_status_on_cancel(story_book):
     with pytest.raises(JobCancelled):
         run_cards(story_book, client_for(story_book), progress, only=["S-0002"])
     assert story_book.step("cards")["status"] == "done"
+
+
+# --- 2c task04: 场景卡校验接入受控属性表 ---
+
+
+def _card(**kw) -> dict:
+    base = {"summary": "林清救人", "characters": [{"name": "林清", "role": "主要"}],
+            "facts": [], "kind": "正文"}
+    base.update(kw)
+    return base
+
+
+def test_表外属性归到其他不当失败():
+    text = "林清年方十六，行至青州。"
+    data = _card(facts=[{"subject": "林清", "attribute": "行動", "value": "行至青州",
+                         "quote": "林清年方十六"}])
+    assert check_card(data, text) == [], "属性不对不该触发重试"
+    cleaned, dropped = clean_card(Card.model_validate(data), text)
+    assert cleaned.facts[0].attribute == "其他"
+    assert dropped["attrs"] == 1
+
+
+def test_value超15字的fact丢掉():
+    text = "林清年方十六，行至青州，遇见一个背着竹篓的老人。"
+    long_value = "行至青州遇见一个背着竹篓的老人并与之交谈"
+    assert len(long_value) > 15
+    data = _card(facts=[{"subject": "林清", "attribute": "年龄", "value": long_value,
+                         "quote": "林清年方十六"}])
+    cleaned, dropped = clean_card(Card.model_validate(data), text)
+    assert cleaned.facts == []
+    assert dropped["long_values"] == 1
+
+
+def test_受控属性的短值正常保留():
+    text = "林清年方十六，行至青州。"
+    data = _card(facts=[{"subject": "林清", "attribute": "年龄", "value": "十六",
+                         "quote": "林清年方十六"}])
+    cleaned, dropped = clean_card(Card.model_validate(data), text)
+    assert len(cleaned.facts) == 1
+    assert cleaned.facts[0].attribute == "年龄"
+    assert dropped["attrs"] == 0 and dropped["long_values"] == 0
