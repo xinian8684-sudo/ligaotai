@@ -27,9 +27,10 @@ ATTRS: tuple[str, ...] = (
 OTHER = "其他"
 VALUE_LIMIT = 15  # value 超过这么多字就是在写流水账，丢掉
 
-# 单字繁转简映射表。不是通用繁转简（没装 opencc 就不引入依赖），只覆盖两类字：
-# 1) 受控表 24 项属性繁体写法用得到的字（如 齡/職/騎/來/稱/歸 等）；
-# 2) 本模块测试用例里出现的几个常见繁体字（變/術），用来验证 to_simplified 本身的行为。
+# 单字繁转简映射表。不是通用繁转简（没装 opencc 就不引入依赖，真要处理繁体手稿正路是装 opencc），
+# 只覆盖受控表 24 项属性繁体写法用得到的字（如 齡/職/騎/來/稱/歸 等），只给 _to_simplified 这一个
+# 私有辅助函数用，只服务属性名归一这一个用途——不要拿它转别的文本（比如「騎馬」会被转成「骑馬」，
+# 只转对一半，比不转更危险）。
 # 计划里的骨架表把 騎 错映射成了「坐」（坐騎 会被转成「坐坐」），且漏了 稱/來/歸，
 # 已逐个核对 24 项属性的繁体写法后改正、补齐。
 _T2S = str.maketrans({
@@ -37,25 +38,29 @@ _T2S = str.maketrans({
     "師": "师", "職": "职", "稱": "称", "號": "号", "領": "领",
     "騎": "骑", "傷": "伤", "歸": "归", "規": "规", "來": "来",
     "歷": "历", "製": "制",
-    # 测试/示例用到的常见字，不属于受控表 24 项：
-    "變": "变", "術": "术",
 })
 
 _EDGE = re.compile(r"^[\s\W_]+|[\s\W_]+$")
 
 
-def to_simplified(s: str) -> str:
-    """把字符串里 _T2S 覆盖到的繁体字转成简体（非通用繁转简）。"""
+def _to_simplified(s: str) -> str:
+    """把属性名里 _T2S 覆盖到的繁体字转成简体。私有：只给 norm_attr 用，不是通用繁转简，
+    别拿它转属性名以外的文本。"""
     return (s or "").translate(_T2S)
 
 
 def norm_attr(attr: str) -> str:
     """属性名归一到受控表；对不上的一律落「其他」（不参与矛盾分组）。"""
-    s = _EDGE.sub("", to_simplified(attr or ""))
+    s = _EDGE.sub("", _to_simplified(attr or ""))
     return s if s in ATTRS else OTHER
 
 
-_KINDS = ("人物", "地点", "组织")
+# 跟 entities.canonical_map 的真实契约对齐：entities.py 的 TYPES 是英文类型码
+# ("person", "location", "organization")，_cmap() 的键就是 (e["type"], 名字)，
+# 即英文；中文（entities.TYPE_LABELS）只用来渲染提示词，不是 cmap 的键。
+# 之前这里错写成中文「人物/地点/组织」，导致 canon_subject 在真实 cmap 上一条都不命中——
+# 因为 ("人物", "行者") 这个键在真实 cmap 里根本不存在，一直查的是不存在的键。
+_KINDS = ("person", "location", "organization")
 
 
 @dataclass(frozen=True)
@@ -68,7 +73,8 @@ class FactRow:
 
 
 def canon_subject(name: str, cmap: dict[tuple[str, str], str]) -> str:
-    """人物 / 地点 / 组织三类都试着映；映不上保持原样。"""
+    """按 entities.canonical_map 的键形状 (type, 原文名) 归一，type 用英文类型码
+    （"person"/"location"/"organization"，跟 entities.TYPES 一致）。三类都试着映；映不上保持原样。"""
     for kind in _KINDS:
         hit = cmap.get((kind, name))
         if hit:
@@ -112,14 +118,26 @@ _CN_NUM = re.compile(r"[零一二两三四五六七八九十百千万]+")
 
 
 def _cn_to_int(s: str) -> int | None:
-    """「十六」→ 16，「二十四」→ 24，「三千」→ 3000。看不懂就返回 None。"""
+    """「十六」→ 16，「二十四」→ 24，「三千」→ 3000。看不懂就返回 None。
+
+    两类看不懂、必须返回 None（宁可不合并，也不能把不同的值悄悄合成一个，
+    合并后只剩一种值的组不进候选，误合并等于静默吞掉一条真矛盾）：
+    - 光杆单位：「千年」「万年」「百年」里的「千/万/百」前面没有数字撑着，
+      不是数字。「十」除外（「十」本身就是合法数字，等于 10）。
+    - 没有任何单位、纯数字连写且长度 > 1：「一九三七」「二零零八」这类年份写法，
+      不是「十进制数值」，逐字按最后一位折算（本来的 bug）比不转更危险。
+      单字符（如「六」）不受此限——那本来就是明确的个位数。
+    """
     total, section, digit = 0, 0, 0
     seen = False
+    has_unit = False
     for ch in s:
         if ch in _CN_DIGITS:
             digit = _CN_DIGITS[ch]
             seen = True
         elif ch in _CN_UNITS:
+            if ch != "十" and digit == 0 and section == 0 and total == 0:
+                return None  # 光杆单位，前面没有数字撑着
             unit = _CN_UNITS[ch]
             if unit == 10000:
                 total = (total + section + (digit or 0)) * unit
@@ -128,8 +146,11 @@ def _cn_to_int(s: str) -> int | None:
                 section += (digit if digit or ch != "十" else 1) * unit
                 digit = 0
             seen = True
+            has_unit = True
         else:
             return None
+    if not has_unit and len(s) > 1:
+        return None  # 没有单位的连写数字（年份等），不是十进制数值，别折算
     return total + section + digit if seen else None
 
 
@@ -166,13 +187,17 @@ def merge_values(rows: list[FactRow]) -> list[dict]:
 
 def candidates(groups: dict[tuple[str, str], list[FactRow]]) -> list[dict]:
     """合并后仍有 ≥2 种值的组才进候选。按 (值种类数 × 涉及场景数) 从大到小排，
-    上限截断时先保住信息量大的（spec 6.2）。"""
+    上限截断时先保住信息量大的（spec 6.2）。
+
+    「涉及场景数」是去重后的场景个数，不是 fact 行数——同一个场景里挂了好几条
+    fact 不代表牵涉好几个场景，按行数算权重会让同场景多条 fact 的组被高估。
+    """
     out = []
     for (subject, attribute), rows in groups.items():
         values = merge_values(rows)
         if len(values) < 2:
             continue
-        scenes = sum(len(v["scenes"]) for v in values)
+        scenes = len({s["id"] for v in values for s in v["scenes"]})
         out.append({
             "subject": subject,
             "attribute": attribute,
