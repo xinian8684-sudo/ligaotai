@@ -214,3 +214,32 @@ def test_cards_example_facts_follow_rules():
     for f in ex["facts"]:
         assert f["attribute"] in (*ATTRS, OTHER)
         assert len(f["value"]) <= VALUE_LIMIT
+
+
+# --- D 组审查后的待办 1：合理变化的措辞不能无条件把「换了兵器」算合理变化，
+# 否则会漏掉验收植入的「金箍棒→降妖宝杖」样本（spec 9.1、Task 21）---
+
+def _contradictions_system():
+    system, _ = render("contradictions", unit="年", groups="G")
+    return system
+
+
+def test_合理变化措辞要求原文交代变化经过_不能无条件因为换了兵器就判合理():
+    system = _contradictions_system()
+    # 旧措辞「、换了兵器、」把换兵器无条件列为合理变化，跟验收植入的金箍棒→降妖宝杖正面冲突
+    assert "、换了兵器、" not in system, "不能无条件把换兵器算合理变化"
+    assert "写明换了兵器" in system, "只有原文交代了换兵器的来由才算合理变化"
+    assert "没交代任何变化经过的，不算合理变化" in system
+
+
+def test_合理变化措辞覆盖验收植入样本_金箍棒换降妖宝杖应能判成真矛盾():
+    """spec 9.1 的植入方式：原文没有交代任何换兵器的经过，只是两处写了不同兵器名——
+    按新措辞这种情况不算合理变化，不会被规则本身误导成"看到换兵器就想当然判合理"。"""
+    system = _contradictions_system()
+    assert "两个值之间原文没交代任何变化经过的" in system or "原文没交代任何变化经过的" in system
+
+
+def test_提示词补了繁简写法不同的措辞_并带四海龙王东海龙王真不同的反例():
+    system = _contradictions_system()
+    assert "繁体" in system and "简体" in system
+    assert "四海龍王" in system and "東海龍王" in system, "反例：只差一字就是真不同，不是繁简"
