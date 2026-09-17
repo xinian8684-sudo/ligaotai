@@ -13,7 +13,6 @@ import hashlib
 import json
 import logging
 import re
-from pathlib import Path
 
 from .book import Book
 from .fsutil import read_json, write_json
@@ -31,34 +30,36 @@ def _digest(*parts) -> str:
     return h.hexdigest()[:16]
 
 
-def thread_sig(thread: dict, scene_hashes: dict[str, str], gaps: list[dict]) -> str:
-    """一条线的输入签名：线名 + 有序场景编号 + 每块的 scene_hash + 断点 + 这条线的缺口。"""
-    scenes = list(thread.get("scenes") or [])
-    return _digest(
-        thread.get("name", ""),
-        scenes,
-        [scene_hashes.get(s, "") for s in scenes],
-        thread.get("end") or {},
-        [g.get("event", "") for g in gaps],
-    )
+# 9-17 作者拍板改的签名契约（C 组审查「必须修 1」）：原先按 spec 7.1 挑出来的几个字段算签名
+# （线名/场景哈希/断点/缺口……），实测漏了模型实际会看到的输入——规范名映射（canonical_map）、
+# move_thread 换世界、这条线的故事时间、缺口的 after/before/mentioned_in、世界判定依据/设定
+# 笔记。这些字段改了，档案被判「签名没变」悄悄跳过，内容永远是旧的。
+# 改法：签名直接哈希「渲染好、真正会发给模型的输入文本」（archive_input.thread_input() /
+# world_input() / map_input() 的返回值）+ 提示词模板名。输入里有什么，签名就管什么——
+# 以后 archive_input 加字段，不用再回头给这里补参数。
 
 
-def world_sig(world: dict, scenes: list[str], scene_hashes: dict[str, str], cmap_sig: str) -> str:
-    """一个世界的输入签名：世界名 + 该世界所有块的 scene_hash + 规范名映射版本。"""
-    ordered = sorted(scenes)
-    return _digest(world.get("name", ""), ordered,
-                    [scene_hashes.get(s, "") for s in ordered], cmap_sig)
+def input_sig(text: str, prompt: str) -> str:
+    """通用输入签名：哈希渲染好的模型输入文本 + 提示词模板名/版本。
+    thread_sig / world_sig / map_sig 都是它的薄封装，只是给调用方一个更好认的名字。"""
+    return _digest(prompt, text)
 
 
-def map_sig(files: list[Path]) -> str:
-    """地图的输入签名：全部档案文件内容的哈希。"""
-    parts = []
-    for p in sorted(files, key=lambda p: p.name):
-        try:
-            parts.append(p.read_text(encoding="utf-8"))
-        except OSError:
-            parts.append("")
-    return _digest(parts)
+def thread_sig(text: str, prompt: str = "archive_thread") -> str:
+    """一条线的输入签名：哈希 archive_input.thread_input() 渲染出来的文本。"""
+    return input_sig(text, prompt)
+
+
+def world_sig(text: str, prompt: str = "archive_world") -> str:
+    """一个世界的输入签名：哈希 archive_input.world_input() 渲染出来的文本。"""
+    return input_sig(text, prompt)
+
+
+def map_sig(text: str, prompt: str = "map") -> str:
+    """地图的输入签名：哈希 archive_input.map_input() 渲染出来的文本——已经包含严重矛盾清单、
+    缺口总览、各条线写到哪（C 组审查「必须修 5」：这三样以前不在签名里，档案文件没变时
+    地图会停在旧清单，现在跟着渲染文本一起哈希，自动解决）。"""
+    return input_sig(text, prompt)
 
 
 def reconcile(index: dict, thread_ids: set[str], world_ids: set[str]) -> list[str]:
