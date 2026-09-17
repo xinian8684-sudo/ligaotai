@@ -127,3 +127,28 @@ def check_archive(md: str, allowed: set[str], required_headings: list[str]) -> l
     if bad:
         problems.append("这些编号不属于这份档案的范围，不许写：" + "、".join(bad[:10]))
     return problems
+
+
+_MULTI = "（多个说法）"
+
+
+def backfill_refs(md: str, groups: list[dict]) -> str:
+    """把世界设定集里的「（多个说法）」补上对应的矛盾编号。纯文本替换，不花钱（spec 第 5 节）。
+
+    设定集和矛盾扫描并行跑，写档案时 C- 编号还不存在，模型固定写「（多个说法）」占位，
+    两边都跑完后由这个函数回填。按「这一行的属性节 + 行首的主语」对到 (subject, attribute)；
+    对不上的原样留着。"""
+    by_key = {(g.get("subject"), g.get("attribute")): g.get("id") for g in groups}
+    attr = ""
+    out = []
+    for line in (md or "").splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            attr = stripped[3:].strip()
+        elif _MULTI in line and stripped.startswith("- ") and "：" in line:
+            subject = stripped[2:].split("：", 1)[0].strip()
+            gid = by_key.get((subject, attr))
+            if gid:
+                line = line.replace(_MULTI, f"（多个说法，见矛盾 {gid}）")
+        out.append(line)
+    return "".join(out)
