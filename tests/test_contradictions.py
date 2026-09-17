@@ -175,7 +175,43 @@ def test_verdict按主语属性迁移():
                        {0: {"status": "真矛盾", "level": "严重", "category": "人物", "reason": "x [S-0001]"}},
                        {}, old, stats={})
     assert res["groups"][0]["verdict"] == {"choice": "v"}
-    assert res["orphan_verdicts"] == [{"subject": "乙", "attribute": "外貌", "verdict": {"choice": "x"}}]
+    assert res["orphan_verdicts"] == [
+        {"id": "C-004", "subject": "乙", "attribute": "外貌", "verdict": {"choice": "x"}}
+    ]
+
+
+# --- D 组审查后的待办 必须修3：组消失一轮再回来，要沿用原编号、接回原 verdict；
+# 在没回来之前，orphan 要继续往下传，不能丢 ---
+
+def test_组消失一轮再回来_沿用原编号且verdict能接回():
+    old1 = {"next_id": 2, "groups": [
+        {"id": "C-001", "subject": "甲", "attribute": "兵器", "verdict": {"choice": "v"}},
+    ]}
+    # 第二轮：甲这次没进候选，verdict 应该进 orphan_verdicts，且带着原编号
+    res2 = build_result([], {}, {}, old1, stats={})
+    assert res2["groups"] == []
+    assert res2["orphan_verdicts"] == [
+        {"id": "C-001", "subject": "甲", "attribute": "兵器", "verdict": {"choice": "v"}}
+    ]
+
+    # 第三轮：甲回来了
+    res3 = build_result(
+        [_cand("甲", "兵器", [("v", "S-0001"), ("w", "S-0002")])],
+        {0: {"status": "真矛盾", "level": "严重", "category": "人物", "reason": "x [S-0001]"}},
+        {}, res2, stats={})
+    assert res3["groups"][0]["id"] == "C-001", "沿用原编号，不能换新号"
+    assert res3["groups"][0]["verdict"] == {"choice": "v"}, "verdict 要能接回来，不能永久丢失"
+    assert res3["orphan_verdicts"] == [], "回来了就不再是 orphan"
+
+
+def test_orphan在未回来前继续往下传_不会消失一轮就丢():
+    old1 = {"next_id": 2, "groups": [
+        {"id": "C-001", "subject": "甲", "attribute": "兵器", "verdict": {"choice": "v"}},
+    ]}
+    res2 = build_result([], {}, {}, old1, stats={})
+    # 第三轮：甲还是没回来（比如又没抽出候选），orphan 得继续保留，不能凭空消失
+    res3 = build_result([], {}, {}, res2, stats={})
+    assert res3["orphan_verdicts"] == res2["orphan_verdicts"]
 
 
 def test_场景里带上故事时间和所属线():

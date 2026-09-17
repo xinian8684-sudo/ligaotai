@@ -150,7 +150,13 @@ def build_result(cands: list[dict], judged: dict[int, dict], times: dict[str, di
     `judged` 的键是 cands 的下标。编号按 (规范主语, 属性) 沿用上一次的，沿用不到的取
     只增不减的 next_id（②a / ②b 撞号踩过的坑）。作者的 verdict 也按 (主语, 属性) 迁移。
     """
-    old_by_key = {(g.get("subject"), g.get("attribute")): g for g in old.get("groups") or []}
+    # 索引既要包含上一轮还在的组，也要包含上一轮已经是 orphan 的——不然组消失一轮
+    # 再回来时，既接不回原编号也接不回 verdict（D 组审查必须修3）。当前活跃组优先。
+    old_by_key: dict[tuple, dict] = {}
+    for o in old.get("orphan_verdicts") or []:
+        old_by_key[(o.get("subject"), o.get("attribute"))] = o
+    for g in old.get("groups") or []:
+        old_by_key[(g.get("subject"), g.get("attribute"))] = g
     next_id = int(old.get("next_id") or 1)
     used_keys = set()
     groups = []
@@ -180,7 +186,8 @@ def build_result(cands: list[dict], judged: dict[int, dict], times: dict[str, di
             "reason": j["reason"], "values": values,
             "verdict": (prev or {}).get("verdict"),
         })
-    orphans = [{"subject": k[0], "attribute": k[1], "verdict": g["verdict"]}
+    # orphan 条目带上原 id：组回来时才能沿用原编号，而不是换新号；没回来的继续往下传，不丢。
+    orphans = [{"id": g.get("id"), "subject": k[0], "attribute": k[1], "verdict": g["verdict"]}
                for k, g in sorted(old_by_key.items(), key=lambda kv: (kv[0][0], kv[0][1]))
                if k not in used_keys and g.get("verdict")]
     return {
