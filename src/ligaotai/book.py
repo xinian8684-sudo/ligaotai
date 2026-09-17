@@ -33,6 +33,8 @@ DEFAULT_SETTINGS = {
     "dedup_min_shingles": 100,   # 太短的块（约 100 字以下）不参与查重
     "dedup_common_df": 200,      # 出现在超过这么多块里的字串当套话，不计数（真实文本 21~200 块之间几乎没有套话，调大避免误伤 21+ 份重复场景）
     "threads_max_input_tokens": 600000,  # 归线一次调用的输入上限（按 1 个字符 1 个 token 估，偏保守），超过就分段
+    "contradictions_batch_tokens": 30000,  # 矛盾扫描一批的输入上限（按 1 字符 1 token 估）
+    "contradictions_max_groups": 2000,     # 候选组超过这个数就按权重截断，其余记进 skipped
 }
 
 # 进程内一把可重入锁：book.json、实体.json 的「读 → 改 → 写」都在它里面串行。

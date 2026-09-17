@@ -177,3 +177,14 @@ def build_result(cands: list[dict], judged: dict[int, dict], times: dict[str, di
         "orphan_verdicts": orphans,
         "stats": dict(stats),
     }
+
+
+def cap(cands: list[dict], limit: int) -> tuple[list[dict], list[dict]]:
+    """候选组超上限就截断（cands 已按权重排好序），被砍掉的记进 skipped，
+    不静默丢弃（spec 6.2）。"""
+    if len(cands) <= limit:
+        return cands, []
+    kept = cands[:limit]
+    skipped = [{"subject": c["subject"], "attribute": c["attribute"], "reason": "超过上限"}
+               for c in cands[limit:]]
+    return kept, skipped

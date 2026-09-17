@@ -143,3 +143,25 @@ def test_场景里带上故事时间和所属线():
                        times, {"next_id": 1, "groups": []}, stats={})
     s = res["groups"][0]["values"][0]["scenes"][0]
     assert s["t"] == 3.0 and s["conf"] == "高" and s["thread"] == "L-001"
+
+
+from ligaotai.contradictions import cap
+
+
+def test_超上限的按权重截断且不静默丢弃():
+    cands = [{"subject": f"人{i}", "attribute": "兵器", "weight": i,
+              "values": [{"value": "v", "scenes": [{"id": "S-0001", "quote": "q"}]},
+                         {"value": "w", "scenes": [{"id": "S-0002", "quote": "q"}]}]}
+             for i in range(5)]
+    cands.sort(key=lambda c: -c["weight"])
+    kept, skipped = cap(cands, 2)
+    assert len(kept) == 2
+    assert [c["subject"] for c in kept] == ["人4", "人3"]
+    assert len(skipped) == 3
+    assert skipped[0] == {"subject": "人2", "attribute": "兵器", "reason": "超过上限"}
+
+
+def test_没超上限就原样返回():
+    cands = [{"subject": "甲", "attribute": "兵器", "weight": 1, "values": []}]
+    kept, skipped = cap(cands, 10)
+    assert kept == cands and skipped == []

@@ -105,3 +105,9 @@ def test_threads_paths_and_setting(book):
     assert book.threads_path.name == "世界与支线.json"
     assert book.threads_cache_path.name == "归线缓存.json"
     assert book.settings()["threads_max_input_tokens"] == 600000
+
+
+def test_默认设置有矛盾扫描的两个上限():
+    from ligaotai.book import DEFAULT_SETTINGS
+    assert DEFAULT_SETTINGS["contradictions_batch_tokens"] == 30000
+    assert DEFAULT_SETTINGS["contradictions_max_groups"] == 2000
