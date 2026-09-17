@@ -1,9 +1,7 @@
-from pathlib import Path
-
 import pytest
 
 from ligaotai.facts import ATTRS, OTHER, VALUE_LIMIT
-from ligaotai.prompts import render
+from ligaotai.prompts import PROMPTS_DIR, render
 
 
 def test_load_and_render(tmp_path):
@@ -191,14 +189,28 @@ def test_gaps_example_passes_check():
 # --- 2c task05: 场景卡提示词与受控属性表一致 ---
 
 
+def _cards_text() -> str:
+    return (PROMPTS_DIR / "cards.md").read_text(encoding="utf-8")
+
+
 def test_提示词里的受控属性表和代码一致():
-    text = Path("prompts/cards.md").read_text(encoding="utf-8")
-    for a in ATTRS:
-        assert a in text, f"prompts/cards.md 里缺属性「{a}」"
-    assert OTHER in text
-    assert str(VALUE_LIMIT) in text
+    lines = _cards_text().splitlines()
+    i = next(n for n, line in enumerate(lines) if "只能从下面这张表里挑一个" in line)
+    assert lines[i + 1].strip().split("、") == list(ATTRS) + [OTHER]  # 逐项、顺序、无多余
+    limits = re.findall(r"value 是\*\*短值\*\*，不超过 (\d+) 个字", _cards_text())
+    assert limits == [str(VALUE_LIMIT)]
 
 
-def test_提示词写明只记稳定设定():
-    text = Path("prompts/cards.md").read_text(encoding="utf-8")
-    assert "稳定" in text and "events" in text
+def test_提示词写明只记稳定设定且value写简体():
+    text = _cards_text()
+    assert "跨场景稳定的设定" in text and "一律不许进 facts" in text
+    assert "value 一律写简体" in text
+
+
+def test_cards_example_facts_follow_rules():
+    system, _ = render("cards", scene_id="S-0001", source="稿/a.txt", heading="第一章", text="林清年方十六。")
+    ex = _objects(system.split("格式如下", 1)[1])[0]
+    assert ex["facts"]
+    for f in ex["facts"]:
+        assert f["attribute"] in (*ATTRS, OTHER)
+        assert len(f["value"]) <= VALUE_LIMIT

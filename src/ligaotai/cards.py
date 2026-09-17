@@ -409,9 +409,9 @@ async def _run_cards(book: Book, client: LLMClient, progress: Progress, only: li
         else:
             records[scene.id] = record
             counts["written"] += 1
-            # with_problems 只算「靠不住」的信号（quote/名字对不上被丢掉的 fact，或
-            # check_card 报过问题）；attrs / long_values 是模型没听受控表话的正常小事，
-            # 不该重试也不该算进这个「这张卡不可靠」的指标里（否则几乎每张卡都会中）。
+            # with_problems 只算真丢了数据或 check_card 报过问题的卡。被丢的 fact 包括
+            # quote/名字对不上的和超长 value（long_values 已并进 dropped["facts"]，所以会算）；
+            # attrs 只是属性名归一、数据没丢，不算（否则几乎每张卡都会中）。
             dropped = record["dropped"]
             if record["problems"] or dropped["facts"] or dropped["names"]:
                 counts["with_problems"] += 1
