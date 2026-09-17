@@ -96,3 +96,50 @@ def test_clean丢掉编造的编号并给漏掉的兜底():
     assert set(got) == {"C-001", "C-002"}
     assert got["C-002"]["status"] == "无法判断", "模型没答的按宁可多报兜底"
     assert got["C-002"]["reason"]
+
+
+from ligaotai.contradictions import build_result
+
+
+def _cand(subject, attribute, values):
+    return {"subject": subject, "attribute": attribute, "merged": 0,
+            "values": [{"value": v, "scenes": [{"id": s, "quote": "q"}]} for v, s in values]}
+
+
+def test_编号取next_id只增不减():
+    old = {"next_id": 5, "groups": []}
+    res = build_result([_cand("甲", "兵器", [("v", "S-0001"), ("w", "S-0002")])],
+                       {0: {"status": "真矛盾", "level": "严重", "category": "人物", "reason": "x [S-0001]"}},
+                       {}, old, stats={})
+    assert res["groups"][0]["id"] == "C-005"
+    assert res["next_id"] == 6
+
+
+def test_同一主语属性重跑沿用原编号():
+    old = {"next_id": 9, "groups": [{"id": "C-003", "subject": "甲", "attribute": "兵器", "verdict": None}]}
+    res = build_result([_cand("甲", "兵器", [("v", "S-0001"), ("w", "S-0002")])],
+                       {0: {"status": "真矛盾", "level": "严重", "category": "人物", "reason": "x [S-0001]"}},
+                       {}, old, stats={})
+    assert res["groups"][0]["id"] == "C-003"
+    assert res["next_id"] == 9, "沿用了就不该消耗新号"
+
+
+def test_verdict按主语属性迁移():
+    old = {"next_id": 9, "groups": [
+        {"id": "C-003", "subject": "甲", "attribute": "兵器", "verdict": {"choice": "v"}},
+        {"id": "C-004", "subject": "乙", "attribute": "外貌", "verdict": {"choice": "x"}},
+    ]}
+    res = build_result([_cand("甲", "兵器", [("v", "S-0001"), ("w", "S-0002")])],
+                       {0: {"status": "真矛盾", "level": "严重", "category": "人物", "reason": "x [S-0001]"}},
+                       {}, old, stats={})
+    assert res["groups"][0]["verdict"] == {"choice": "v"}
+    assert res["orphan_verdicts"] == [{"subject": "乙", "attribute": "外貌", "verdict": {"choice": "x"}}]
+
+
+def test_场景里带上故事时间和所属线():
+    times = {"S-0001": {"t": 3.0, "conf": "高", "thread": "L-001"}}
+    res = build_result([_cand("甲", "兵器", [("v", "S-0001"), ("w", "S-0002")])],
+                       {0: {"status": "真矛盾", "level": "严重", "category": "人物", "reason": "x [S-0001]"}},
+                       times, {"next_id": 1, "groups": []}, stats={})
+    s = res["groups"][0]["values"][0]["scenes"][0]
+    assert s["t"] == 3.0 and s["conf"] == "高" and s["thread"] == "L-001"

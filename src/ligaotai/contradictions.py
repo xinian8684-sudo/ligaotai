@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import re
 
+from .book import now_iso
+
 STATUSES = ("真矛盾", "合理变化", "无法判断")
 LEVELS = ("严重", "中等", "轻微")
 CATEGORIES = ("人物", "设定", "时间", "称谓")
@@ -125,3 +127,53 @@ def render_values(cands: list[dict], start: int, times: dict[str, dict], unit: s
     numbered = {f"C-{start + i:03d}": c for i, c in enumerate(cands)}
     text = "\n\n".join(group_text(cid, c, times, unit) for cid, c in numbered.items())
     return text, numbered
+
+
+def build_result(cands: list[dict], judged: dict[int, dict], times: dict[str, dict],
+                 old: dict, stats: dict, skipped: list[dict] | None = None) -> dict:
+    """拼出 矛盾.json（spec 7.2）。
+
+    `judged` 的键是 cands 的下标。编号按 (规范主语, 属性) 沿用上一次的，沿用不到的取
+    只增不减的 next_id（②a / ②b 撞号踩过的坑）。作者的 verdict 也按 (主语, 属性) 迁移。
+    """
+    old_by_key = {(g.get("subject"), g.get("attribute")): g for g in old.get("groups") or []}
+    next_id = int(old.get("next_id") or 1)
+    used_keys = set()
+    groups = []
+    for i, c in enumerate(cands):
+        key = (c["subject"], c["attribute"])
+        used_keys.add(key)
+        prev = old_by_key.get(key)
+        if prev and prev.get("id"):
+            gid = prev["id"]
+        else:
+            gid = f"C-{next_id:03d}"
+            next_id += 1
+        j = judged.get(i) or {"status": "无法判断", "level": "", "category": "设定",
+                              "reason": "这一批调用失败，没拿到判断"}
+        values = []
+        for v in c["values"]:
+            scenes = []
+            for s in v["scenes"]:
+                info = times.get(s["id"]) or {}
+                scenes.append({"id": s["id"], "quote": s.get("quote", ""),
+                               "thread": info.get("thread", ""),
+                               "t": info.get("t"), "conf": info.get("conf", "")})
+            values.append({"value": v["value"], "scenes": scenes})
+        groups.append({
+            "id": gid, "subject": c["subject"], "attribute": c["attribute"],
+            "status": j["status"], "level": j["level"], "category": j["category"],
+            "reason": j["reason"], "values": values,
+            "verdict": (prev or {}).get("verdict"),
+        })
+    orphans = [{"subject": k[0], "attribute": k[1], "verdict": g["verdict"]}
+               for k, g in sorted(old_by_key.items(), key=lambda kv: (kv[0][0], kv[0][1]))
+               if k not in used_keys and g.get("verdict")]
+    return {
+        "generated": now_iso(),
+        "next_id": next_id,
+        "groups": groups,
+        "skipped": list(skipped or []),
+        "orphan_verdicts": orphans,
+        "stats": dict(stats),
+    }
