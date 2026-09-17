@@ -98,6 +98,48 @@ def test_clean丢掉编造的编号并给漏掉的兜底():
     assert got["C-002"]["reason"]
 
 
+def test_clean_output非法status兜底成无法判断():
+    data = {"groups": [
+        {"id": "C-001", "status": "也许", "level": "严重", "category": "人物", "reason": "x [S-0014]"},
+    ]}
+    got = clean_output(data, {"C-001"})
+    assert got["C-001"]["status"] == "无法判断"
+
+
+# --- D 组审查后的待办 必须修2：groups 里混进非 dict 元素 / 顶层给成 list / id 是
+# list 这类不可哈希类型时，check_output 得报问题触发重试，clean_output 不许抛异常
+# （宁可多报：拿不到合法判断的组一律补成「无法判断」，绝不静默丢组）---
+
+def test_groups里混入非dict元素_check要报问题_clean不能崩且不丢合法项():
+    data = {"groups": [
+        "C-001 真矛盾",  # 模型输出格式错乱，混进了字符串
+        {"id": "C-002", "status": "真矛盾", "level": "严重", "category": "人物", "reason": "x [S-0001]"},
+    ]}
+    ids = {"C-002"}
+    problems = check_output(data, ids)
+    assert problems != [], "混入非dict项即使合法项齐全也要报问题触发重试，不能悄悄放过"
+    got = clean_output(data, ids)  # 不该抛异常
+    assert got["C-002"]["status"] == "真矛盾", "混进去的垃圾项不能连累后面合法的判断被扔掉"
+
+
+def test_顶层是list_check要报问题_clean不崩且全部兜底成无法判断():
+    data = [{"id": "C-001", "status": "真矛盾", "level": "严重", "category": "人物", "reason": "x [S-0001]"}]
+    ids = {"C-001"}
+    assert check_output(data, ids) != []
+    got = clean_output(data, ids)  # 不该抛异常
+    assert got["C-001"]["status"] == "无法判断", "顶层格式都不对，拿不到合法判断，宁可多报兜底"
+
+
+def test_id是list不可哈希_check要报问题_clean不崩():
+    data = {"groups": [
+        {"id": ["C-001"], "status": "真矛盾", "level": "严重", "category": "人物", "reason": "x [S-0001]"},
+    ]}
+    ids = {"C-001"}
+    assert check_output(data, ids) != []
+    got = clean_output(data, ids)  # 不该抛异常（旧代码 TypeError: unhashable type: 'list'）
+    assert got["C-001"]["status"] == "无法判断"
+
+
 from ligaotai.contradictions import build_result
 
 

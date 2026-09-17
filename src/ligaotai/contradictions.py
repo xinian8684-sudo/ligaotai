@@ -75,12 +75,21 @@ def batches(cands: list[dict], times: dict[str, dict], unit: str, budget: int) -
 
 
 def check_output(data, ids: set[str]) -> list[str]:
-    """模型输出的检查，返回要反馈给模型的问题（空列表 = 没问题）。"""
-    if not isinstance(data, dict) or not isinstance(data.get("groups"), list):
+    """模型输出的检查，返回要反馈给模型的问题（空列表 = 没问题）。
+
+    宁可多报：groups 里混进非 dict 元素、顶层给成 list、id 是 list 这类畸形输出，
+    都必须在这里报出问题触发重试，不能因为其余合法项齐全就悄悄放过——放过了
+    clean_output 就会在处理垃圾项时崩溃，把已经花钱拿到的合法判断也一起扔掉。
+    """
+    groups = data.get("groups") if isinstance(data, dict) else None
+    if not isinstance(groups, list):
         return ["输出要是 {\"groups\": [...]} 的形状"]
     problems = []
-    got = [g for g in data["groups"] if isinstance(g, dict)]
-    seen = {g.get("id") for g in got}
+    bad = [g for g in groups if not isinstance(g, dict) or not isinstance(g.get("id"), str)]
+    got = [g for g in groups if isinstance(g, dict) and isinstance(g.get("id"), str)]
+    if bad:
+        problems.append(f"有 {len(bad)} 组格式不对（不是对象，或者 id 不是字符串），照给的样例重新输出")
+    seen = {g["id"] for g in got}
     missing = sorted(ids - seen)
     extra = sorted(x for x in seen - ids if x)
     if missing:
@@ -88,7 +97,7 @@ def check_output(data, ids: set[str]) -> list[str]:
     if extra:
         problems.append("这些编号不在我给你的列表里：" + "、".join(extra[:10]))
     for g in got:
-        gid = g.get("id", "?")
+        gid = g["id"]
         if g.get("status") not in STATUSES:
             problems.append(f"{gid} 的 status 只能是：" + " / ".join(STATUSES))
         if g.get("status") == "真矛盾" and g.get("level") not in LEVELS:
@@ -101,11 +110,16 @@ def check_output(data, ids: set[str]) -> list[str]:
 
 
 def clean_output(data, ids: set[str]) -> dict[str, dict]:
-    """整理成 {编号: 判断}。编造的编号丢掉；模型没答的按「宁可多报」兜底成「无法判断」。"""
+    """整理成 {编号: 判断}。编造的编号丢掉；模型没答的、格式畸形的一律按「宁可多报」
+    兜底成「无法判断」——不许抛异常（groups 混非 dict 元素、顶层是 list、id 是 list
+    这类不可哈希类型都要能扛住，见 D 组审查必须修2）。"""
     out: dict[str, dict] = {}
-    for g in (data or {}).get("groups") or []:
+    groups = data.get("groups") if isinstance(data, dict) else None
+    for g in groups if isinstance(groups, list) else []:
+        if not isinstance(g, dict):
+            continue
         gid = g.get("id")
-        if not isinstance(g, dict) or gid not in ids or gid in out:
+        if not isinstance(gid, str) or gid not in ids or gid in out:
             continue
         status = g.get("status") if g.get("status") in STATUSES else "无法判断"
         level = g.get("level") if g.get("level") in LEVELS else ""
