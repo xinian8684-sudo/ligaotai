@@ -6,9 +6,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 
 from .book import now_iso
+from .facts import norm_number
 
 STATUSES = ("真矛盾", "合理变化", "无法判断")
 LEVELS = ("严重", "中等", "轻微")
@@ -143,6 +145,21 @@ def render_values(cands: list[dict], start: int, times: dict[str, dict], unit: s
     return text, numbered
 
 
+def values_sig(values: list[dict]) -> str:
+    """值集合签名：判断重跑后这一组的值集合是不是变了（多了新值、或原来的值不在了），
+    好决定要不要把 verdict 标成 verdict_stale（D 组审查必须修4，作者 9-17 拍板：
+    值集合变了，旧判定保留但标需重看）。
+
+    繁简、首尾空白的差异不该算变化——值先做规范化（strip + facts.norm_number 的数字
+    规范化）再签名。项目里没有通用繁转简（facts._to_simplified 只覆盖属性名归一用的
+    24 项受控属性繁体写法，不能拿来转任意值文本，见 facts.py 的警告），所以这里做不到
+    「繁体简体一律算同一个值」；值本身的繁简差异（老卡繁体、新卡简体）仍会被判定为
+    「变了」，比不管漏报更安全，报告里会说明这个已知限制。
+    """
+    norm = sorted(norm_number((v.get("value") or "").strip()) for v in values)
+    return hashlib.sha256("\x1f".join(norm).encode("utf-8")).hexdigest()
+
+
 def build_result(cands: list[dict], judged: dict[int, dict], times: dict[str, dict],
                  old: dict, stats: dict, skipped: list[dict] | None = None) -> dict:
     """拼出 矛盾.json（spec 7.2）。
@@ -180,14 +197,23 @@ def build_result(cands: list[dict], judged: dict[int, dict], times: dict[str, di
                                "thread": info.get("thread", ""),
                                "t": info.get("t"), "conf": info.get("conf", "")})
             values.append({"value": v["value"], "scenes": scenes})
+        sig = values_sig(c["values"])
+        verdict = (prev or {}).get("verdict")
+        prev_sig = (prev or {}).get("values_sig")
+        # 值集合变了（多了新值、或原来选中的值不在了）：verdict 保留，不做任何猜测性
+        # 处理，只标 verdict_stale 交给界面重新亮出来。prev_sig 缺失（老格式数据、
+        # 或组本来就没有上一轮）时没有依据比对，不瞎报 stale。
+        stale = bool(verdict is not None and prev_sig is not None and prev_sig != sig)
         groups.append({
             "id": gid, "subject": c["subject"], "attribute": c["attribute"],
             "status": j["status"], "level": j["level"], "category": j["category"],
-            "reason": j["reason"], "values": values,
-            "verdict": (prev or {}).get("verdict"),
+            "reason": j["reason"], "values": values, "values_sig": sig,
+            "verdict": verdict, "verdict_stale": stale,
         })
-    # orphan 条目带上原 id：组回来时才能沿用原编号，而不是换新号；没回来的继续往下传，不丢。
-    orphans = [{"id": g.get("id"), "subject": k[0], "attribute": k[1], "verdict": g["verdict"]}
+    # orphan 条目带上原 id 和 values_sig：组回来时才能沿用原编号、接回原 verdict、
+    # 判断值集合有没有变；没回来的继续往下传，不丢。
+    orphans = [{"id": g.get("id"), "subject": k[0], "attribute": k[1],
+                "verdict": g["verdict"], "values_sig": g.get("values_sig")}
                for k, g in sorted(old_by_key.items(), key=lambda kv: (kv[0][0], kv[0][1]))
                if k not in used_keys and g.get("verdict")]
     return {

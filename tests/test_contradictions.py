@@ -176,7 +176,7 @@ def test_verdict按主语属性迁移():
                        {}, old, stats={})
     assert res["groups"][0]["verdict"] == {"choice": "v"}
     assert res["orphan_verdicts"] == [
-        {"id": "C-004", "subject": "乙", "attribute": "外貌", "verdict": {"choice": "x"}}
+        {"id": "C-004", "subject": "乙", "attribute": "外貌", "verdict": {"choice": "x"}, "values_sig": None}
     ]
 
 
@@ -191,7 +191,7 @@ def test_组消失一轮再回来_沿用原编号且verdict能接回():
     res2 = build_result([], {}, {}, old1, stats={})
     assert res2["groups"] == []
     assert res2["orphan_verdicts"] == [
-        {"id": "C-001", "subject": "甲", "attribute": "兵器", "verdict": {"choice": "v"}}
+        {"id": "C-001", "subject": "甲", "attribute": "兵器", "verdict": {"choice": "v"}, "values_sig": None}
     ]
 
     # 第三轮：甲回来了
@@ -212,6 +212,103 @@ def test_orphan在未回来前继续往下传_不会消失一轮就丢():
     # 第三轮：甲还是没回来（比如又没抽出候选），orphan 得继续保留，不能凭空消失
     res3 = build_result([], {}, {}, res2, stats={})
     assert res3["orphan_verdicts"] == res2["orphan_verdicts"]
+
+
+# --- D 组审查后的待办 必须修4：值集合变了（多了新值，或作者选中的值不在了），
+# 旧判定保留但要标 verdict_stale=true，交给界面重新亮出来（作者 9-17 拍板）---
+
+from ligaotai.contradictions import values_sig
+
+
+def test_值集合签名_空白与数字规范化后相同即视为没变():
+    a = values_sig([{"value": "十六"}, {"value": " 十七 "}])
+    b = values_sig([{"value": "16"}, {"value": "17"}])
+    assert a == b
+
+
+def test_值集合签名_顺序不影响结果():
+    a = values_sig([{"value": "甲"}, {"value": "乙"}])
+    b = values_sig([{"value": "乙"}, {"value": "甲"}])
+    assert a == b
+
+
+def test_值集合签名_值真不同就不同():
+    a = values_sig([{"value": "金箍棒"}, {"value": "降妖宝杖"}])
+    b = values_sig([{"value": "金箍棒"}])
+    assert a != b
+
+
+def test_值集合签名不转繁简_是已知限制不是bug():
+    """项目里没有通用繁转简（facts._to_simplified 只覆盖属性名归一，不能拿来转值文本），
+    所以签名只做 strip 和 facts 已有的数字规范化，值本身的繁简差异（老卡繁体、新卡简体）
+    仍会被判定为"变了"，需要人工重新看一眼——保守，不算误报。"""
+    a = values_sig([{"value": "十七歲"}])
+    b = values_sig([{"value": "十七岁"}])
+    assert a != b
+
+
+def test_值集合变了_多了新值_verdict保留但标记需重看():
+    old = {"next_id": 2, "groups": [
+        {"id": "C-001", "subject": "甲", "attribute": "兵器", "verdict": {"choice": "v"},
+         "values_sig": values_sig([{"value": "v"}, {"value": "w"}])},
+    ]}
+    res = build_result(
+        [_cand("甲", "兵器", [("v", "S-0001"), ("w", "S-0002"), ("z", "S-0003")])],
+        {0: {"status": "真矛盾", "level": "严重", "category": "人物", "reason": "x [S-0001]"}},
+        {}, old, stats={})
+    g = res["groups"][0]
+    assert g["id"] == "C-001", "编号还是要沿用"
+    assert g["verdict"] == {"choice": "v"}, "旧判定保留，不能张冠李戴地扔掉"
+    assert g["verdict_stale"] is True, "值集合变了要标记需重看"
+
+
+def test_值集合变了_原选中的值不在了_verdict保留但标记需重看():
+    old = {"next_id": 2, "groups": [
+        {"id": "C-001", "subject": "甲", "attribute": "兵器", "verdict": {"choice": "v"},
+         "values_sig": values_sig([{"value": "v"}, {"value": "w"}])},
+    ]}
+    res = build_result(
+        [_cand("甲", "兵器", [("v", "S-0001"), ("z", "S-0003")])],  # w 没了，换成 z
+        {0: {"status": "真矛盾", "level": "严重", "category": "人物", "reason": "x [S-0001]"}},
+        {}, old, stats={})
+    assert res["groups"][0]["verdict_stale"] is True
+
+
+def test_值集合没变_不标记stale():
+    old = {"next_id": 2, "groups": [
+        {"id": "C-001", "subject": "甲", "attribute": "兵器", "verdict": {"choice": "v"},
+         "values_sig": values_sig([{"value": "v"}, {"value": "w"}])},
+    ]}
+    res = build_result(
+        [_cand("甲", "兵器", [("v", "S-0001"), ("w", "S-0002")])],
+        {0: {"status": "真矛盾", "level": "严重", "category": "人物", "reason": "x [S-0001]"}},
+        {}, old, stats={})
+    assert res["groups"][0]["verdict_stale"] is False
+
+
+def test_没有verdict时不标记stale():
+    old = {"next_id": 2, "groups": [
+        {"id": "C-001", "subject": "甲", "attribute": "兵器", "verdict": None,
+         "values_sig": values_sig([{"value": "v"}, {"value": "w"}])},
+    ]}
+    res = build_result(
+        [_cand("甲", "兵器", [("v", "S-0001"), ("z", "S-0003")])],
+        {0: {"status": "真矛盾", "level": "严重", "category": "人物", "reason": "x [S-0001]"}},
+        {}, old, stats={})
+    assert res["groups"][0]["verdict"] is None
+    assert res["groups"][0]["verdict_stale"] is False, "没有旧判定，谈不上需要重看"
+
+
+def test_旧数据没存values_sig字段时不误判stale():
+    """老格式数据（这次改动之前落盘的）没有 values_sig，没有依据就不该瞎报 stale。"""
+    old = {"next_id": 9, "groups": [
+        {"id": "C-003", "subject": "甲", "attribute": "兵器", "verdict": {"choice": "v"}},
+    ]}
+    res = build_result(
+        [_cand("甲", "兵器", [("v", "S-0001"), ("w", "S-0002")])],
+        {0: {"status": "真矛盾", "level": "严重", "category": "人物", "reason": "x [S-0001]"}},
+        {}, old, stats={})
+    assert res["groups"][0]["verdict_stale"] is False
 
 
 def test_场景里带上故事时间和所属线():
