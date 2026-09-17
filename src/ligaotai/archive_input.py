@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from .facts import FactRow
 from .threads_input import card_line
@@ -106,3 +107,32 @@ def world_input(world: dict, rows: list[FactRow], notes: list[dict],
         for n in notes:
             lines.append(f"[{n['id']}] {n.get('text','')}")
     return "\n".join(lines)
+
+
+def map_input(world_files: list[Path], thread_files: list[Path], contradictions: list[dict],
+              gaps: list[dict], ends: list[dict]) -> str:
+    """地图的输入是**档案正文**（不是场景卡），所以装得下（spec 7.3）。
+    矛盾只带严重的——地图是给人看全局的，轻微的留在 矛盾.json 里。
+
+    这份渲染结果就是「真正送给模型的地图输入文本」：archive.map_sig 直接哈希它，
+    严重矛盾清单、缺口总览、各条线写到哪只要变了，签名就跟着变（C 组审查「必须修 5」：
+    这三样以前不在 map_sig 里，档案文件没变时地图会停在旧清单）。"""
+    lines = ["# 全部世界设定集"]
+    for p in sorted(world_files, key=lambda p: p.name):
+        lines.append(p.read_text(encoding="utf-8"))
+    lines.append("# 全部支线档案")
+    for p in sorted(thread_files, key=lambda p: p.name):
+        lines.append(p.read_text(encoding="utf-8"))
+
+    lines.append("# 严重矛盾")
+    bad = [c for c in contradictions if c.get("status") == "真矛盾" and c.get("level") == "严重"]
+    lines += [f"- {c['id']} {c.get('subject','')}·{c.get('attribute','')}：{c.get('reason','')}"
+              for c in bad] or ["（没有）"]
+
+    lines.append("# 缺口总览")
+    lines += [f"- [{g.get('world','')}] {g.get('event','')}" for g in gaps] or ["（没有）"]
+
+    lines.append("# 各条线写到哪")
+    lines += [f"- {e.get('id','')} {e.get('name','')}：{e.get('state','')}，"
+              f"最后一块 [{e.get('last','')}]" for e in ends] or ["（没有）"]
+    return "\n\n".join(lines)

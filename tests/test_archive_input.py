@@ -1,4 +1,4 @@
-from ligaotai.archive_input import open_hooks, thread_input, world_input
+from ligaotai.archive_input import map_input, open_hooks, thread_input, world_input
 
 
 def test_开放伏笔是埋了没回收的():
@@ -42,3 +42,33 @@ def test_世界的输入是facts不是摘要():
     assert "金箍棒" in text and "S-0001" in text
     assert "打妖怪" in text, "设定集包含「其他」类 facts（spec 第 5 节）"
     assert "L-001" in text and "有佛道" in text
+
+
+def test_地图的输入是档案正文不是场景卡(tmp_path):
+    t = tmp_path / "L-001.md"
+    w = tmp_path / "W-01.md"
+    t.write_text("# L-001 林清线\n他救了人 [S-0003]。\n", encoding="utf-8")
+    w.write_text("# W-01 人间\n- 林清：十六 [S-0003]\n", encoding="utf-8")
+    text = map_input([w], [t],
+                     contradictions=[{"id": "C-007", "subject": "孙悟空", "attribute": "兵器",
+                                      "status": "真矛盾", "level": "严重",
+                                      "reason": "两处不一样 [S-0014]"}],
+                     gaps=[{"event": "青州城破", "world": "W-01"}],
+                     ends=[{"id": "L-001", "name": "林清线", "state": "待定", "last": "S-0003"}])
+    assert "林清线" in text and "人间" in text
+    assert "C-007" in text and "青州城破" in text
+    assert "S-0003" in text
+
+
+def test_地图输入只带严重矛盾():
+    text = map_input([], [],
+                     contradictions=[
+                         {"id": "C-001", "subject": "甲", "attribute": "兵器", "status": "真矛盾",
+                          "level": "轻微", "reason": "x [S-0001]"},
+                         {"id": "C-002", "subject": "乙", "attribute": "外貌", "status": "真矛盾",
+                          "level": "严重", "reason": "y [S-0002]"},
+                         {"id": "C-003", "subject": "丙", "attribute": "年龄", "status": "合理变化",
+                          "level": "", "reason": "z [S-0003]"}],
+                     gaps=[], ends=[])
+    assert "C-002" in text
+    assert "C-001" not in text and "C-003" not in text
