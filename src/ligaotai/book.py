@@ -35,6 +35,11 @@ DEFAULT_SETTINGS = {
     "threads_max_input_tokens": 600000,  # 归线一次调用的输入上限（按 1 个字符 1 个 token 估，偏保守），超过就分段
     "contradictions_batch_tokens": 30000,  # 矛盾扫描一批的输入上限（按 1 字符 1 token 估）
     "contradictions_max_groups": 2000,     # 候选组超过这个数就按权重截断，其余记进 skipped
+    "contradictions_max_batch_groups": 80,  # 矛盾扫描一批最多这么多组（独立于字符预算）：
+    # 审查实测 2000 个两值小组按字符预算一批能塞进约 327 组，单组输出约 60 token，
+    # 一批就要约 2 万输出 token，容易顶到 max_tokens、且一组格式不对整批都要重试；
+    # 80 组约 5000 输出 token，留足安全余量。真实两本验收书全书最大批才 47 组、14
+    # 组，正常场景不会触顶。
 }
 
 # 进程内一把可重入锁：book.json、实体.json 的「读 → 改 → 写」都在它里面串行。

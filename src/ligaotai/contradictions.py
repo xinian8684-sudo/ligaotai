@@ -58,15 +58,19 @@ def group_text(cid: str, cand: dict, times: dict[str, dict], unit: str) -> str:
     return "\n".join(lines)
 
 
-def batches(cands: list[dict], times: dict[str, dict], unit: str, budget: int) -> list[list[dict]]:
-    """按输入字符数上限切批（按 1 字符 1 token 估，偏保守，同 ②b 的做法）。
-    单个组自己就超预算的，自成一批——不丢任何组。"""
+def batches(cands: list[dict], times: dict[str, dict], unit: str, budget: int,
+            max_groups: int | None = None) -> list[list[dict]]:
+    """按输入字符数上限切批（按 1 字符 1 token 估，偏保守，同 ②b 的做法），
+    另外按 max_groups 限制每批最多多少组（审查建议修6：小组多时字符预算一批能塞
+    进几百组，单组输出约 60 token，几百组的输出+重试成本容易失控，且一组格式不对
+    整批就要重来）。两个上限谁先到就切批。单个组自己就超字符预算的，自成一批——
+    不丢任何组。"""
     out: list[list[dict]] = []
     cur: list[dict] = []
     cost = 0
     for i, c in enumerate(cands):
         n = len(group_text(f"C-{i:03d}", c, times, unit))
-        if cur and cost + n > budget:
+        if cur and (cost + n > budget or (max_groups is not None and len(cur) >= max_groups)):
             out.append(cur)
             cur, cost = [], 0
         cur.append(c)

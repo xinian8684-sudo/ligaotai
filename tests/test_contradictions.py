@@ -47,6 +47,17 @@ def test_单个组超预算也自成一批():
     assert len(got) == 1 and len(got[0]) == 1
 
 
+def test_小组数量多时按组数上限切批_不靠字符预算兜底():
+    """审查建议修6：小组多时字符预算一批可能塞进几百组，输出和重试成本失控。
+    加一个每批组数上限（独立于字符预算），即使字符预算远没到也要切批。"""
+    cands = [{"subject": f"人{i}", "attribute": "兵器", "values": [
+        {"value": "甲", "scenes": [{"id": "S-0001", "quote": "x"}]},
+        {"value": "乙", "scenes": [{"id": "S-0002", "quote": "y"}]}]} for i in range(10)]
+    got = batches(cands, {}, unit="年", budget=100000, max_groups=3)
+    assert [len(b) for b in got] == [3, 3, 3, 1]
+    assert sum(len(b) for b in got) == 10, "一个组都不能丢"
+
+
 import pytest
 
 from ligaotai.contradictions import check_output, clean_output
@@ -146,6 +157,19 @@ from ligaotai.contradictions import build_result
 def _cand(subject, attribute, values):
     return {"subject": subject, "attribute": attribute, "merged": 0,
             "values": [{"value": v, "scenes": [{"id": s, "quote": "q"}]} for v, s in values]}
+
+
+# --- 审查建议修9：「宁可多报」的两处兜底原来没有测试守住（变异测试全部存活），
+# 补测试并做同样的变异确认会红，再手动改回来（不用 git checkout/restore）---
+
+def test_build_result没拿到判断的组兜底成无法判断():
+    """judged 缺下标（这一批调用失败）时，build_result 要按宁可多报兜底成
+    「无法判断」，不能悄悄当「合理变化」处理漏掉真矛盾。"""
+    res = build_result(
+        [_cand("甲", "兵器", [("v", "S-0001"), ("w", "S-0002")])],
+        {}, {}, {"next_id": 1, "groups": []}, stats={})
+    assert res["groups"][0]["status"] == "无法判断"
+    assert res["groups"][0]["reason"]
 
 
 def test_编号取next_id只增不减():

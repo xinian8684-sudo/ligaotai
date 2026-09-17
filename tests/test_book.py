@@ -111,3 +111,9 @@ def test_默认设置有矛盾扫描的两个上限():
     from ligaotai.book import DEFAULT_SETTINGS
     assert DEFAULT_SETTINGS["contradictions_batch_tokens"] == 30000
     assert DEFAULT_SETTINGS["contradictions_max_groups"] == 2000
+
+
+def test_默认设置有矛盾扫描的每批组数上限():
+    """审查建议修6：小组多时按字符预算一批能塞进几百组，加一个独立的组数上限。"""
+    from ligaotai.book import DEFAULT_SETTINGS
+    assert DEFAULT_SETTINGS["contradictions_max_batch_groups"] == 80
