@@ -47,7 +47,7 @@ GAPS_ARGS = {"world": "w", "threads": "t", "refs": "r"}
 
 def test_caller_caches(book):
     c = client(book)
-    caller = Caller(book, c, lambda *a: None)
+    caller = Caller(book, c, lambda *a: None, cache_path=book.threads_cache_path)
 
     async def go():
         caller.plan(2)
@@ -59,22 +59,22 @@ def test_caller_caches(book):
     assert a == b == {"gaps": []}
     assert c.usage.calls == 1 and (caller.done, caller.total) == (2, 2)
     assert len(json.loads(book.threads_cache_path.read_text(encoding="utf-8"))) == 1
-    again = Caller(book, client(book), lambda *a: None)
+    again = Caller(book, client(book), lambda *a: None, cache_path=book.threads_cache_path)
     assert asyncio.run(again.call("threads_gaps", GAPS_ARGS, lambda d: [], "gaps-x")) == {"gaps": []}
     assert again.client.usage.calls == 0
 
 
 def test_caller_records_failure_and_raises_fatal(book):
-    caller = Caller(book, client(book, gaps=lambda m: LLMError("坏了")), lambda *a: None)
+    caller = Caller(book, client(book, gaps=lambda m: LLMError("坏了")), lambda *a: None, cache_path=book.threads_cache_path)
     assert asyncio.run(caller.call("threads_gaps", GAPS_ARGS, lambda d: [], "gaps-x")) is None
     assert caller.failed == [{"call": "gaps-x", "error": "坏了"}]
-    fatal = Caller(book, client(book, gaps=lambda m: FatalLLMError("欠费")), lambda *a: None)
+    fatal = Caller(book, client(book, gaps=lambda m: FatalLLMError("欠费")), lambda *a: None, cache_path=book.threads_cache_path)
     with pytest.raises(FatalLLMError):
         asyncio.run(fatal.call("threads_gaps", GAPS_ARGS, lambda d: [], "gaps-x"))
 
 
 def test_caller_records_unresolved(book):
-    caller = Caller(book, client(book), lambda *a: None)
+    caller = Caller(book, client(book), lambda *a: None, cache_path=book.threads_cache_path)
     asyncio.run(caller.call("threads_gaps", GAPS_ARGS, lambda d: ["还是不对"], "gaps-x"))
     assert caller.unresolved == [{"call": "gaps-x", "problems": ["还是不对"]}]
     assert caller.client.usage.calls == 3
@@ -87,7 +87,7 @@ def test_caller_progress_is_a_pause_point(book):
         if done >= 1:
             raise JobCancelled("已暂停")
 
-    caller = Caller(book, client(book), progress)
+    caller = Caller(book, client(book), progress, cache_path=book.threads_cache_path)
     with pytest.raises(JobCancelled):
         asyncio.run(caller.call("threads_gaps", GAPS_ARGS, lambda d: [], "gaps-x"))
     assert book.threads_cache_path.exists()  # 暂停前做完的调用已经进了缓存
@@ -97,17 +97,17 @@ def test_caller_passes_score_to_chat_json(book):
     """score 原样转给 chat_json：重试用尽时按分数挑，不按问题条数挑（条数都是 1，按条数会挑最后一次）。"""
     replies = ['{"gaps": [1]}', '{"gaps": []}', '{"gaps": [1, 2]}']
     c = LLMClient(AppConfig(), FakeBackend(replies=replies), log_dir=book.logs_dir)
-    caller = Caller(book, c, lambda *a: None)
+    caller = Caller(book, c, lambda *a: None, cache_path=book.threads_cache_path)
     got = asyncio.run(caller.call("threads_gaps", GAPS_ARGS, lambda d: ["不对"], "gaps-x", score=lambda d: len(d["gaps"])))
     assert got == {"gaps": []} and c.usage.calls == 3
 
 
 def test_caller_clean_result_is_returned(book):
-    caller = Caller(book, client(book), lambda *a: None)
+    caller = Caller(book, client(book), lambda *a: None, cache_path=book.threads_cache_path)
     got = asyncio.run(caller.call("threads_gaps", GAPS_ARGS, lambda d: [], "gaps-x", clean=lambda d: ("清过", d)))
     assert got == ("清过", {"gaps": []})
     # 缓存里存的是模型输出，不是清理结果：命中缓存时照样现清一遍
-    again = Caller(book, client(book), lambda *a: None)
+    again = Caller(book, client(book), lambda *a: None, cache_path=book.threads_cache_path)
     assert asyncio.run(again.call("threads_gaps", GAPS_ARGS, lambda d: [], "gaps-x", clean=lambda d: d["gaps"])) == []
     assert again.client.usage.calls == 0
 
@@ -121,13 +121,13 @@ def test_caller_check_or_score_error_is_a_failure(book, where):
 
     check = boom if where == "check" else (lambda d: ["不对"])
     score = boom if where == "score" else None
-    caller = Caller(book, client(book), lambda *a: None)
+    caller = Caller(book, client(book), lambda *a: None, cache_path=book.threads_cache_path)
     assert asyncio.run(caller.call("threads_gaps", GAPS_ARGS, check, "gaps-x", score=score)) is None
     assert caller.failed == [{"call": "gaps-x", "error": "检查或清理出错：ValueError: 大整数"}]
     assert caller.done == 1 and not caller.unresolved
     path = book.threads_cache_path
     assert not path.exists() or json.loads(path.read_text(encoding="utf-8")) == {}  # 没写进缓存
-    again = Caller(book, client(book), lambda *a: None)
+    again = Caller(book, client(book), lambda *a: None, cache_path=book.threads_cache_path)
     assert asyncio.run(again.call("threads_gaps", GAPS_ARGS, lambda d: [], "gaps-x")) == {"gaps": []}
     assert again.client.usage.calls == 1
 
@@ -142,20 +142,20 @@ def test_caller_clean_error_drops_cache_entry(book):
         return json.loads(book.threads_cache_path.read_text(encoding="utf-8"))
 
     # 没命中缓存：调了模型、写了缓存，清理出错后删掉
-    caller = Caller(book, client(book), lambda *a: None)
+    caller = Caller(book, client(book), lambda *a: None, cache_path=book.threads_cache_path)
     assert asyncio.run(caller.call("threads_gaps", GAPS_ARGS, lambda d: [], "gaps-x", clean=boom)) is None
     assert caller.failed == [{"call": "gaps-x", "error": "检查或清理出错：ValueError: 清不动"}]
     assert caller.done == 1 and not caller.unresolved and cache() == {}
 
     # 命中缓存（先前存下的）但清理出错：也删掉，不把坏结果钉死在缓存里
-    first = Caller(book, client(book), lambda *a: None)
+    first = Caller(book, client(book), lambda *a: None, cache_path=book.threads_cache_path)
     asyncio.run(first.call("threads_gaps", GAPS_ARGS, lambda d: [], "gaps-x"))
     assert len(cache()) == 1
-    hit = Caller(book, client(book), lambda *a: None)
+    hit = Caller(book, client(book), lambda *a: None, cache_path=book.threads_cache_path)
     assert asyncio.run(hit.call("threads_gaps", GAPS_ARGS, lambda d: [], "gaps-x", clean=boom)) is None
     assert hit.client.usage.calls == 0 and len(hit.failed) == 1 and cache() == {}
 
-    again = Caller(book, client(book), lambda *a: None)
+    again = Caller(book, client(book), lambda *a: None, cache_path=book.threads_cache_path)
     assert asyncio.run(again.call("threads_gaps", GAPS_ARGS, lambda d: [], "gaps-x", clean=lambda d: d["gaps"])) == []
     assert again.client.usage.calls == 1 and len(cache()) == 1
 
@@ -170,7 +170,7 @@ def test_caller_does_not_swallow_fatal_or_cancel(book, exc):
         raise err
 
     for kw in ({"check": boom}, {"clean": boom}, {"usable": boom}):
-        caller = Caller(book, client(book), lambda *a: None)
+        caller = Caller(book, client(book), lambda *a: None, cache_path=book.threads_cache_path)
         check = kw.get("check", lambda d: [])
         with pytest.raises(type(err)):
             asyncio.run(
@@ -185,13 +185,13 @@ def test_caller_usable_false_drops_cache_and_marks_failed(book):
     def cache():
         return json.loads(book.threads_cache_path.read_text(encoding="utf-8"))
 
-    caller = Caller(book, client(book), lambda *a: None)
+    caller = Caller(book, client(book), lambda *a: None, cache_path=book.threads_cache_path)
     got = asyncio.run(caller.call("threads_gaps", GAPS_ARGS, lambda d: [], "gaps-x", usable=lambda r: False))
     assert got is None
     assert caller.failed == [{"call": "gaps-x", "error": "模型回复没法用（重试后仍然没有可用的结果）"}]
     assert caller.done == 1 and not caller.unresolved and cache() == {}
 
-    again = Caller(book, client(book), lambda *a: None)
+    again = Caller(book, client(book), lambda *a: None, cache_path=book.threads_cache_path)
     got2 = asyncio.run(again.call("threads_gaps", GAPS_ARGS, lambda d: [], "gaps-x", usable=lambda r: True))
     assert got2 == {"gaps": []} and again.client.usage.calls == 1 and len(cache()) == 1
 
@@ -200,7 +200,7 @@ def test_caller_usable_error_is_a_failure(book):
     def boom(r):
         raise ValueError("坏了")
 
-    caller = Caller(book, client(book), lambda *a: None)
+    caller = Caller(book, client(book), lambda *a: None, cache_path=book.threads_cache_path)
     assert asyncio.run(caller.call("threads_gaps", GAPS_ARGS, lambda d: [], "gaps-x", usable=boom)) is None
     assert caller.failed == [{"call": "gaps-x", "error": "检查或清理出错：ValueError: 坏了"}]
     assert caller.done == 1 and not caller.unresolved
@@ -212,7 +212,7 @@ def test_caller_usable_error_is_a_failure(book):
 
 def worlds_of(book, items, known=(), unit="", budget=10**6, **handlers):
     c = client(book, **handlers)
-    caller = Caller(book, c, lambda *a: None)
+    caller = Caller(book, c, lambda *a: None, cache_path=book.threads_cache_path)
     got = asyncio.run(stage_worlds(caller, list(items.values()), list(known), unit, budget))
     return got, c, caller
 
@@ -308,7 +308,7 @@ def test_stage_worlds_nothing_free(book):
 
 def lines_of(book, world, items, locked=(), budget=10**6, **handlers):
     c = client(book, **handlers)
-    caller = Caller(book, c, lambda *a: None)
+    caller = Caller(book, c, lambda *a: None, cache_path=book.threads_cache_path)
     return asyncio.run(stage_lines(caller, world, items, list(locked), budget)), c, caller
 
 
@@ -413,13 +413,13 @@ def test_stage_lines_main_param_marks_locked_thread_if_present(book):
     world = WorldDraft("W-01", "人间", scenes=["S-0001"])
 
     c = client(book)
-    caller = Caller(book, c, lambda *a: None)
+    caller = Caller(book, c, lambda *a: None, cache_path=book.threads_cache_path)
     asyncio.run(stage_lines(caller, world, items, locked, 10**6, main="L-003"))
     user = users(c, "划分支线")[0]
     assert "- L-003 旧线（主线）：旧说明" in user
 
     c2 = client(book)
-    caller2 = Caller(book, c2, lambda *a: None)
+    caller2 = Caller(book, c2, lambda *a: None, cache_path=book.threads_cache_path)
     asyncio.run(stage_lines(caller2, world, items, locked, 10**6, main="L-404"))
     user2 = users(c2, "划分支线")[0]
     assert "（主线）" not in user2
@@ -435,7 +435,7 @@ def test_stage_lines_chunk_marks_new_main_thread(book):
     items = items_of("S-0001", "S-0002")
     world = WorldDraft("W-01", "人间", scenes=list(items))
     c = client(book, lines=reply)
-    caller = Caller(book, c, lambda *a: None)
+    caller = Caller(book, c, lambda *a: None, cache_path=book.threads_cache_path)
     res = asyncio.run(stage_lines(caller, world, items, [], 20))
     assert c.usage.calls == 2
     assert "- W-01#1 甲（主线）" in users(c, "划分支线")[1]
@@ -454,7 +454,7 @@ def test_stage_lines_held_conflict_retries_then_dedupes(book):
     items = items_of("S-0001", "S-0002")
     world = WorldDraft("W-01", "人间", scenes=list(items))
     c = client(book, lines=reply)
-    caller = Caller(book, c, lambda *a: None)
+    caller = Caller(book, c, lambda *a: None, cache_path=book.threads_cache_path)
     res = asyncio.run(stage_lines(caller, world, items, [], 20))
     assert c.usage.calls == 4
     assert [u["call"] for u in caller.unresolved] == ["lines-W-01-2"]
@@ -468,7 +468,7 @@ def test_stage_lines_names_conflict_retries_then_merges(book):
     items = items_of("S-0001", "S-0002")
     world = WorldDraft("W-01", "人间", scenes=list(items))
     c = client(book)
-    caller = Caller(book, c, lambda *a: None)
+    caller = Caller(book, c, lambda *a: None, cache_path=book.threads_cache_path)
     res = asyncio.run(stage_lines(caller, world, items, [], 20))
     assert c.usage.calls == 4
     assert [(t.key, sorted(t.scenes)) for t in res.threads] == [("W-01#1", ["S-0001", "S-0002"])]
@@ -487,7 +487,7 @@ def test_stage_lines_require_main_only_first_chunk(book):
     items = items_of("S-0001", "S-0002")
     world = WorldDraft("W-01", "人间", scenes=list(items))
     c = client(book, lines=reply)
-    caller = Caller(book, c, lambda *a: None)
+    caller = Caller(book, c, lambda *a: None, cache_path=book.threads_cache_path)
     asyncio.run(stage_lines(caller, world, items, [], 20))
     assert c.usage.calls == 2 and not caller.unresolved
 
@@ -503,7 +503,7 @@ def test_stage_lines_require_main_still_needed_after_first_chunk_fails(book):
     items = items_of("S-0001", "S-0002")
     world = WorldDraft("W-01", "人间", scenes=list(items))
     c = client(book, lines=reply)
-    caller = Caller(book, c, lambda *a: None)
+    caller = Caller(book, c, lambda *a: None, cache_path=book.threads_cache_path)
     asyncio.run(stage_lines(caller, world, items, [], 20))
     assert [u["call"] for u in caller.unresolved] == ["lines-W-01-2"]
 
@@ -522,7 +522,7 @@ def order_items():
 
 def order_of(book, scenes, **handlers):
     c = client(book, **handlers)
-    caller = Caller(book, c, lambda *a: None)
+    caller = Caller(book, c, lambda *a: None, cache_path=book.threads_cache_path)
     t = ThreadDraft("W-01#1", "W-01", "主线", "说明", scenes=list(scenes))
     missing = asyncio.run(stage_order(caller, t, order_items(), "年"))
     return t, missing, c
@@ -566,14 +566,14 @@ def test_stage_order_failed_falls_back_to_file_order(book):
 def test_stage_order_unusable_reply_is_not_cached_and_rerun_retries(book):
     """排序回复没法用（order 不是列表）：不钉死缓存，换成正常回复重跑会重新调模型、排出正确结果。"""
     c1 = client(book, order=lambda m: json.dumps({"order": "乱写"}))
-    caller1 = Caller(book, c1, lambda *a: None)
+    caller1 = Caller(book, c1, lambda *a: None, cache_path=book.threads_cache_path)
     t1 = ThreadDraft("W-01#1", "W-01", "主线", "说明", scenes=["S-0001", "S-0002", "S-0003"])
     asyncio.run(stage_order(caller1, t1, order_items(), "年"))
     assert t1.order_failed is True and c1.usage.calls == 3
     assert json.loads(book.threads_cache_path.read_text(encoding="utf-8")) == {}
 
     c2 = client(book)
-    caller2 = Caller(book, c2, lambda *a: None)
+    caller2 = Caller(book, c2, lambda *a: None, cache_path=book.threads_cache_path)
     t2 = ThreadDraft("W-01#1", "W-01", "主线", "说明", scenes=["S-0001", "S-0002", "S-0003"])
     asyncio.run(stage_order(caller2, t2, order_items(), "年"))
     assert t2.order_failed is False and c2.usage.calls == 1
@@ -590,7 +590,7 @@ def test_stage_order_unusable_reply_marks_failed_and_records_caller_failure(book
     """回复的 order 不是列表（3 次都这样）：跟调用直接失败不同路——这次是「回复解析出来了，
     但清理判定没法用」，除了标 order_failed，还要往 caller.failed 记一条，方便作者在结果里看到。"""
     c = client(book, order=lambda m: json.dumps({"order": "乱写"}))
-    caller = Caller(book, c, lambda *a: None)
+    caller = Caller(book, c, lambda *a: None, cache_path=book.threads_cache_path)
     t = ThreadDraft("W-01#1", "W-01", "主线", "说明", scenes=["S-0001", "S-0002", "S-0003"])
     missing = asyncio.run(stage_order(caller, t, order_items(), "年"))
     assert t.order_failed is True
@@ -657,7 +657,7 @@ def test_num_formats_finite_numbers_with_g():
 
 def align_of(book, threads, main, budget=10**6, **handlers):
     c = client(book, **handlers)
-    caller = Caller(book, c, lambda *a: None)
+    caller = Caller(book, c, lambda *a: None, cache_path=book.threads_cache_path)
     items = items_of("S-0001", "S-0002", "S-0003")
     return asyncio.run(stage_align(caller, threads, main, items, "年", budget)), c, caller
 
@@ -715,7 +715,7 @@ def gaps_of(book, refs, threads, budget=10**6, **handlers):
     for sid, rs in refs.items():
         items[sid].refs = rs
     c = client(book, **handlers)
-    caller = Caller(book, c, lambda *a: None)
+    caller = Caller(book, c, lambda *a: None, cache_path=book.threads_cache_path)
     got = asyncio.run(stage_gaps(caller, "W-01", "人间", threads, list(items), items, budget))
     return got, c, caller
 

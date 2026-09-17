@@ -50,14 +50,15 @@ class Caller:
         client: LLMClient,
         progress: Progress,
         *,
-        cache_path: Path | None = None,
+        cache_path: Path,
         tag_prefix: str = "threads",
     ):
         self.book = book
         self.client = client
         self.progress = progress
-        # 不传就落回归线自己的缓存文件 / tag 前缀，归线现有的调用方式照样能用。
-        self.cache_path = cache_path if cache_path is not None else book.threads_cache_path
+        # 必须显式传：忘传很容易变成「别的步骤的 Caller 悄悄读写了归线自己的缓存文件」
+        # （归线缓存是真花过钱的结果，被误清空没法找补）。
+        self.cache_path = cache_path
         self.tag_prefix = tag_prefix
         self.cfg = cache_config(client, "synth")
         self.cache = load_cache(self.cache_path)
