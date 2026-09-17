@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from pathlib import Path
 
 from .book import Book
@@ -99,3 +100,30 @@ def load_index(book: Book) -> dict:
 def write_index(book: Book, data: dict) -> None:
     book.archive_dir.mkdir(parents=True, exist_ok=True)
     write_json(book.archive_index_path, data)
+
+
+SCENE_REF = re.compile(r"\[(S-\d{4}(?:,S-\d{4})*)\]")
+
+
+def refs_in(text: str) -> list[str]:
+    """抓出正文里所有场景引用编号，按出现顺序。"""
+    out = []
+    for m in SCENE_REF.finditer(text or ""):
+        out.extend(m.group(1).split(","))
+    return out
+
+
+def check_archive(md: str, allowed: set[str], required_headings: list[str]) -> list[str]:
+    """档案（支线档案 / 世界设定集 / 全书地图共用）的检查，返回要反馈给模型的问题（空列表 = 没问题）。
+    引用格式是四件产出共同的硬规则（spec 3.1）：编不出场景编号的结论不许写。"""
+    problems = []
+    missing = [h for h in required_headings if f"## {h}" not in (md or "")]
+    if missing:
+        problems.append("缺这几个小节：" + "、".join(missing))
+    refs = refs_in(md)
+    if not refs:
+        problems.append("正文里一个场景编号都没有，每句结论都要带 [S-0003] 这样的编号")
+    bad = sorted({r for r in refs if r not in allowed})
+    if bad:
+        problems.append("这些编号不属于这份档案的范围，不许写：" + "、".join(bad[:10]))
+    return problems

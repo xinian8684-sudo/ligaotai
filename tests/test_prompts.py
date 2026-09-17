@@ -193,6 +193,17 @@ def _cards_text() -> str:
     return (PROMPTS_DIR / "cards.md").read_text(encoding="utf-8")
 
 
+def test_档案提示词渲染无残留变量():
+    """archive_thread / archive_world 只有一个变量 $body（渲染好的输入正文），
+    模板里给模型看的示例块用的是 L-001 / W-01 这类具体占位符，不是 $ 变量——
+    这里跟一次渲染确认没有 Template 变量残留、也没混进 $ 字面量以外的坑。"""
+    for name in ("archive_thread", "archive_world"):
+        system, user = render(name, body="正文示例 [S-0003]")
+        assert "$" not in system + user
+        assert "而是" not in system
+        assert "正文示例" in user
+
+
 def test_提示词里的受控属性表和代码一致():
     lines = _cards_text().splitlines()
     i = next(n for n, line in enumerate(lines) if "只能从下面这张表里挑一个" in line)
