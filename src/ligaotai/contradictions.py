@@ -6,6 +6,13 @@
 
 from __future__ import annotations
 
+import re
+
+STATUSES = ("真矛盾", "合理变化", "无法判断")
+LEVELS = ("严重", "中等", "轻微")
+CATEGORIES = ("人物", "设定", "时间", "称谓")
+_SCENE_REF = re.compile(r"\[S-\d{4}(?:,S-\d{4})*\]")
+
 
 def scene_times(threads: list[dict]) -> dict[str, dict]:
     """每个场景的全局故事时间 = 这条线的 offset + 线内时间。没估过的 t 给 None。"""
@@ -63,3 +70,58 @@ def batches(cands: list[dict], times: dict[str, dict], unit: str, budget: int) -
     if cur:
         out.append(cur)
     return out
+
+
+def check_output(data, ids: set[str]) -> list[str]:
+    """模型输出的检查，返回要反馈给模型的问题（空列表 = 没问题）。"""
+    if not isinstance(data, dict) or not isinstance(data.get("groups"), list):
+        return ["输出要是 {\"groups\": [...]} 的形状"]
+    problems = []
+    got = [g for g in data["groups"] if isinstance(g, dict)]
+    seen = {g.get("id") for g in got}
+    missing = sorted(ids - seen)
+    extra = sorted(x for x in seen - ids if x)
+    if missing:
+        problems.append("这些编号没答：" + "、".join(missing[:10]))
+    if extra:
+        problems.append("这些编号不在我给你的列表里：" + "、".join(extra[:10]))
+    for g in got:
+        gid = g.get("id", "?")
+        if g.get("status") not in STATUSES:
+            problems.append(f"{gid} 的 status 只能是：" + " / ".join(STATUSES))
+        if g.get("status") == "真矛盾" and g.get("level") not in LEVELS:
+            problems.append(f"{gid} 判了真矛盾就要给 level：" + " / ".join(LEVELS))
+        if g.get("category") not in CATEGORIES:
+            problems.append(f"{gid} 的 category 只能是：" + " / ".join(CATEGORIES))
+        if not _SCENE_REF.search(g.get("reason") or ""):
+            problems.append(f"{gid} 的 reason 里要带场景编号，写成 [S-0014] 这样")
+    return problems[:8]
+
+
+def clean_output(data, ids: set[str]) -> dict[str, dict]:
+    """整理成 {编号: 判断}。编造的编号丢掉；模型没答的按「宁可多报」兜底成「无法判断」。"""
+    out: dict[str, dict] = {}
+    for g in (data or {}).get("groups") or []:
+        gid = g.get("id")
+        if not isinstance(g, dict) or gid not in ids or gid in out:
+            continue
+        status = g.get("status") if g.get("status") in STATUSES else "无法判断"
+        level = g.get("level") if g.get("level") in LEVELS else ""
+        out[gid] = {
+            "status": status,
+            "level": level if status == "真矛盾" else "",
+            "category": g.get("category") if g.get("category") in CATEGORIES else "设定",
+            "reason": (g.get("reason") or "").strip(),
+        }
+    for gid in sorted(ids - set(out)):
+        out[gid] = {"status": "无法判断", "level": "", "category": "设定",
+                    "reason": "模型没有给出判断，按宁可多报保留，请人工看一眼"}
+    return out
+
+
+def render_values(cands: list[dict], start: int, times: dict[str, dict], unit: str) -> tuple[str, dict[str, dict]]:
+    """把一批候选组渲染成提示词的 $groups，同时返回 {本批编号: 候选组}。
+    编号在这一批里从 start 开始连号，落盘时再换成 矛盾.json 的正式编号。"""
+    numbered = {f"C-{start + i:03d}": c for i, c in enumerate(cands)}
+    text = "\n\n".join(group_text(cid, c, times, unit) for cid, c in numbered.items())
+    return text, numbered

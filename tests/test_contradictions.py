@@ -45,3 +45,54 @@ def test_单个组超预算也自成一批():
         {"value": "w", "scenes": [{"id": "S-0002", "quote": "y" * 5000}]}]}]
     got = batches(cands, {}, unit="年", budget=100)
     assert len(got) == 1 and len(got[0]) == 1
+
+
+import pytest
+
+from ligaotai.contradictions import check_output, clean_output
+
+
+def _out(**kw):
+    base = {"id": "C-001", "status": "真矛盾", "level": "严重",
+            "category": "人物", "reason": "两处写的不是一件兵器 [S-0014][S-0207]"}
+    base.update(kw)
+    return {"groups": [base]}
+
+
+def test_输出覆盖不全要报问题():
+    assert check_output(_out(), {"C-001", "C-002"}) != []
+
+
+def test_多出来的编号要报问题():
+    assert check_output(_out(), set()) != []
+
+
+def test_status不在三值里要报问题():
+    assert check_output(_out(status="也许"), {"C-001"}) != []
+
+
+def test_真矛盾没给严重度要报问题():
+    assert check_output(_out(level=""), {"C-001"}) != []
+
+
+def test_合理变化的严重度留空是对的():
+    assert check_output(_out(status="合理变化", level=""), {"C-001"}) == []
+
+
+def test_reason不带场景编号要报问题():
+    assert check_output(_out(reason="就是不一样"), {"C-001"}) != []
+
+
+def test_正常输出没问题():
+    assert check_output(_out(), {"C-001"}) == []
+
+
+def test_clean丢掉编造的编号并给漏掉的兜底():
+    data = {"groups": [
+        {"id": "C-001", "status": "真矛盾", "level": "严重", "category": "人物", "reason": "x [S-0014]"},
+        {"id": "C-999", "status": "真矛盾", "level": "严重", "category": "人物", "reason": "y [S-0001]"},
+    ]}
+    got = clean_output(data, {"C-001", "C-002"})
+    assert set(got) == {"C-001", "C-002"}
+    assert got["C-002"]["status"] == "无法判断", "模型没答的按宁可多报兜底"
+    assert got["C-002"]["reason"]
