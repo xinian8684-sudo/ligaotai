@@ -53,3 +53,26 @@ def test_index不存在时给空壳(tmp_path):
     book = Book(tmp_path)
     book.root.mkdir(exist_ok=True)
     assert load_index(book) == {"threads": {}, "worlds": {}, "map": {}}
+
+
+def test_index文件JSON坏了当空壳处理不抛异常(tmp_path, caplog):
+    from ligaotai.book import Book
+
+    book = Book(tmp_path)
+    book.root.mkdir(exist_ok=True)
+    book.archive_index_path.parent.mkdir(parents=True, exist_ok=True)
+    book.archive_index_path.write_text("{坏掉的 json", encoding="utf-8")
+    with caplog.at_level("WARNING"):
+        assert load_index(book) == {"threads": {}, "worlds": {}, "map": {}}
+    assert any("index" in r.message or "档案" in r.message for r in caplog.records)
+
+
+def test_index字段类型不对当空壳处理不抛异常(tmp_path, caplog):
+    from ligaotai.book import Book
+
+    book = Book(tmp_path)
+    book.root.mkdir(exist_ok=True)
+    write_index(book, {"threads": ["不是字典"], "worlds": {"W-01": {"outdated": False}}, "map": {}})
+    with caplog.at_level("WARNING"):
+        assert load_index(book) == {"threads": {}, "worlds": {}, "map": {}}
+    assert any("index" in r.message or "档案" in r.message for r in caplog.records)

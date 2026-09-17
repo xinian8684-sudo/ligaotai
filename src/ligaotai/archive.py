@@ -11,12 +11,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from pathlib import Path
 
 from .book import Book
 from .fsutil import read_json, write_json
 
 EMPTY_INDEX = {"threads": {}, "worlds": {}, "map": {}}
+
+log = logging.getLogger(__name__)
 
 
 def _digest(*parts) -> str:
@@ -73,9 +76,21 @@ def reconcile(index: dict, thread_ids: set[str], world_ids: set[str]) -> list[st
 
 
 def load_index(book: Book) -> dict:
-    data = read_json(book.archive_index_path, None)
-    if not isinstance(data, dict):
+    """index 只是省钱用的记录：文件 JSON 坏了、或者字段类型对不上，都当空壳处理——
+    最多是多花点钱重跑，不该让步骤 7 直接崩掉（作者手改、同步冲突都可能产生坏文件）。"""
+    try:
+        data = read_json(book.archive_index_path, None)
+    except (OSError, ValueError) as e:
+        log.warning("档案 index %s 读取失败（%s），当空壳处理", book.archive_index_path, e)
         return json.loads(json.dumps(EMPTY_INDEX))
+    if not isinstance(data, dict):
+        if data is not None:
+            log.warning("档案 index %s 顶层不是字典，当空壳处理", book.archive_index_path)
+        return json.loads(json.dumps(EMPTY_INDEX))
+    for k in ("threads", "worlds", "map"):
+        if k in data and not isinstance(data[k], dict):
+            log.warning("档案 index %s 字段 %s 类型不对，当空壳处理", book.archive_index_path, k)
+            return json.loads(json.dumps(EMPTY_INDEX))
     for k, empty in (("threads", {}), ("worlds", {}), ("map", {})):
         data.setdefault(k, json.loads(json.dumps(empty)))
     return data
