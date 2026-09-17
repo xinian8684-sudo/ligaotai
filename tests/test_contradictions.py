@@ -165,3 +165,59 @@ def test_没超上限就原样返回():
     cands = [{"subject": "甲", "attribute": "兵器", "weight": 1, "values": []}]
     kept, skipped = cap(cands, 10)
     assert kept == cands and skipped == []
+
+
+# --- 用真实 facts.py / entities.py 的产出走一遍整条管线，不手捏契约
+# （task08~11 的教训：测试里手捏的候选组结构跟真实 candidates() 产出一旦不一致，
+# 单测全绿也救不了真实数据跑不通）---
+
+from ligaotai.contradictions import render_values
+from ligaotai.entities import _cmap as _entities_cmap
+from ligaotai.facts import candidates, collect_facts, group_facts
+
+
+def _real_cmap(*entities):
+    return _entities_cmap({"entities": [
+        {"type": t, "names": names, "canonical": canonical}
+        for t, names, canonical in entities
+    ]})
+
+
+def test_真实candidates产出能完整走完渲染批次判断落盘一遍():
+    cmap = _real_cmap(("person", ["孙悟空", "行者"], "孙悟空"))
+    cards = {
+        "S-0014": {"facts": [
+            {"subject": "孙悟空", "attribute": "兵器", "value": "金箍棒", "quote": "取出金箍棒"},
+        ]},
+        "S-0207": {"facts": [
+            {"subject": "行者", "attribute": "兵器", "value": "降妖宝杖", "quote": "使降妖宝杖"},
+        ]},
+    }
+    rows = collect_facts(cards, cmap)
+    cands = candidates(group_facts(rows))
+    assert cands and cands[0]["subject"] == "孙悟空" and cands[0]["attribute"] == "兵器"
+
+    threads = [{"id": "L-001", "offset": 0, "scenes": ["S-0014", "S-0207"],
+                "times": {"S-0014": {"t": 3.0, "conf": "高"}, "S-0207": {"t": 5.0, "conf": "低"}}}]
+    times = scene_times(threads)
+
+    batched = batches(cands, times, unit="年", budget=30000)
+    assert sum(len(b) for b in batched) == len(cands)
+
+    text, numbered = render_values(batched[0], start=1, times=times, unit="年")
+    assert "C-001" in text and "孙悟空" in text and "S-0014" in text
+
+    fake_output = {"groups": [
+        {"id": "C-001", "status": "真矛盾", "level": "严重", "category": "人物",
+         "reason": "同一件兵器写成了两个名字 [S-0014,S-0207]"},
+    ]}
+    ids = set(numbered)
+    assert check_output(fake_output, ids) == []
+    judged_by_id = clean_output(fake_output, ids)
+    # clean_output 按这一批临时编号回，build_result 要的是按 cands 下标的 judged——
+    # 这里下标 0 就对应本批第一个（也是唯一一个）候选组。
+    judged = {0: judged_by_id["C-001"]}
+    result = build_result(batched[0], judged, times, {"next_id": 1, "groups": []}, stats={})
+    assert result["groups"][0]["subject"] == "孙悟空"
+    assert result["groups"][0]["status"] == "真矛盾"
+    assert result["groups"][0]["values"][0]["scenes"][0]["t"] in (3.0, 5.0)
