@@ -1,21 +1,35 @@
 """步骤 7：支线档案 + 世界设定集 + 矛盾扫描 + 全书地图。
 
-这里只实现「输入签名」和「按编号对账」：档案要能单独重跑（作者只改了一条线，
-只重跑那一份，别的不花钱），所以每份档案要记住它的输入长什么样。编排（什么
-时候该重跑哪份档案、写文件、调模型）是步骤 7 的其他部分，不在这个文件里。
+- 输入签名、按编号对账：档案要能单独重跑（作者只改了一条线，只重跑那一份，别的不花钱），
+  所以每份档案在 档案/index.json 里记住它的输入签名。
+- 编排 run_archive：支线档案、世界设定集、矛盾扫描三件并行 → 程序回填 C- 编号 → 全书地图。
+  开跑、跑地图之前、跑完各渲染一遍全部输入比对，跑的途中上游变了，基于旧输入生成的档案标过期，
+  这一步记 outdated 不记 done。
 
 见 docs/superpowers/specs/2026-09-16-ligaotai-plan2c-archives-design.md。
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 import re
+import shutil
+from dataclasses import dataclass, field
+from datetime import datetime
 
-from .book import Book
-from .fsutil import read_json, write_json
+from . import archive_input as ai
+from . import contradictions as cd
+from .book import Book, now_iso
+from .cards import load_cards, pick_error
+from .facts import OTHER, candidates, collect_facts, group_facts
+from .fsutil import atomic_write_text, read_json, write_json
+from .llm import LLMClient
+from .llm_caller import Caller, Progress, _noop
+from .scenes import read_scene, scene_path
+from .threads_input import name_map
 
 EMPTY_INDEX = {"threads": {}, "worlds": {}, "map": {}}
 
@@ -95,6 +109,15 @@ def load_index(book: Book) -> dict:
             return json.loads(json.dumps(EMPTY_INDEX))
     for k, empty in (("threads", {}), ("worlds", {}), ("map", {})):
         data.setdefault(k, json.loads(json.dumps(empty)))
+    # 条目级别也兜底：{"threads": {"L-001": "x"}} 这种，丢掉坏条目（当没生成过，重跑一份），
+    # 不然 reconcile / 编排给它设 outdated 时会抛 TypeError（C 组审查建议修 3）。
+    for k in ("threads", "worlds"):
+        bad = [oid for oid, e in data[k].items() if not isinstance(e, dict)]
+        for oid in bad:
+            log.warning("档案 index %s 里 %s/%s 不是字典，丢掉", book.archive_index_path, k, oid)
+            del data[k][oid]
+    if "contradictions" in data and not isinstance(data["contradictions"], dict):
+        del data["contradictions"]
     return data
 
 
@@ -153,3 +176,424 @@ def backfill_refs(md: str, groups: list[dict]) -> str:
                 line = line.replace(_MULTI, f"（多个说法，见矛盾 {gid}）")
         out.append(line)
     return "".join(out)
+
+
+# --------------------------------------------------------------------------------------
+# 编排（Task 16/17）
+# --------------------------------------------------------------------------------------
+
+THREAD_HEADINGS = ["来龙去脉", "主要人物", "写到哪", "缺口", "开放的伏笔"]
+MAP_HEADINGS = ["全书概况"]
+_ANY_SCENE = re.compile(r"S-\d{4}")
+_BACKFILLED = re.compile(r"（多个说法，见矛盾 C-\d+）")
+
+
+@dataclass
+class Inputs:
+    """步骤 7 全部模型输入，渲染好的文本。开跑、跑地图前、跑完各算一次，比对它们判断上游变没变。"""
+
+    unit: str
+    threads: list[dict]
+    worlds: list[dict]
+    gaps: list[dict]
+    times: dict[str, dict]
+    thread_text: dict[str, str] = field(default_factory=dict)
+    thread_scope: dict[str, set[str]] = field(default_factory=dict)
+    world_text: dict[str, str] = field(default_factory=dict)
+    world_scope: dict[str, set[str]] = field(default_factory=dict)
+    contra: dict = field(default_factory=dict)  # cands / skipped / batches / stats / sig
+
+    def sigs(self) -> dict:
+        return {
+            "threads": {tid: thread_sig(t) for tid, t in self.thread_text.items()},
+            "worlds": {wid: world_sig(t) for wid, t in self.world_text.items()},
+            "contradictions": self.contra["sig"],
+        }
+
+    def fingerprint(self) -> str:
+        return _digest(self.sigs())
+
+
+def _ids(v) -> list[str]:
+    return [s for s in (v or []) if isinstance(s, str)] if isinstance(v, list) else []
+
+
+def _world_scene_ids(w: dict, threads: list[dict]) -> list[str]:
+    """一个世界的全部块：它名下线里的正文、提纲，加上世界自己挂的设定笔记、提纲（同 threads._world_scenes）。"""
+    ids = [s for t in threads if t.get("world") == w["id"] for s in _ids(t.get("scenes")) + _ids(t.get("outlines"))]
+    ids += _ids(w.get("notes")) + _ids(w.get("outlines"))
+    return list(dict.fromkeys(ids))
+
+
+def _note_text(book: Book, sid: str) -> str:
+    """设定笔记要给模型看**正文原文**（不是卡片摘要），去掉场景文件的头信息。读不了给空串。"""
+    try:
+        return read_scene(scene_path(book, sid)).text.strip()
+    except (OSError, ValueError):
+        return ""
+
+
+def prepare_inputs(book: Book) -> Inputs:
+    """读 世界与支线.json、场景卡、实体.json，渲染出步骤 7 每次调用真正要发给模型的文本。纯本地计算。"""
+    data = read_json(book.threads_path, None)
+    if not isinstance(data, dict):
+        raise ValueError("还没有归线结果（世界与支线.json），先跑归线排序")
+    threads = [t for t in data.get("threads") or [] if isinstance(t, dict) and isinstance(t.get("id"), str) and t["id"]]
+    worlds = [w for w in data.get("worlds") or [] if isinstance(w, dict) and isinstance(w.get("id"), str) and w["id"]]
+    gaps = [g for g in data.get("gaps") or [] if isinstance(g, dict)]
+    unit = data.get("time_unit") or "年"
+    cards = {sid: r["card"] for sid, r in load_cards(book).items() if isinstance(r.get("card"), dict)}
+    cmap = name_map(book)
+    times = cd.scene_times(threads)
+    inp = Inputs(unit, threads, worlds, gaps, times)
+
+    for t in threads:
+        text = ai.thread_input(t, cards, cmap, [g for g in gaps if g.get("thread") == t["id"]], times, unit)
+        inp.thread_text[t["id"]] = text
+        # 缺口「提到于」的场景可能在别的线里；材料里给了模型的编号都算合法引用，不然白白重试
+        inp.thread_scope[t["id"]] = set(_ids(t.get("scenes"))) | set(_ANY_SCENE.findall(text))
+
+    covered: list[str] = []
+    for w in worlds:
+        sids = _world_scene_ids(w, threads)
+        covered += sids
+        rows = collect_facts({s: cards[s] for s in sids if s in cards}, cmap)
+        notes = [{"id": s, "text": _note_text(book, s)} for s in _ids(w.get("notes"))]
+        text = ai.world_input(w, rows, notes, [t for t in threads if t.get("world") == w["id"]])
+        inp.world_text[w["id"]] = text
+        inp.world_scope[w["id"]] = set(sids) | set(_ANY_SCENE.findall(text))
+
+    # 矛盾只比对归进了世界 / 线的块：版本组里的非主版本、没分配的块不参与（否则同一场景的两个版本会被当成矛盾）
+    covered += [s for t in threads for s in _ids(t.get("scenes")) + _ids(t.get("outlines"))]
+    scope = dict.fromkeys(covered)
+    rows = collect_facts({s: cards[s] for s in scope if s in cards}, cmap)
+    grouped = group_facts(rows)
+    st = book.settings()
+    cands, skipped = cd.cap(candidates(grouped), st["contradictions_max_groups"])
+    parts = cd.batches(cands, times, unit, st["contradictions_batch_tokens"], st["contradictions_max_batch_groups"])
+    batches, start = [], 0
+    for part in parts:
+        text, numbered = cd.render_values(part, start, times, unit)
+        batches.append({"start": start, "text": text, "ids": list(numbered)})
+        start += len(part)
+    stats = {
+        "facts": len(rows),
+        "grouped": len(grouped),
+        "dropped_other": sum(1 for r in rows if r.attribute == OTHER),
+        "candidates": len(cands),
+        "merged_by_program": sum(c.get("merged", 0) for c in cands),
+        "sent": len(cands),
+    }
+    sig = _digest("contradictions", unit, [b["text"] for b in batches], skipped, stats)
+    inp.contra = {"cands": cands, "skipped": skipped, "batches": batches, "stats": stats, "sig": sig}
+    return inp
+
+
+def _try_prepare(book: Book) -> Inputs | None:
+    try:
+        return prepare_inputs(book)
+    except Exception as e:  # 跑的途中 世界与支线.json 被改坏了：当「上游变了」处理
+        log.warning("重新读取步骤 7 的输入失败：%s", e)
+        return None
+
+
+def _fresh(entry, sig: str, path) -> bool:
+    """跳过不花钱的三个条件缺一不可：签名一样、文件还在、没被标过期（单独重跑接口会标）。"""
+    return isinstance(entry, dict) and entry.get("sig") == sig and not entry.get("outdated") and path.exists()
+
+
+def _body(d) -> str:
+    return d["body"] if isinstance(d, dict) and isinstance(d.get("body"), str) else ""
+
+
+def _check_body(d, allowed: set[str], headings: list[str]) -> list[str]:
+    if not _body(d).strip():
+        return ['只输出 JSON：{"body": "<Markdown 正文>"}，body 不能是空的']
+    return check_archive(_body(d), allowed, headings)
+
+
+async def _gather(coros) -> list:
+    """并行跑，一个出错**不掐断**别的：作者点暂停时，已经发出去的调用让它跑完进缓存（钱已经花了），
+    各自停在下一个进度检查点，不再开新调用。全部结束后再抛（欠费 / key 失效优先，别被「已暂停」盖住）。"""
+    results = await asyncio.gather(*coros, return_exceptions=True)
+    errors = [r for r in results if isinstance(r, BaseException)]
+    if errors:
+        raise pick_error(BaseExceptionGroup("步骤 7", errors))
+    return results
+
+
+class _Run:
+    def __init__(self, book: Book, caller: Caller, inp: Inputs, index: dict):
+        self.book, self.caller, self.inp, self.index = book, caller, inp, index
+        self.generated: dict[str, list] = {"threads": [], "worlds": []}
+        self.reused: dict[str, list] = {"threads": [], "worlds": []}
+        self.contra_status = ""
+        self.contra_failed = False
+
+    def _save_index(self) -> None:
+        # 每落一份档案就写一次 index：暂停、崩溃后重跑，已经落盘的按签名跳过
+        write_index(self.book, self.index)
+
+    async def archive(self, kind: str, oid: str) -> None:
+        inp, book = self.inp, self.book
+        if kind == "threads":
+            text, sig, prompt = inp.thread_text[oid], thread_sig(inp.thread_text[oid]), "archive_thread"
+            path, rel, scope, headings = (book.thread_archive_dir / f"{oid}.md", f"档案/支线/{oid}.md",
+                                          inp.thread_scope[oid], THREAD_HEADINGS)
+            tag = f"thread/{oid}"
+        else:
+            text, sig, prompt = inp.world_text[oid], world_sig(inp.world_text[oid]), "archive_world"
+            path, rel, scope, headings = (book.world_archive_dir / f"{oid}.md", f"档案/世界/{oid}.md",
+                                          inp.world_scope[oid], [])
+            tag = f"world/{oid}"
+        entry = self.index[kind].get(oid)
+        if _fresh(entry, sig, path):
+            self.reused[kind].append(oid)
+            return
+        self.caller.plan(1)
+        got = await self.caller.call(
+            prompt, {"body": text},
+            check=lambda d: _check_body(d, scope, headings),
+            clean=_body,
+            usable=lambda md: bool((md or "").strip()),
+            tag=tag,
+        )
+        if not got:
+            # 失败：旧文件（如果有）留着给作者看，但标过期；新签名不记，下次一定重跑
+            if isinstance(entry, dict):
+                entry["outdated"] = True
+                self._save_index()
+            return
+        atomic_write_text(path, got)
+        new = {"file": rel, "sig": sig, "outdated": False, "generated": now_iso()}
+        if kind == "threads":
+            t = next(t for t in inp.threads if t["id"] == oid)
+            new = {"file": rel, "sig": sig, "scenes": _ids(t.get("scenes")), "world": t.get("world", ""),
+                   "outdated": False, "generated": new["generated"]}
+        self.index[kind][oid] = new
+        self.generated[kind].append(oid)
+        self._save_index()
+
+    def _read_contradictions(self) -> dict | None:
+        """读上一轮的 矛盾.json。坏了先备份一份再当没有（里面可能有作者的裁决，不能直接盖掉）。"""
+        p = self.book.contradictions_path
+        try:
+            data = read_json(p, None)
+        except (OSError, ValueError):
+            data = False
+        if data is None:
+            return None
+        if not isinstance(data, dict):
+            backup = p.with_name(f"矛盾.损坏备份-{datetime.now():%Y%m%d-%H%M%S}.json")
+            try:
+                shutil.copy2(p, backup)
+                log.warning("矛盾.json 读不了，已备份到 %s，按没有上一轮处理", backup.name)
+            except OSError:
+                pass
+            return None
+        return data
+
+    async def contradictions(self) -> dict:
+        c, index = self.inp.contra, self.index
+        entry = index.get("contradictions")
+        if isinstance(entry, dict) and entry.get("sig") == c["sig"] and not entry.get("failed") \
+                and not entry.get("outdated"):
+            old = self._read_contradictions()
+            if old is not None:
+                self.contra_status = "reused"
+                return old
+        batches = c["batches"]
+        self.caller.plan(len(batches))
+        judged: dict[int, dict] = {}
+        failed: list[int] = []
+
+        async def one(i: int, b: dict) -> None:
+            ids = set(b["ids"])
+            got = await self.caller.call(
+                "contradictions", {"unit": self.inp.unit, "groups": b["text"]},
+                check=lambda d: cd.check_output(d, ids),
+                clean=lambda d: cd.clean_output(d, ids),
+                tag=f"contradictions/{i}",
+            )
+            if got is None:  # 这一批失败：build_result 兜底成「无法判断」，index 记 failed，下次重跑
+                failed.append(i)
+                return
+            # judged 的键是 cands 的下标；按批内位置对回去，别解析 C-编号里的数字
+            for k, cid in enumerate(b["ids"]):
+                if cid in got:
+                    judged[b["start"] + k] = got[cid]
+
+        await _gather([one(i, b) for i, b in enumerate(batches)])
+        # 上一轮的结果在模型跑完之后才读：跑的途中作者可能改了裁决，别拿开跑时的旧快照盖掉
+        old = self._read_contradictions() or {"next_id": 1, "groups": []}
+        if failed:
+            # 失败批次里的组：上一轮判过、值集合没变的，沿用上一轮的判断（花过钱的结果），
+            # 别让 build_result 兜底成「这一批调用失败」盖掉；index 照样记 failed，下次重跑。
+            prev = {(g.get("subject"), g.get("attribute")): g for g in old.get("groups") or []
+                    if isinstance(g, dict) and g.get("status") in cd.STATUSES}
+            for i in failed:
+                b = batches[i]
+                for k in range(len(b["ids"])):
+                    cand = c["cands"][b["start"] + k]
+                    g = prev.get((cand["subject"], cand["attribute"]))
+                    if g and g.get("values_sig") == cd.values_sig(cand["values"]):
+                        judged[b["start"] + k] = {x: g.get(x, "") for x in ("status", "level", "category", "reason")}
+        result = cd.build_result(c["cands"], judged, self.inp.times, old, c["stats"], c["skipped"])
+        for key in cd.STATUSES:
+            result["stats"][key] = sum(1 for g in result["groups"] if g["status"] == key)
+        write_json(self.book.contradictions_path, result)
+        self.contra_failed = bool(failed)
+        self.contra_status = "generated"
+        index["contradictions"] = {"file": "矛盾.json", "sig": c["sig"], "failed": bool(failed),
+                                   "outdated": False, "generated": now_iso()}
+        self._save_index()
+        return result
+
+    def backfill(self, groups: list[dict]) -> None:
+        """回填 C- 编号。先把上一轮回填过的还原成占位再填：矛盾编号变了不会留下指错的旧编号，
+        重复跑结果不变（地图签名才能稳定）。"""
+        for wid in self.inp.world_text:
+            p = self.book.world_archive_dir / f"{wid}.md"
+            if not p.exists():
+                continue
+            before = p.read_text(encoding="utf-8")
+            after = backfill_refs(_BACKFILLED.sub(_MULTI, before), groups)
+            if after != before:
+                atomic_write_text(p, after)
+
+    def map_blockers(self) -> list[str]:
+        out = []
+        inp, book = self.inp, self.book
+        for tid, text in inp.thread_text.items():
+            if not _fresh(self.index["threads"].get(tid), thread_sig(text), book.thread_archive_dir / f"{tid}.md"):
+                out.append(tid)
+        for wid, text in inp.world_text.items():
+            if not _fresh(self.index["worlds"].get(wid), world_sig(text), book.world_archive_dir / f"{wid}.md"):
+                out.append(wid)
+        if self.contra_failed:
+            out.append("矛盾扫描有批次失败")
+        return out
+
+    async def map(self, contra: dict) -> str:
+        inp, book = self.inp, self.book
+        blockers = self.map_blockers()
+        mid = _try_prepare(book)
+        if mid is None or mid.fingerprint() != inp.fingerprint():
+            blockers.append("跑的途中上游变了")
+        if blockers:
+            # 地图读全部档案：缺一份、或者档案是拿旧输入写的，跑了也是错的，先不花这笔钱
+            self.index["map"]["outdated"] = True
+            self.index["map"]["blocked_by"] = blockers[:20]
+            self._save_index()
+            return "blocked"
+        text = ai.map_input(
+            [book.world_archive_dir / f"{w}.md" for w in inp.world_text],
+            [book.thread_archive_dir / f"{t}.md" for t in inp.thread_text],
+            contra.get("groups") or [], inp.gaps,
+            [{"id": t["id"], "name": t.get("name", ""), "state": (t.get("end") or {}).get("state", ""),
+              "last": (t.get("end") or {}).get("last", "")} for t in inp.threads],
+        )
+        sig = map_sig(text)
+        if _fresh(self.index["map"], sig, book.map_path):
+            return "reused"
+        allowed = set(_ANY_SCENE.findall(text)) | {s for sc in inp.world_scope.values() for s in sc} \
+            | {s for sc in inp.thread_scope.values() for s in sc}
+        self.caller.plan(1)
+        got = await self.caller.call(
+            "map", {"body": text},
+            check=lambda d: _check_body(d, allowed, MAP_HEADINGS),
+            clean=_body,
+            usable=lambda md: bool((md or "").strip()),
+            tag="map",
+        )
+        if not got:
+            self.index["map"]["outdated"] = True
+            self._save_index()
+            return "failed"
+        atomic_write_text(book.map_path, got)
+        self.index["map"] = {"file": "全书地图.md", "sig": sig, "outdated": False, "generated": now_iso()}
+        self._save_index()
+        return "generated"
+
+    def settle(self, end: Inputs | None) -> bool:
+        """跑完：拿跑完时的输入重新比一遍，基于旧输入生成的档案标过期（不删文件）。返回上游是不是变了。"""
+        changed = end is None or end.fingerprint() != self.inp.fingerprint()
+        if end is None:
+            for kind in ("threads", "worlds"):
+                for e in self.index[kind].values():
+                    e["outdated"] = True
+            self.index["map"]["outdated"] = True
+            if isinstance(self.index.get("contradictions"), dict):
+                self.index["contradictions"]["outdated"] = True
+            return True
+        now = end.sigs()
+        reconcile(self.index, set(now["threads"]), set(now["worlds"]))
+        for kind in ("threads", "worlds"):
+            for oid, e in self.index[kind].items():
+                if oid in now[kind] and e.get("sig") != now[kind][oid]:
+                    e["outdated"] = True
+        ce = self.index.get("contradictions")
+        if isinstance(ce, dict) and ce.get("sig") != now["contradictions"]:
+            ce["outdated"] = True
+        # 地图依赖全部档案：有一份当前的档案不是最新，地图也不是
+        stale = [oid for kind in ("threads", "worlds") for oid in now[kind]
+                 if not isinstance(self.index[kind].get(oid), dict) or self.index[kind][oid].get("outdated")]
+        if stale or (isinstance(ce, dict) and ce.get("outdated")):
+            self.index["map"]["outdated"] = True
+        return changed
+
+
+def run_archive(book: Book, client: LLMClient, progress: Progress = _noop) -> dict:
+    """步骤 7 入口。三件并行 → 程序回填 C- 编号 → 全书地图（spec 第 3 节）。"""
+    return asyncio.run(_run_archive(book, client, progress))
+
+
+async def _run_archive(book: Book, client: LLMClient, progress: Progress) -> dict:
+    inp = prepare_inputs(book)
+    index = load_index(book)
+    removed = reconcile(index, set(inp.thread_text), set(inp.world_text))
+    write_index(book, index)
+    # 缓存路径必须是档案自己的：归线缓存是花过钱的结果，prune 时会被清掉
+    caller = Caller(book, client, progress, cache_path=book.archive_cache_path, tag_prefix="archive")
+    run = _Run(book, caller, inp, index)
+    try:
+        _, _, contra = await _gather([
+            _gather([run.archive("threads", tid) for tid in inp.thread_text]),
+            _gather([run.archive("worlds", wid) for wid in inp.world_text]),
+            run.contradictions(),
+        ])
+        # 回填：矛盾跑完才有 C- 编号，设定集是并行写的，这里补（纯文本替换，不花钱），必须在地图之前
+        run.backfill(contra.get("groups") or [])
+        map_status = await run.map(contra)
+    finally:
+        u = client.usage
+        book.add_usage("archive", u.calls, u.prompt_tokens, u.completion_tokens, u.cost(client.cfg))
+
+    input_changed = run.settle(_try_prepare(book))
+    write_index(book, index)
+    caller.prune_cache()
+
+    groups = contra.get("groups") or []
+    incomplete = bool(index["map"].get("outdated")) or run.contra_failed or any(
+        not isinstance(index[k].get(oid), dict) or index[k][oid].get("outdated")
+        for k, texts in (("threads", inp.thread_text), ("worlds", inp.world_text)) for oid in texts)
+    summary = {
+        "threads": len(inp.thread_text),
+        "worlds": len(inp.world_text),
+        "contradictions": len(groups),
+        "严重": sum(1 for g in groups if g.get("status") == "真矛盾" and g.get("level") == "严重"),
+        "skipped": len(contra.get("skipped") or []),
+        "generated": {**run.generated, "contradictions": run.contra_status == "generated",
+                      "map": map_status == "generated"},
+        "reused": {**run.reused, "contradictions": run.contra_status == "reused", "map": map_status == "reused"},
+        "map": map_status,
+        "outdated_removed": removed,
+        "input_changed": input_changed,
+        "calls": client.usage.calls,
+        "cost_usd": round(client.usage.cost(client.cfg), 4),
+        "failed": caller.failed,
+        "unresolved": caller.unresolved,
+    }
+    status = "outdated" if (input_changed or incomplete) else "done"
+    book.set_step("archive", status, summary=summary)
+    return summary
