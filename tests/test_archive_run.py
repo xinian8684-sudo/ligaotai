@@ -513,3 +513,23 @@ def test_线被删了_旧档案标过期不删文件(book_with_threads, fake_cli
     assert (b.thread_archive_dir / "L-002.md").exists()
     assert load_index(b)["threads"]["L-002"]["outdated"] is True
     assert "archive/map" in c2.calls
+
+
+# ---------- DE 审查必须修3：回填对不上的不静默 ----------
+
+
+def test_回填不上的多个说法计数进summary(book_with_threads):
+    """模型把受控属性下的主语写成材料里没有的名字，回填对不上：原样留着，但个数要进 summary。
+    模型写的是别名（行者）时按规范名映射对得上。"""
+    from ligaotai.archive import run_archive
+
+    def world(user):
+        return json.dumps({"body": "# W-01 测试世界\n\n### 兵器\n- **行者**：如意金箍棒 / 降妖宝杖（多个说法）[S-0001,S-0003]\n"
+                                   "\n## 外貌\n- 林清：清瘦 / 胖（多个说法）[S-0001]\n"}, ensure_ascii=False)
+
+    b = book_with_threads
+    c = make_client(b, overrides={"archive/world": world})
+    res = run_archive(b, c)
+    body = (b.world_archive_dir / "W-01.md").read_text(encoding="utf-8")
+    assert "降妖宝杖（多个说法，见矛盾 C-001）" in body
+    assert res["unfilled_multi"] == 1

@@ -52,3 +52,47 @@ def test_回填不花钱也不改别的字():
     md = "## 兵器\n- 孙悟空：金箍棒（多个说法）[S-0014]\n\n## 年龄\n- 林清：十六 [S-0003]\n"
     got = backfill_refs(md, [{"id": "C-007", "subject": "孙悟空", "attribute": "兵器"}])
     assert "## 年龄\n- 林清：十六 [S-0003]" in got
+
+
+# --- DE 审查必须修3：真数据上模型常见的写法都要对得上（规范名是繁体、属性节用 ###、主语加粗、
+# 写的是别名），且同一主语两个属性各自回填自己的编号 ---
+
+_TRAD_GROUPS = [{"id": "C-004", "subject": "孫悟空", "attribute": "兵器"},
+                {"id": "C-005", "subject": "孫悟空", "attribute": "称号"},
+                {"id": "C-009", "subject": "劉雲", "attribute": "官职"}]
+
+
+def test_主语写成简体也能对上繁体规范名():
+    md = "## 兵器\n- 孙悟空：金箍棒 / 宝杖（多个说法）[S-0014]\n\n## 官职\n- 刘云：知县 / 知府（多个说法）[S-0020]\n"
+    got = backfill_refs(md, _TRAD_GROUPS)
+    assert "金箍棒 / 宝杖（多个说法，见矛盾 C-004）" in got
+    assert "知县 / 知府（多个说法，见矛盾 C-009）" in got
+
+
+def test_属性节写成三级标题也能对上():
+    md = "## 设定\n### 兵器\n- 孫悟空：金箍棒 / 宝杖（多个说法）[S-0014]\n"
+    assert "见矛盾 C-004" in backfill_refs(md, _TRAD_GROUPS)
+
+
+def test_主语加粗也能对上():
+    md = "## 兵器\n- **孫悟空**：金箍棒 / 宝杖（多个说法）[S-0014]\n"
+    assert "见矛盾 C-004" in backfill_refs(md, _TRAD_GROUPS)
+
+
+def test_同一主语两个属性各自回填自己的编号():
+    md = ("## 兵器\n- 孙悟空：金箍棒 / 宝杖（多个说法）[S-0014]\n\n"
+          "## 称号\n- 孙悟空：美猴王 / 齐天大圣（多个说法）[S-0015]\n")
+    got = backfill_refs(md, _TRAD_GROUPS)
+    assert "宝杖（多个说法，见矛盾 C-004）" in got
+    assert "齐天大圣（多个说法，见矛盾 C-005）" in got
+
+
+def test_不是受控属性的节标题会切断上一节():
+    md = "## 兵器\n- 孫悟空：金箍棒\n\n## 其他\n- 孫悟空：金箍棒 / 宝杖（多个说法）[S-0014]\n"
+    assert "见矛盾" not in backfill_refs(md, _TRAD_GROUPS), "其他节里的主语不能按上一节的兵器去对"
+
+
+def test_写的是别名时按规范名映射对上():
+    md = "## 兵器\n- 行者：金箍棒 / 宝杖（多个说法）[S-0014]\n"
+    got = backfill_refs(md, _TRAD_GROUPS, aliases={"行者": "孫悟空"})
+    assert "见矛盾 C-004" in got

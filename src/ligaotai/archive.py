@@ -21,10 +21,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from . import archive_input as ai
+from . import hanfold
 from . import contradictions as cd
 from .book import Book, now_iso
 from .cards import load_cards, pick_error
-from .facts import OTHER, candidates, collect_facts, group_facts
+from .facts import OTHER, candidates, collect_facts, group_facts, norm_attr
 from .fsutil import atomic_write_text, read_json, write_json
 from .llm import LLMClient
 from .llm_caller import Caller, Progress, _noop
@@ -156,24 +157,61 @@ def check_archive(md: str, allowed: set[str], required_headings: list[str]) -> l
 _MULTI = "（多个说法）"
 
 
-def backfill_refs(md: str, groups: list[dict]) -> str:
+_HEADING = re.compile(r"^#{2,4}\s+(.+)$")
+_BULLET = re.compile(r"^[-*+]\s+(.+?)\s*[：:]")
+_DECOR = re.compile(r"[*`_\s【】\[\]]+")
+
+
+def _section_attr(title: str) -> str:
+    """节标题 → 受控属性名；不是受控属性（含「其他」和「设定」这类总标题）一律返回空串，
+    切断上一节，免得下面的行按上一节的属性去对。容忍加粗、「设定·兵器」这类前缀、末尾冒号。"""
+    t = _DECOR.sub("", title).rstrip("：:")
+    t = re.split(r"[·：:、/]", t)[-1]
+    a = norm_attr(t)
+    return a if a != OTHER else ""
+
+
+def _subject_key(s: str) -> str:
+    """主语比对键：去掉加粗等装饰和空白，繁体折叠成简体（只用于比对）。"""
+    return hanfold.fold(_DECOR.sub("", s or ""))
+
+
+def backfill_refs(md: str, groups: list[dict], aliases: dict[str, str] | None = None) -> str:
     """把世界设定集里的「（多个说法）」补上对应的矛盾编号。纯文本替换，不花钱（spec 第 5 节）。
 
     设定集和矛盾扫描并行跑，写档案时 C- 编号还不存在，模型固定写「（多个说法）」占位，
     两边都跑完后由这个函数回填。按「这一行的属性节 + 行首的主语」对到 (subject, attribute)；
-    对不上的原样留着。"""
-    by_key = {(g.get("subject"), g.get("attribute")): g.get("id") for g in groups}
+    对不上的原样留着。
+
+    真数据上模型的写法五花八门（DE 审查必须修3，西游记 47 组只对上 24 / 0 / 0 组）：规范名是
+    繁体、模型写成简体；属性节写成 `### 兵器`；主语加粗；写的是别名。所以两边都做繁简折叠
+    （hanfold，只用于比对）、去装饰，属性节认二到四级标题，再用 aliases（{原文名: 规范名}，
+    即实体的规范名映射）把别名映射回规范名。"""
+    by_key = {(_subject_key(g.get("subject")), g.get("attribute")): g.get("id") for g in groups
+              if isinstance(g, dict) and g.get("id")}
+    alias_key: dict[str, str] = {}
+    for name, canon in (aliases or {}).items():
+        k = _subject_key(name)
+        if alias_key.get(k, canon) != canon:
+            alias_key[k] = ""  # 同一个折叠键指向两个规范名：说不清，不用
+        else:
+            alias_key[k] = canon
     attr = ""
     out = []
     for line in (md or "").splitlines(keepends=True):
         stripped = line.strip()
-        if stripped.startswith("## "):
-            attr = stripped[3:].strip()
-        elif _MULTI in line and stripped.startswith("- ") and "：" in line:
-            subject = stripped[2:].split("：", 1)[0].strip()
-            gid = by_key.get((subject, attr))
-            if gid:
-                line = line.replace(_MULTI, f"（多个说法，见矛盾 {gid}）")
+        h = _HEADING.match(stripped)
+        if h:
+            attr = _section_attr(h.group(1))
+        elif _MULTI in line and attr:
+            b = _BULLET.match(stripped)
+            if b:
+                key = _subject_key(b.group(1))
+                gid = by_key.get((key, attr))
+                if not gid and alias_key.get(key):
+                    gid = by_key.get((_subject_key(alias_key[key]), attr))
+                if gid:
+                    line = line.replace(_MULTI, f"（多个说法，见矛盾 {gid}）")
         out.append(line)
     return "".join(out)
 
@@ -202,6 +240,7 @@ class Inputs:
     world_text: dict[str, str] = field(default_factory=dict)
     world_scope: dict[str, set[str]] = field(default_factory=dict)
     contra: dict = field(default_factory=dict)  # cands / skipped / batches / stats / sig
+    aliases: dict[str, str] = field(default_factory=dict)  # {原文名: 规范名}，回填时把别名对回规范名
 
     def sigs(self) -> dict:
         return {
@@ -249,6 +288,9 @@ def prepare_inputs(book: Book) -> Inputs:
     cmap = name_map(book)
     times = cd.scene_times(threads)
     inp = Inputs(unit, threads, worlds, gaps, times)
+    for (_, name), canon in cmap.items():
+        # 同一个叫法在不同类型下指向不同规范名：说不清，记空串，回填时不用它
+        inp.aliases[name] = canon if inp.aliases.get(name, canon) == canon else ""
 
     for t in threads:
         text = ai.thread_input(t, cards, cmap, [g for g in gaps if g.get("thread") == t["id"]], times, unit)
@@ -452,17 +494,21 @@ class _Run:
         self._save_index()
         return result
 
-    def backfill(self, groups: list[dict]) -> None:
+    def backfill(self, groups: list[dict]) -> int:
         """回填 C- 编号。先把上一轮回填过的还原成占位再填：矛盾编号变了不会留下指错的旧编号，
-        重复跑结果不变（地图签名才能稳定）。"""
+        重复跑结果不变（地图签名才能稳定）。返回回填后仍然光秃秃的「（多个说法）」个数——
+        对不上的不静默，进 summary 给作者看（DE 审查必须修3）。"""
+        left = 0
         for wid in self.inp.world_text:
             p = self.book.world_archive_dir / f"{wid}.md"
             if not p.exists():
                 continue
             before = p.read_text(encoding="utf-8")
-            after = backfill_refs(_BACKFILLED.sub(_MULTI, before), groups)
+            after = backfill_refs(_BACKFILLED.sub(_MULTI, before), groups, self.inp.aliases)
+            left += after.count(_MULTI)
             if after != before:
                 atomic_write_text(p, after)
+        return left
 
     def map_blockers(self) -> list[str]:
         out = []
@@ -567,7 +613,7 @@ async def _run_archive(book: Book, client: LLMClient, progress: Progress) -> dic
             run.contradictions(),
         ])
         # 回填：矛盾跑完才有 C- 编号，设定集是并行写的，这里补（纯文本替换，不花钱），必须在地图之前
-        run.backfill(contra.get("groups") or [])
+        unfilled = run.backfill(contra.get("groups") or [])
         map_status = await run.map(contra)
     finally:
         u = client.usage
@@ -587,6 +633,7 @@ async def _run_archive(book: Book, client: LLMClient, progress: Progress) -> dic
         "contradictions": len(groups),
         "严重": sum(1 for g in groups if g.get("status") == "真矛盾" and g.get("level") == "严重"),
         "skipped": len(contra.get("skipped") or []),
+        "unfilled_multi": unfilled,  # 世界设定集里回填不上矛盾编号的「（多个说法）」
         "generated": {**run.generated, "contradictions": run.contra_status == "generated",
                       "map": map_status == "generated"},
         "reused": {**run.reused, "contradictions": run.contra_status == "reused", "map": map_status == "reused"},

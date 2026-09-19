@@ -254,3 +254,13 @@ def test_提示词补了繁简写法不同的措辞_并带四海龙王东海龙�
     system = _contradictions_system()
     assert "繁体" in system and "简体" in system
     assert "四海龍王" in system and "東海龍王" in system, "反例：只差一字就是真不同，不是繁简"
+
+
+# --- DE 审查必须修3：世界设定集回填要按主语对规范名，规范名常是繁体；
+# 提示词不能再叫模型把人名改成简体，属性节标题级别要说清 ---
+
+def test_世界设定集提示词要求人名地名照材料原样抄_不改简体():
+    system, _ = render("archive_world", body="B")
+    assert "照材料原样抄" in system
+    assert "不要改成简体" in system
+    assert "## 属性名" in system or "二级标题" in system
