@@ -235,6 +235,7 @@ class Inputs:
     worlds: list[dict]
     gaps: list[dict]
     times: dict[str, dict]
+    intersections: list[dict] = field(default_factory=list)
     thread_text: dict[str, str] = field(default_factory=dict)
     thread_scope: dict[str, set[str]] = field(default_factory=dict)
     world_text: dict[str, str] = field(default_factory=dict)
@@ -249,7 +250,7 @@ class Inputs:
             "contradictions": self.contra["sig"],
             # 只进地图输入、不进任何一份档案的东西（不归任何线的缺口等）：也得算进指纹，
             # 不然跑的途中改了它发现不了。线的写到哪已经在线档案的输入文本里了。
-            "map_only": _digest(self.gaps),
+            "map_only": _digest(self.gaps, self.intersections),
         }
 
     def fingerprint(self) -> str:
@@ -287,7 +288,8 @@ def prepare_inputs(book: Book) -> Inputs:
     cards = {sid: r["card"] for sid, r in load_cards(book).items() if isinstance(r.get("card"), dict)}
     cmap = name_map(book)
     times = cd.scene_times(threads)
-    inp = Inputs(unit, threads, worlds, gaps, times)
+    inp = Inputs(unit, threads, worlds, gaps, times,
+                 [c for c in data.get("intersections") or [] if isinstance(c, dict)])
     for (_, name), canon in cmap.items():
         # 同一个叫法在不同类型下指向不同规范名：说不清，记空串，回填时不用它
         inp.aliases[name] = canon if inp.aliases.get(name, canon) == canon else ""
@@ -541,6 +543,7 @@ class _Run:
             contra.get("groups") or [], inp.gaps,
             [{"id": t["id"], "name": t.get("name", ""), "state": (t.get("end") or {}).get("state", ""),
               "last": (t.get("end") or {}).get("last", "")} for t in inp.threads],
+            inp.intersections,
         )
         sig = map_sig(text)
         if _fresh(self.index["map"], sig, book.map_path):

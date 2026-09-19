@@ -110,12 +110,12 @@ def world_input(world: dict, rows: list[FactRow], notes: list[dict],
 
 
 def map_input(world_files: list[Path], thread_files: list[Path], contradictions: list[dict],
-              gaps: list[dict], ends: list[dict]) -> str:
+              gaps: list[dict], ends: list[dict], intersections: list[dict] | None = None) -> str:
     """地图的输入是**档案正文**（不是场景卡），所以装得下（spec 7.3）。
     矛盾只带严重的——地图是给人看全局的，轻微的留在 矛盾.json 里。
 
     这份渲染结果就是「真正送给模型的地图输入文本」：archive.map_sig 直接哈希它，
-    严重矛盾清单、缺口总览、各条线写到哪只要变了，签名就跟着变（C 组审查「必须修 5」：
+    严重矛盾清单、缺口总览、各条线写到哪、线之间的交汇只要变了，签名就跟着变（C 组审查「必须修 5」：
     这三样以前不在 map_sig 里，档案文件没变时地图会停在旧清单）。"""
     lines = ["# 全部世界设定集"]
     for p in sorted(world_files, key=lambda p: p.name):
@@ -135,4 +135,12 @@ def map_input(world_files: list[Path], thread_files: list[Path], contradictions:
     lines.append("# 各条线写到哪")
     lines += [f"- {e.get('id','')} {e.get('name','')}：{e.get('state','')}，"
               f"最后一块 [{e.get('last','')}]" for e in ends] or ["（没有）"]
+
+    # 交汇点（spec 7.3：每个世界一节写「各条线一段摘要 + 交汇点」）：来自 世界与支线.json 的
+    # intersections。以前不在输入里，模型拿不到材料只能漏写或编，交汇变了地图签名也不变（DE 审查必须修5）。
+    names = {e.get("id"): e.get("name", "") for e in ends}
+    lines.append("# 线之间的交汇")
+    lines += [f"- {c.get('thread','')} {names.get(c.get('thread'), '')} 的 [{c.get('scene','')}] "
+              f"跟主线的 [{c.get('main_scene','')}] 交汇：{c.get('reason','')}"
+              for c in intersections or [] if isinstance(c, dict)] or ["（没有）"]
     return "\n\n".join(lines)

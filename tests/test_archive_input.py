@@ -72,3 +72,27 @@ def test_地图输入只带严重矛盾():
                      gaps=[], ends=[])
     assert "C-002" in text
     assert "C-001" not in text and "C-003" not in text
+
+
+# --- DE 审查必须修5：交汇点（spec 7.3「该世界下各条线一段摘要 + 交汇点」）要进地图输入 ---
+
+_IX = [{"thread": "L-005", "scene": "S-0085", "main_scene": "S-0081",
+        "reason": "两处写的是文进救王夫人后与岑秀在途中相遇的同一事件"}]
+
+
+def test_地图输入带线之间的交汇():
+    text = map_input([], [], contradictions=[], gaps=[],
+                     ends=[{"id": "L-005", "name": "文进线", "state": "待定", "last": "S-0085"}],
+                     intersections=_IX)
+    assert "# 线之间的交汇" in text
+    line = next(x for x in text.splitlines() if "S-0085" in x and "S-0081" in x)
+    assert "L-005" in line and "文进线" in line and "途中相遇" in line
+
+
+def test_交汇变了地图签名就变():
+    from ligaotai.archive import map_sig
+
+    base = map_sig(map_input([], [], contradictions=[], gaps=[], ends=[], intersections=_IX))
+    moved = [dict(_IX[0], main_scene="S-0090")]
+    assert map_sig(map_input([], [], contradictions=[], gaps=[], ends=[], intersections=moved)) != base
+    assert map_sig(map_input([], [], contradictions=[], gaps=[], ends=[], intersections=[])) != base

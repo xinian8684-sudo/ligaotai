@@ -533,3 +533,34 @@ def test_回填不上的多个说法计数进summary(book_with_threads):
     body = (b.world_archive_dir / "W-01.md").read_text(encoding="utf-8")
     assert "降妖宝杖（多个说法，见矛盾 C-001）" in body
     assert res["unfilled_multi"] == 1
+
+
+# ---------- DE 审查必须修5：交汇点进地图输入，变了地图重跑 ----------
+
+_IX = {"thread": "L-002", "scene": "S-0004", "main_scene": "S-0002", "reason": "龙王献宝与取经同一场"}
+
+
+def test_交汇点进地图输入_改了交汇只重跑地图(book_with_threads, fake_client):
+    from ligaotai.archive import run_archive
+
+    b = book_with_threads
+    _edit_threads(b, lambda d: d["intersections"].append(dict(_IX)))
+    run_archive(b, fake_client)
+    user = map_user(fake_client)
+    assert "龙王献宝与取经同一场" in user and "S-0004" in user
+
+    _edit_threads(b, lambda d: d["intersections"][0].__setitem__("main_scene", "S-0003"))
+    c2 = make_client(b)
+    run_archive(b, c2)
+    assert c2.calls == ["archive/map"]
+    assert b.step("archive")["status"] == "done"
+
+
+def test_途中只改了交汇_地图也算过期(book_with_threads):
+    from ligaotai.archive import load_index, run_archive
+
+    b = book_with_threads
+    c = mutating(b, lambda d: d["intersections"].append(dict(_IX)), when=lambda tag: tag == "archive/map")
+    res = run_archive(b, c)
+    assert res["input_changed"] is True
+    assert load_index(b)["map"]["outdated"] is True
