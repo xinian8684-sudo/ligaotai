@@ -264,3 +264,10 @@ def test_世界设定集提示词要求人名地名照材料原样抄_不改简�
     assert "照材料原样抄" in system
     assert "不要改成简体" in system
     assert "## 属性名" in system or "二级标题" in system
+
+
+def test_世界设定集提示词_其他类不写多个说法标记():
+    """F 组疑点1：矛盾扫描不比「其他」类，这一类写了「（多个说法）」永远回填不上编号，
+    两本验收书各剩 187 / 94 处光秃秃的占位进了地图。"""
+    system, _ = render("archive_world", body="B")
+    assert "「其他」这一节" in system and "不写「（多个说法）」" in system
