@@ -331,3 +331,185 @@ def test_暂停后重跑_做完的不重复花钱(book_with_threads):
     assert not set(written) & set(c2.calls), "已经落盘的档案不该重调"
     assert len(c1.calls) + len(c2.calls) == 5
     assert b.step("archive")["status"] == "done"
+
+
+# ---------- Task 17：过期规则与跑的途中上游变了 ----------
+
+
+def _edit_threads(book, fn):
+    data = read_json(book.threads_path, {})
+    fn(data)
+    write_json(book.threads_path, data)
+
+
+def test_只有受影响的线重跑(book_with_threads, fake_client):
+    """改一条线的成员，只有那条线的档案重跑，别的线不花钱；世界（成员变了）和地图跟着重跑，矛盾不动。"""
+    from ligaotai.archive import run_archive
+
+    b = book_with_threads
+    run_archive(b, fake_client)
+    _edit_threads(b, lambda d: d["threads"][0]["scenes"].append("S-0006"))
+    c2 = make_client(b)
+    res = run_archive(b, c2)
+    assert "archive/thread/L-001" in c2.calls
+    assert c2.calls.count("archive/thread/L-002") == 0, "没动的线不该重跑"
+    assert "archive/map" in c2.calls
+    assert not [t for t in c2.calls if t.startswith("archive/contradictions")], "facts 没变，矛盾不该重跑"
+    assert res["reused"]["threads"] == ["L-002"] and res["reused"]["contradictions"] is True
+    assert b.step("archive")["status"] == "done"
+
+
+def test_任何档案重跑地图就重跑(book_with_threads, fake_client):
+    from ligaotai.archive import run_archive
+
+    b = book_with_threads
+    run_archive(b, fake_client)
+    _edit_threads(b, lambda d: d["threads"][1].__setitem__("name", "龙宫夜宴"))
+    c2 = make_client(b)
+    run_archive(b, c2)
+    assert sorted(c2.calls) == ["archive/map", "archive/thread/L-002", "archive/world/W-01"]
+
+
+def test_什么都没变就一次都不调(book_with_threads, fake_client):
+    from ligaotai.archive import run_archive
+
+    b = book_with_threads
+    run_archive(b, fake_client)
+    c2 = make_client(b)
+    res = run_archive(b, c2)
+    assert c2.calls == []
+    assert res["map"] == "reused" and b.step("archive")["status"] == "done"
+
+
+def test_只有签名以外的字段改了也要重跑_规范名映射(book_with_threads, fake_client):
+    """签名 = 渲染后的输入文本：实体规范名映射变了（卡片行里的人名跟着变），线档案和矛盾都要重跑。"""
+    from ligaotai.archive import run_archive
+
+    b = book_with_threads
+    run_archive(b, fake_client)
+    ents = read_json(b.entities_path)
+    for e in ents["entities"]:
+        if e.get("canonical") == "孙悟空":
+            e["canonical"] = "美猴王"
+    write_json(b.entities_path, ents)
+    c2 = make_client(b)
+    run_archive(b, c2)
+    assert "archive/thread/L-001" in c2.calls
+    assert [t for t in c2.calls if t.startswith("archive/contradictions")], "主语规范名变了，矛盾要重跑"
+    assert "archive/map" in c2.calls
+
+
+def test_改场景卡的facts_矛盾和世界重跑(book_with_threads, fake_client):
+    from ligaotai.archive import run_archive
+
+    b = book_with_threads
+    run_archive(b, fake_client)
+    rec = read_json(card_path(b, "S-0005"))
+    rec["card"]["facts"] = [{"subject": "敖广", "attribute": "居所", "value": "西海龙宫", "quote": "敖广回了西海龙宫"}]
+    write_json(card_path(b, "S-0005"), rec)
+    c2 = make_client(b)
+    run_archive(b, c2)
+    assert "archive/world/W-01" in c2.calls
+    # 线档案的输入是卡片摘要行，不含 facts：facts 改了线档案的输入文本不变，不该重跑
+    assert not [t for t in c2.calls if t.startswith("archive/thread")]
+    assert [t for t in c2.calls if t.startswith("archive/contradictions")]
+    assert len(read_json(b.contradictions_path)["groups"]) == 2
+
+
+def mutating(book, change, when=lambda tag: True):
+    """假模型：第一次满足 when 的调用时，偷偷改 世界与支线.json（作者在跑的途中动了归线结果）。"""
+    done = {"x": False}
+
+    def on_call(tag, messages):
+        if not done["x"] and when(tag):
+            done["x"] = True
+            _edit_threads(book, change)
+
+    return make_client(book, on_call=on_call)
+
+
+@pytest.fixture
+def mutating_client(book_with_threads):
+    return mutating(book_with_threads, lambda d: d["threads"][1].__setitem__("name", "龙宫夜宴"))
+
+
+def test_跑的途中上游变了记outdated(book_with_threads, mutating_client):
+    """假模型在第一次调用之后偷偷改 世界与支线.json，这一步要记 outdated 不记 done；
+    拿旧输入写的档案标过期，地图不花这笔钱。"""
+    from ligaotai.archive import load_index, run_archive
+
+    b = book_with_threads
+    res = run_archive(b, mutating_client)
+    assert b.step("archive")["status"] == "outdated"
+    assert res["input_changed"] is True
+    idx = load_index(b)
+    assert idx["threads"]["L-002"]["outdated"] is True, "L-002 是拿旧线名写的"
+    assert idx["threads"]["L-001"]["outdated"] is False
+    assert idx["map"]["outdated"] is True
+    assert "archive/map" not in mutating_client.calls
+
+    # 再跑一次：只补被改动影响的，状态回到 done
+    c2 = make_client(b)
+    run_archive(b, c2)
+    assert sorted(c2.calls) == ["archive/map", "archive/thread/L-002", "archive/world/W-01"]
+    assert b.step("archive")["status"] == "done"
+
+
+def test_跑地图时上游变了_地图也标过期(book_with_threads):
+    """地图调用途中才改：档案都是新的，但地图是拿旧输入写的，要标过期、记 outdated。"""
+    from ligaotai.archive import load_index, run_archive
+
+    b = book_with_threads
+    c = mutating(b, lambda d: d["threads"][1].__setitem__("name", "龙宫夜宴"), when=lambda tag: tag == "archive/map")
+    run_archive(b, c)
+    assert "archive/map" in c.calls
+    assert b.step("archive")["status"] == "outdated"
+    assert load_index(b)["map"]["outdated"] is True
+
+
+def test_途中只改了不归任何线的缺口_地图也算过期(book_with_threads):
+    """缺口总览只进地图的输入，不进任何一份档案：途中改了它，也要被发现。"""
+    from ligaotai.archive import load_index, run_archive
+
+    b = book_with_threads
+    gap = {"id": "Q-002", "world": "W-01", "event": "蟠桃会", "mentioned_in": ["S-0004"],
+           "thread": "", "after": "", "before": ""}
+    c = mutating(b, lambda d: d["gaps"].append(gap), when=lambda tag: tag == "archive/map")
+    res = run_archive(b, c)
+    assert res["input_changed"] is True
+    assert b.step("archive")["status"] == "outdated"
+    assert load_index(b)["map"]["outdated"] is True
+    c2 = make_client(b)
+    run_archive(b, c2)
+    assert c2.calls == ["archive/map"]
+
+
+def test_单独标过期的档案会重跑(book_with_threads, fake_client):
+    """给 Task 18 单独重跑接口用：index 里 outdated=True，签名一样也要重跑。"""
+    from ligaotai.archive import load_index, run_archive, write_index
+
+    b = book_with_threads
+    run_archive(b, fake_client)
+    idx = load_index(b)
+    idx["threads"]["L-002"]["outdated"] = True
+    write_index(b, idx)
+    c2 = make_client(b)
+    res = run_archive(b, c2)
+    # 输入没变，重新生成走的是缓存（不花钱）；要不要绕过缓存换一版，是 Task 18 接口的事
+    assert res["generated"]["threads"] == ["L-002"] and res["reused"]["threads"] == ["L-001"]
+    assert load_index(b)["threads"]["L-002"]["outdated"] is False
+    assert b.step("archive")["status"] == "done"
+
+
+def test_线被删了_旧档案标过期不删文件(book_with_threads, fake_client):
+    from ligaotai.archive import load_index, run_archive
+
+    b = book_with_threads
+    run_archive(b, fake_client)
+    _edit_threads(b, lambda d: d.__setitem__("threads", d["threads"][:1]))
+    c2 = make_client(b)
+    res = run_archive(b, c2)
+    assert res["outdated_removed"] == ["L-002"]
+    assert (b.thread_archive_dir / "L-002.md").exists()
+    assert load_index(b)["threads"]["L-002"]["outdated"] is True
+    assert "archive/map" in c2.calls

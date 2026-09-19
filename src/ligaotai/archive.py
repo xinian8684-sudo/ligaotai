@@ -208,6 +208,9 @@ class Inputs:
             "threads": {tid: thread_sig(t) for tid, t in self.thread_text.items()},
             "worlds": {wid: world_sig(t) for wid, t in self.world_text.items()},
             "contradictions": self.contra["sig"],
+            # 只进地图输入、不进任何一份档案的东西（不归任何线的缺口等）：也得算进指纹，
+            # 不然跑的途中改了它发现不了。线的写到哪已经在线档案的输入文本里了。
+            "map_only": _digest(self.gaps),
         }
 
     def fingerprint(self) -> str:
@@ -535,10 +538,11 @@ class _Run:
         ce = self.index.get("contradictions")
         if isinstance(ce, dict) and ce.get("sig") != now["contradictions"]:
             ce["outdated"] = True
-        # 地图依赖全部档案：有一份当前的档案不是最新，地图也不是
+        # 地图依赖全部档案：有一份当前的档案不是最新，地图也不是；上游在途中变过，
+        # 地图是拿旧输入写的（哪怕只改了只进地图的缺口），也不是
         stale = [oid for kind in ("threads", "worlds") for oid in now[kind]
                  if not isinstance(self.index[kind].get(oid), dict) or self.index[kind][oid].get("outdated")]
-        if stale or (isinstance(ce, dict) and ce.get("outdated")):
+        if changed or stale or (isinstance(ce, dict) and ce.get("outdated")):
             self.index["map"]["outdated"] = True
         return changed
 
