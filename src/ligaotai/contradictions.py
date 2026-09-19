@@ -114,7 +114,11 @@ def check_output(data, ids: set[str]) -> list[str]:
             problems.append(f"{gid} 判了真矛盾就要给 level：" + " / ".join(LEVELS))
         if g.get("category") not in CATEGORIES:
             problems.append(f"{gid} 的 category 只能是：" + " / ".join(CATEGORIES))
-        if not SCENE_REF.search(g.get("reason") or ""):
+        reason = g.get("reason")
+        if reason is not None and not isinstance(reason, str):
+            # 模型把几条理由写成数组、写成对象：报出来重试，别在这里崩（崩了这批花过钱的判断全丢，DE 审查必须修7）
+            problems.append(f"{gid} 的 reason 要是一句话（字符串），不要写成列表或对象")
+        elif not SCENE_REF.search(reason or ""):
             problems.append(f"{gid} 的 reason 里要带场景编号，写成 [S-0014] 这样")
     return problems[:8]
 
@@ -137,7 +141,8 @@ def clean_output(data, ids: set[str]) -> dict[str, dict]:
             "status": status,
             "level": level if status == "真矛盾" else "",
             "category": g.get("category") if g.get("category") in CATEGORIES else "设定",
-            "reason": (g.get("reason") or "").strip(),
+            # reason 不是字符串（重试也没改过来）：只丢这个字段，别的组、这一组的判断照留
+            "reason": g["reason"].strip() if isinstance(g.get("reason"), str) else "",
         }
     for gid in sorted(ids - set(out)):
         out[gid] = {"status": "无法判断", "level": "", "category": "设定",

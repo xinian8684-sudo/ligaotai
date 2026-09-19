@@ -521,3 +521,20 @@ def test_真实candidates产出能完整走完渲染批次判断落盘一遍():
 def test_reason里的引用带空格或全角分隔也认(reason):
     """跟 archive.refs_in 同源（DE 审查必须修4）：带空格的合法引用不能被当成没带编号、白白重试。"""
     assert check_output(_out(reason=reason), {"C-001"}) == []
+
+
+# --- DE 审查必须修7：reason（及其它字符串字段）不是字符串时，check 报问题触发重试，
+# clean 丢掉坏字段、不丢整批 ---
+
+@pytest.mark.parametrize("reason", [["a [S-0001]", "b [S-0002]"], 1, {"text": "a [S-0001]"}, None])
+def test_reason不是字符串_check报问题_clean不崩且保住别的组(reason):
+    data = {"groups": [
+        {"id": "C-001", "status": "真矛盾", "level": "严重", "category": "人物", "reason": reason},
+        {"id": "C-002", "status": "合理变化", "level": "", "category": "人物", "reason": "ok [S-0001]"},
+    ]}
+    ids = {"C-001", "C-002"}
+    problems = check_output(data, ids)
+    assert any("C-001" in p and "reason" in p for p in problems)
+    got = clean_output(data, ids)
+    assert got["C-002"] == {"status": "合理变化", "level": "", "category": "人物", "reason": "ok [S-0001]"}
+    assert got["C-001"]["status"] == "真矛盾" and isinstance(got["C-001"]["reason"], str)
