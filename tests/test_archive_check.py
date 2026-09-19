@@ -96,3 +96,23 @@ def test_写的是别名时按规范名映射对上():
     md = "## 兵器\n- 行者：金箍棒 / 宝杖（多个说法）[S-0014]\n"
     got = backfill_refs(md, _TRAD_GROUPS, aliases={"行者": "孫悟空"})
     assert "见矛盾 C-004" in got
+
+
+# --- DE 审查必须修4：引用写法带空格 / 全角逗号 / 顿号时，编造的编号不能从检查里漏过去，
+# 合法写法也不能被当成「一个编号都没有」 ---
+
+import pytest
+
+
+@pytest.mark.parametrize("ref", ["[S-0004, S-9999]", "[S-0004，S-9999]", "[S-0004、S-9999]",
+                                 "[ S-0004 , S-9999 ]"])
+def test_各种分隔符里藏的编造编号都要抓出来(ref):
+    md = f"## 来龙去脉\n他救了人 [S-0003]。他杀了人 {ref}。\n"
+    assert refs_in(md) == ["S-0003", "S-0004", "S-9999"]
+    problems = check_archive(md, allowed={"S-0003", "S-0004"}, required_headings=["来龙去脉"])
+    assert any("S-9999" in p for p in problems)
+
+
+def test_通篇带空格的合法引用不算没有编号():
+    md = "## 来龙去脉\n他救了人 [S-0003, S-0004]。\n"
+    assert check_archive(md, allowed={"S-0003", "S-0004"}, required_headings=["来龙去脉"]) == []

@@ -514,3 +514,10 @@ def test_真实candidates产出能完整走完渲染批次判断落盘一遍():
     assert result["groups"][0]["subject"] == "孙悟空"
     assert result["groups"][0]["status"] == "真矛盾"
     assert result["groups"][0]["values"][0]["scenes"][0]["t"] in (3.0, 5.0)
+
+
+@pytest.mark.parametrize("reason", ["两处不一样 [S-0014, S-0207]", "两处不一样 [S-0014，S-0207]",
+                                    "两处不一样 [S-0014、S-0207]"])
+def test_reason里的引用带空格或全角分隔也认(reason):
+    """跟 archive.refs_in 同源（DE 审查必须修4）：带空格的合法引用不能被当成没带编号、白白重试。"""
+    assert check_output(_out(reason=reason), {"C-001"}) == []

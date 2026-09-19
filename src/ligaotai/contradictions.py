@@ -15,7 +15,11 @@ from .facts import norm_number
 STATUSES = ("真矛盾", "合理变化", "无法判断")
 LEVELS = ("严重", "中等", "轻微")
 CATEGORIES = ("人物", "设定", "时间", "称谓")
-_SCENE_REF = re.compile(r"\[S-\d{4}(?:,S-\d{4})*\]")
+# 场景引用：[S-0003] / [S-0003,S-0120]。模型常在逗号后加空格、写全角逗号或顿号，括号里首尾带空格，
+# 这些都得认——认漏了，编造的编号会从档案检查里漏过去、合法引用被当成「没带编号」白白重试
+# （DE 审查必须修4）。archive.refs_in / check_archive、Task 20 的编造率统计都用这一个正则。
+SCENE_REF = re.compile(r"\[\s*(S-\d{4}(?:\s*[,，、]\s*S-\d{4})*)\s*\]")
+_SCENE_ID = re.compile(r"S-\d{4}")
 
 
 def scene_times(threads: list[dict]) -> dict[str, dict]:
@@ -110,7 +114,7 @@ def check_output(data, ids: set[str]) -> list[str]:
             problems.append(f"{gid} 判了真矛盾就要给 level：" + " / ".join(LEVELS))
         if g.get("category") not in CATEGORIES:
             problems.append(f"{gid} 的 category 只能是：" + " / ".join(CATEGORIES))
-        if not _SCENE_REF.search(g.get("reason") or ""):
+        if not SCENE_REF.search(g.get("reason") or ""):
             problems.append(f"{gid} 的 reason 里要带场景编号，写成 [S-0014] 这样")
     return problems[:8]
 

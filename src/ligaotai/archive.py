@@ -127,14 +127,14 @@ def write_index(book: Book, data: dict) -> None:
     write_json(book.archive_index_path, data)
 
 
-SCENE_REF = re.compile(r"\[(S-\d{4}(?:,S-\d{4})*)\]")
+SCENE_REF = cd.SCENE_REF  # 跟矛盾扫描 reason 检查同源，写法变体见那边的注释
 
 
 def refs_in(text: str) -> list[str]:
     """抓出正文里所有场景引用编号，按出现顺序。"""
     out = []
     for m in SCENE_REF.finditer(text or ""):
-        out.extend(m.group(1).split(","))
+        out.extend(cd._SCENE_ID.findall(m.group(1)))
     return out
 
 
