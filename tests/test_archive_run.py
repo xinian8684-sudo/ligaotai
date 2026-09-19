@@ -580,3 +580,88 @@ def test_矛盾每批组数上限按本书参数切批(book_with_threads):
     batches = [t for t in c.calls if t.startswith("archive/contradictions")]
     assert len(batches) == 2, "两个候选组、每批最多 1 组，要切成两批"
     assert len(read_json(b.contradictions_path)["groups"]) == 2
+
+
+# ---------- DE 审查第 6 条（作者 9-19 拍板要做）：签名带提示词内容，改了提示词用到它的档案判过期 ----------
+
+
+@pytest.fixture
+def own_prompts(tmp_path, monkeypatch):
+    """把提示词复制一份到临时目录，让测试可以改它（不动仓库里的 prompts/）。"""
+    import shutil
+
+    from ligaotai import prompts
+
+    d = tmp_path / "prompts"
+    shutil.copytree(prompts.PROMPTS_DIR, d)
+    monkeypatch.setattr(prompts, "PROMPTS_DIR", d)
+    return d
+
+
+def _touch_prompt(d, name, section="system"):
+    p = d / f"{name}.md"
+    text = p.read_text(encoding="utf-8")
+    head = f"## {section}\n"
+    assert head in text
+    p.write_text(text.replace(head, head + "（改了一个字）\n", 1), encoding="utf-8")
+
+
+def test_签名带提示词内容_改世界设定集提示词只重跑世界(book_with_threads, own_prompts):
+    from ligaotai.archive import run_archive
+
+    b = book_with_threads
+    run_archive(b, make_client(b))
+    _touch_prompt(own_prompts, "archive_world")
+    c2 = make_client(b)
+    run_archive(b, c2)
+    # 假模型重写出来的设定集跟原来一字不差，地图输入没变，地图不重跑（真模型写出来的不一样，地图会跟着重跑）
+    assert c2.calls == ["archive/world/W-01"]
+    assert b.step("archive")["status"] == "done"
+
+
+def test_签名带提示词内容_改线档案提示词所有线重跑(book_with_threads, own_prompts):
+    from ligaotai.archive import run_archive
+
+    b = book_with_threads
+    run_archive(b, make_client(b))
+    _touch_prompt(own_prompts, "archive_thread", "user")
+    c2 = make_client(b)
+    run_archive(b, c2)
+    assert sorted(c2.calls) == ["archive/thread/L-001", "archive/thread/L-002"]
+
+
+def test_签名带提示词内容_改矛盾提示词矛盾重跑(book_with_threads, own_prompts):
+    from ligaotai.archive import run_archive
+
+    b = book_with_threads
+    run_archive(b, make_client(b))
+    _touch_prompt(own_prompts, "contradictions")
+    c2 = make_client(b)
+    run_archive(b, c2)
+    assert [t for t in c2.calls if t.startswith("archive/contradictions")]
+    assert not [t for t in c2.calls if t.startswith(("archive/thread", "archive/world"))]
+
+
+def test_签名带提示词内容_改地图提示词只重跑地图(book_with_threads, own_prompts):
+    from ligaotai.archive import run_archive
+
+    b = book_with_threads
+    run_archive(b, make_client(b))
+    _touch_prompt(own_prompts, "map")
+    c2 = make_client(b)
+    run_archive(b, c2)
+    assert c2.calls == ["archive/map"]
+
+
+def test_只改提示词开头给人看的说明_不重跑(book_with_threads, own_prompts):
+    """第一个「## system」之前的说明不发给模型，改它不该花钱。"""
+    from ligaotai.archive import run_archive
+
+    b = book_with_threads
+    run_archive(b, make_client(b))
+    for name in ("archive_thread", "archive_world", "contradictions", "map"):
+        p = own_prompts / f"{name}.md"
+        p.write_text("说明改了。\n" + p.read_text(encoding="utf-8"), encoding="utf-8")
+    c2 = make_client(b)
+    run_archive(b, c2)
+    assert c2.calls == []

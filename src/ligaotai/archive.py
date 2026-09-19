@@ -29,6 +29,7 @@ from .facts import OTHER, candidates, collect_facts, group_facts, norm_attr
 from .fsutil import atomic_write_text, read_json, write_json
 from .llm import LLMClient
 from .llm_caller import Caller, Progress, _noop
+from .prompts import load_prompt
 from .scenes import read_scene, scene_path
 from .threads_input import name_map
 
@@ -54,10 +55,20 @@ def _digest(*parts) -> str:
 # 以后 archive_input 加字段，不用再回头给这里补参数。
 
 
+def prompt_sig(name: str) -> str:
+    """提示词内容的签名：哈希 prompts/<name>.md 里真正发给模型的「## system」「## user」两段模板。
+    第一个标题之前给人看的说明不算——改说明不该让档案重跑花钱。
+
+    DE 审查第 6 条（作者 9-19 拍板要做）：签名原来只带提示词**名字**，调了提示词已有档案
+    被判「没过期」跳过，改提示词不生效。现在改了提示词，用到它的档案 / 矛盾 / 地图都判过期。"""
+    system, user = load_prompt(name)
+    return _digest(system.template, user.template)
+
+
 def input_sig(text: str, prompt: str) -> str:
-    """通用输入签名：哈希渲染好的模型输入文本 + 提示词模板名/版本。
+    """通用输入签名：哈希渲染好的模型输入文本 + 提示词模板名 + 提示词内容。
     thread_sig / world_sig / map_sig 都是它的薄封装，只是给调用方一个更好认的名字。"""
-    return _digest(prompt, text)
+    return _digest(prompt, prompt_sig(prompt), text)
 
 
 def thread_sig(text: str, prompt: str = "archive_thread") -> str:
@@ -331,7 +342,7 @@ def prepare_inputs(book: Book) -> Inputs:
         "merged_by_program": sum(c.get("merged", 0) for c in cands),
         "sent": len(cands),
     }
-    sig = _digest("contradictions", unit, [b["text"] for b in batches], skipped, stats)
+    sig = _digest("contradictions", prompt_sig("contradictions"), unit, [b["text"] for b in batches], skipped, stats)
     inp.contra = {"cands": cands, "skipped": skipped, "batches": batches, "stats": stats, "sig": sig}
     return inp
 

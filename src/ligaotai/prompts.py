@@ -16,8 +16,9 @@ PROMPTS_DIR = APP_DIR / "prompts"
 _SECTION = re.compile(r"^## (system|user)[ \t]*$", re.M)
 
 
-def load_prompt(name: str, prompts_dir: Path = PROMPTS_DIR) -> tuple[Template, Template]:
-    text = (Path(prompts_dir) / f"{name}.md").read_text(encoding="utf-8")
+def load_prompt(name: str, prompts_dir: Path | None = None) -> tuple[Template, Template]:
+    # 目录在调用时才取 PROMPTS_DIR（不在定义时绑死），测试才能换一份提示词目录
+    text = (Path(prompts_dir or PROMPTS_DIR) / f"{name}.md").read_text(encoding="utf-8")
     parts = _SECTION.split(text)
     sections = {parts[i]: parts[i + 1].strip() for i in range(1, len(parts) - 1, 2)}
     if set(sections) != {"system", "user"}:
@@ -25,6 +26,6 @@ def load_prompt(name: str, prompts_dir: Path = PROMPTS_DIR) -> tuple[Template, T
     return Template(sections["system"]), Template(sections["user"])
 
 
-def render(name: str, prompts_dir: Path = PROMPTS_DIR, **values: str) -> tuple[str, str]:
+def render(name: str, prompts_dir: Path | None = None, **values: str) -> tuple[str, str]:
     system, user = load_prompt(name, prompts_dir)
     return system.substitute(values), user.substitute(values)

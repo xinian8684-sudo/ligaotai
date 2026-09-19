@@ -16,7 +16,8 @@ def test_签名跟着渲染文本变():
 def test_签名跟着提示词模板名变():
     """哪怕渲染文本一样，换了提示词模板名（模型看到的指令变了）签名也要变——
     以后改提示词大版本，靠改模板名就能让所有档案重跑，不用去猜文本有没有变。"""
-    assert thread_sig("甲文本", prompt="archive_thread") != thread_sig("甲文本", prompt="archive_thread_v2")
+    # 9-19 起签名还带提示词内容（DE 审查第 6 条），模板名必须是真有的提示词文件
+    assert thread_sig("甲文本", prompt="archive_thread") != thread_sig("甲文本", prompt="archive_world")
 
 
 def test_三个签名函数默认命名空间不串():
@@ -25,9 +26,9 @@ def test_三个签名函数默认命名空间不串():
 
 
 def test_input_sig是三个函数共用的底层实现():
-    assert thread_sig("x", prompt="p") == input_sig("x", "p")
-    assert world_sig("x", prompt="p") == input_sig("x", "p")
-    assert map_sig("x", prompt="p") == input_sig("x", "p")
+    assert thread_sig("x", prompt="map") == input_sig("x", "map")
+    assert world_sig("x", prompt="map") == input_sig("x", "map")
+    assert map_sig("x", prompt="map") == input_sig("x", "map")
 
 
 # --- 用 archive_input 的真实渲染函数造输入，不手捏假契约（前车之鉴：手捏的假结构会跟真实代码脱节）---
