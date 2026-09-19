@@ -393,6 +393,42 @@ def test_verdict_sig记下判定依据的值集合_随组和orphan一起传():
     assert r3["orphan_verdicts"][0]["verdict_sig"] == sig1
 
 
+# --- DE 审查必须修2：没判过的组（眼下所有组都是）消失一轮再回来，也要沿用原编号 ---
+
+def test_没判过的组消失一轮再回来_沿用原编号():
+    a = _cand("甲", "兵器", [("金箍棒", "S-0001"), ("宝杖", "S-0002")])
+    b = _cand("乙", "年龄", [("十六", "S-0003"), ("二十", "S-0004")])
+    r1 = _run([a, b], {})
+    assert [g["id"] for g in r1["groups"]] == ["C-001", "C-002"]
+    r2 = _run([b], r1)
+    r3 = _run([b], r2)  # 连着缺两轮
+    r4 = _run([a, b], r3)
+    assert {g["subject"]: g["id"] for g in r4["groups"]} == {"甲": "C-001", "乙": "C-002"}
+    assert r4["next_id"] == 3, "沿用了原号就不该再消耗新号"
+
+
+def test_编号登记表只增不减_老数据没有登记表时从groups和orphan补():
+    old = {"next_id": 9, "groups": [{"id": "C-003", "subject": "甲", "attribute": "兵器", "verdict": None}],
+           "orphan_verdicts": [{"id": "C-005", "subject": "丙", "attribute": "外貌", "verdict": {"c": 1}}]}
+    r = _run([_cand("乙", "年龄", [("十六", "S-0003"), ("二十", "S-0004")])], old)
+    reg = {(e["subject"], e["attribute"]): e["id"] for e in r["id_registry"]}
+    assert reg == {("甲", "兵器"): "C-003", ("丙", "外貌"): "C-005", ("乙", "年龄"): "C-009"}
+    r2 = _run([_cand("甲", "兵器", [("v", "S-0001"), ("w", "S-0002")])], r)
+    assert r2["groups"][0]["id"] == "C-003"
+
+
+def test_cap挤出去的组下一轮回来_沿用原编号():
+    cs = [_cand("甲", "兵器", [("v", "S-0001"), ("w", "S-0002")]),
+          _cand("乙", "年龄", [("十六", "S-0003"), ("二十", "S-0004")]),
+          _cand("丙", "外貌", [("胖", "S-0005"), ("瘦", "S-0006")])]
+    kept, skipped = cap(cs, 2)
+    b1 = build_result(kept, {}, {}, {}, {}, skipped)
+    kept2, skipped2 = cap([cs[2], cs[0], cs[1]], 2)
+    b2 = build_result(kept2, {}, {}, b1, {}, skipped2)
+    b3 = build_result(kept, {}, {}, b2, {}, skipped)
+    assert {g["subject"]: g["id"] for g in b3["groups"]} == {g["subject"]: g["id"] for g in b1["groups"]}
+
+
 def test_场景里带上故事时间和所属线():
     times = {"S-0001": {"t": 3.0, "conf": "高", "thread": "L-001"}}
     res = build_result([_cand("甲", "兵器", [("v", "S-0001"), ("w", "S-0002")])],

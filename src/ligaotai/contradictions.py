@@ -193,6 +193,16 @@ def build_result(cands: list[dict], judged: dict[int, dict], times: dict[str, di
         old_by_key[(o.get("subject"), o.get("attribute"))] = o
     for g in old.get("groups") or []:
         old_by_key[(g.get("subject"), g.get("attribute"))] = g
+    # 编号登记表：只增不减的 {(主语, 属性): 编号}。orphan 只收有 verdict 的组，没判过的组
+    # （二期之前是全部）一消失原号就找不回来了（DE 审查必须修2）；登记表不看 verdict，
+    # 出现过的 (主语, 属性) 永远占着自己的号。老数据没有登记表，从 groups / orphan 补。
+    registry: dict[tuple, str] = {}
+    for e in old.get("id_registry") or []:
+        if isinstance(e, dict) and isinstance(e.get("id"), str) and e["id"]:
+            registry[(e.get("subject"), e.get("attribute"))] = e["id"]
+    for k, g in old_by_key.items():
+        if isinstance(g.get("id"), str) and g["id"]:
+            registry.setdefault(k, g["id"])
     next_id = int(old.get("next_id") or 1)
     used_keys = set()
     groups = []
@@ -200,11 +210,12 @@ def build_result(cands: list[dict], judged: dict[int, dict], times: dict[str, di
         key = (c["subject"], c["attribute"])
         used_keys.add(key)
         prev = old_by_key.get(key)
-        if prev and prev.get("id"):
-            gid = prev["id"]
+        if key in registry:
+            gid = registry[key]
         else:
             gid = f"C-{next_id:03d}"
             next_id += 1
+            registry[key] = gid
         j = judged.get(i) or {"status": "无法判断", "level": "", "category": "设定",
                               "reason": "这一批调用失败，没拿到判断"}
         values = []
@@ -249,6 +260,8 @@ def build_result(cands: list[dict], judged: dict[int, dict], times: dict[str, di
         "groups": groups,
         "skipped": list(skipped or []),
         "orphan_verdicts": orphans,
+        "id_registry": [{"subject": k[0], "attribute": k[1], "id": v}
+                        for k, v in sorted(registry.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1])))],
         "stats": dict(stats),
     }
 
