@@ -538,3 +538,14 @@ def test_reason不是字符串_check报问题_clean不崩且保住别的组(reas
     got = clean_output(data, ids)
     assert got["C-002"] == {"status": "合理变化", "level": "", "category": "人物", "reason": "ok [S-0001]"}
     assert got["C-001"]["status"] == "真矛盾" and isinstance(got["C-001"]["reason"], str)
+
+
+def test_clean保留真矛盾的严重度_非真矛盾的清空():
+    """变异「clean 把 level 一律清空」原来存活：严重度丢了，地图只带严重矛盾，就一条都带不上。"""
+    data = {"groups": [
+        {"id": "C-001", "status": "真矛盾", "level": "严重", "category": "人物", "reason": "x [S-0001]"},
+        {"id": "C-002", "status": "合理变化", "level": "严重", "category": "人物", "reason": "y [S-0002]"},
+    ]}
+    got = clean_output(data, {"C-001", "C-002"})
+    assert got["C-001"]["level"] == "严重"
+    assert got["C-002"]["level"] == ""

@@ -96,3 +96,25 @@ def test_交汇变了地图签名就变():
     moved = [dict(_IX[0], main_scene="S-0090")]
     assert map_sig(map_input([], [], contradictions=[], gaps=[], ends=[], intersections=moved)) != base
     assert map_sig(map_input([], [], contradictions=[], gaps=[], ends=[], intersections=[])) != base
+
+
+# --- DE 审查建议修2：变异存活的地方补测试 ---
+
+def test_线的输入_伏笔在别的线里回收了就不算开放():
+    """spec 第 4 节：伏笔回收看全书 hooks_resolved，不是只看本线（变异「只看本线回收」原来存活）。"""
+    cards = {"S-0001": {"summary": "埋伏笔", "hooks_planted": ["紧箍咒的来历", "老人的身份"], "hooks_resolved": []},
+             "S-0100": {"summary": "别的线回收", "hooks_planted": [], "hooks_resolved": ["紧箍咒的来历"]}}
+    thread = {"id": "L-001", "name": "取经", "world": "W-01", "scenes": ["S-0001"], "end": {}}
+    text = thread_input(thread, cards, cmap={}, gaps=[], times={}, unit="年")
+    hooks = text.split("## 埋了还没回收的伏笔", 1)[1]
+    assert "老人的身份" in hooks
+    assert "紧箍咒的来历" not in hooks, "S-0100 在别的线里，但全书已经回收了"
+
+
+def test_世界的输入每条设定带原文摘录():
+    """设定集要能让作者对着原文查（变异「不写原文 quote」原来存活）。"""
+    from ligaotai.facts import FactRow
+    rows = [FactRow("S-0001", "孙悟空", "兵器", "金箍棒", "悟空掣出如意金箍棒")]
+    text = world_input({"id": "W-01", "name": "取经路", "reason": ""}, rows, notes=[], threads=[])
+    line = next(x for x in text.splitlines() if "金箍棒" in x and "S-0001" in x)
+    assert "悟空掣出如意金箍棒" in line
