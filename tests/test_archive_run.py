@@ -564,3 +564,19 @@ def test_途中只改了交汇_地图也算过期(book_with_threads):
     res = run_archive(b, c)
     assert res["input_changed"] is True
     assert load_index(b)["map"]["outdated"] is True
+
+
+# ---------- 每批组数上限（contradictions_max_batch_groups）接进编排 ----------
+
+
+def test_矛盾每批组数上限按本书参数切批(book_with_threads):
+    from ligaotai.archive import run_archive
+
+    b = book_with_threads
+    set_card(b, "S-0005", facts=[{"subject": "敖广", "attribute": "居所", "value": "西海龙宫", "quote": "敖广回了西海龙宫"}])
+    b.update(lambda d: d["settings"].update(contradictions_max_batch_groups=1))
+    c = make_client(b)
+    run_archive(b, c)
+    batches = [t for t in c.calls if t.startswith("archive/contradictions")]
+    assert len(batches) == 2, "两个候选组、每批最多 1 组，要切成两批"
+    assert len(read_json(b.contradictions_path)["groups"]) == 2
