@@ -164,6 +164,21 @@ def values_sig(values: list[dict]) -> str:
     return hashlib.sha256("\x1f".join(norm).encode("utf-8")).hexdigest()
 
 
+def _verdict_basis(prev: dict) -> tuple[str | None, bool]:
+    """上一轮条目（活跃组或 orphan）里的判定依据：(verdict_sig, 上一轮是否已 stale)。
+
+    verdict_sig = 作者下判定时这一组的值集合签名。二期写裁决时要一起写入；还没有它的
+    老条目按下面推：上一轮没标 stale，说明判定对上一轮的值集合有效，用上一轮的
+    values_sig 当依据；上一轮已经 stale 就说不清依据是哪一版，返回 None，stale 一直带着
+    直到作者重新判定（重新判定会写入新的 verdict_sig）。"""
+    vsig = prev.get("verdict_sig")
+    if vsig:
+        return vsig, False
+    if prev.get("verdict_stale"):
+        return None, True
+    return prev.get("values_sig"), False
+
+
 def build_result(cands: list[dict], judged: dict[int, dict], times: dict[str, dict],
                  old: dict, stats: dict, skipped: list[dict] | None = None) -> dict:
     """拼出 矛盾.json（spec 7.2）。
@@ -203,23 +218,31 @@ def build_result(cands: list[dict], judged: dict[int, dict], times: dict[str, di
             values.append({"value": v["value"], "scenes": scenes})
         sig = values_sig(c["values"])
         verdict = (prev or {}).get("verdict")
-        prev_sig = (prev or {}).get("values_sig")
-        # 值集合变了（多了新值、或原来选中的值不在了）：verdict 保留，不做任何猜测性
-        # 处理，只标 verdict_stale 交给界面重新亮出来。prev_sig 缺失（老格式数据、
-        # 或组本来就没有上一轮）时没有依据比对，不瞎报 stale。
-        stale = bool(verdict is not None and prev_sig is not None and prev_sig != sig)
+        vsig, stale = _verdict_basis(prev or {}) if verdict is not None else (None, False)
+        # 值集合跟作者下判定时不一样了（多了新值、或原来选中的值不在了）：verdict 保留，
+        # 不做任何猜测性处理，只标 verdict_stale 交给界面重新亮出来。比的是「判定依据的
+        # 值集合」verdict_sig，不是上一轮的值集合——不然值变了之后再重跑一轮，stale 就
+        # 自己消失了（DE 审查必须修1）。依据未知（老格式数据）时沿用上一轮的 stale 标记。
+        if vsig is not None:
+            stale = vsig != sig
         groups.append({
             "id": gid, "subject": c["subject"], "attribute": c["attribute"],
             "status": j["status"], "level": j["level"], "category": j["category"],
             "reason": j["reason"], "values": values, "values_sig": sig,
-            "verdict": verdict, "verdict_stale": stale,
+            "verdict": verdict, "verdict_sig": vsig, "verdict_stale": stale,
         })
-    # orphan 条目带上原 id 和 values_sig：组回来时才能沿用原编号、接回原 verdict、
-    # 判断值集合有没有变；没回来的继续往下传，不丢。
-    orphans = [{"id": g.get("id"), "subject": k[0], "attribute": k[1],
-                "verdict": g["verdict"], "values_sig": g.get("values_sig")}
-               for k, g in sorted(old_by_key.items(), key=lambda kv: (kv[0][0], kv[0][1]))
-               if k not in used_keys and g.get("verdict")]
+    # orphan 条目带上原 id、values_sig、verdict_sig 和 stale 标记：组回来时才能沿用原编号、
+    # 接回原 verdict、判断值集合跟判定时比有没有变；没回来的继续往下传，不丢。
+    orphans = []
+    for k, g in sorted(old_by_key.items(), key=lambda kv: (kv[0][0], kv[0][1])):
+        if k in used_keys or not g.get("verdict"):
+            continue
+        vsig, stale = _verdict_basis(g)
+        if vsig is not None:
+            stale = vsig != g.get("values_sig")
+        orphans.append({"id": g.get("id"), "subject": k[0], "attribute": k[1],
+                        "verdict": g["verdict"], "values_sig": g.get("values_sig"),
+                        "verdict_sig": vsig, "verdict_stale": stale})
     return {
         "generated": now_iso(),
         "next_id": next_id,

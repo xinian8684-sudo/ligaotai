@@ -200,7 +200,8 @@ def test_verdict按主语属性迁移():
                        {}, old, stats={})
     assert res["groups"][0]["verdict"] == {"choice": "v"}
     assert res["orphan_verdicts"] == [
-        {"id": "C-004", "subject": "乙", "attribute": "外貌", "verdict": {"choice": "x"}, "values_sig": None}
+        {"id": "C-004", "subject": "乙", "attribute": "外貌", "verdict": {"choice": "x"}, "values_sig": None,
+         "verdict_sig": None, "verdict_stale": False}
     ]
 
 
@@ -215,7 +216,8 @@ def test_组消失一轮再回来_沿用原编号且verdict能接回():
     res2 = build_result([], {}, {}, old1, stats={})
     assert res2["groups"] == []
     assert res2["orphan_verdicts"] == [
-        {"id": "C-001", "subject": "甲", "attribute": "兵器", "verdict": {"choice": "v"}, "values_sig": None}
+        {"id": "C-001", "subject": "甲", "attribute": "兵器", "verdict": {"choice": "v"}, "values_sig": None,
+         "verdict_sig": None, "verdict_stale": False}
     ]
 
     # 第三轮：甲回来了
@@ -333,6 +335,62 @@ def test_旧数据没存values_sig字段时不误判stale():
         {0: {"status": "真矛盾", "level": "严重", "category": "人物", "reason": "x [S-0001]"}},
         {}, old, stats={})
     assert res["groups"][0]["verdict_stale"] is False
+
+
+# --- DE 审查必须修1：stale 要跟「作者当初判定时的值集合」比，不是跟上一轮比；
+# 值变了之后接着重跑（二期之前的常态），stale 不能自己消失，经过 orphan 回来也不能丢 ---
+
+_J = {"status": "真矛盾", "level": "严重", "category": "人物", "reason": "x [S-0001]"}
+
+
+def _run(cands, old):
+    return build_result(cands, {i: dict(_J) for i in range(len(cands))}, {}, old, stats={})
+
+
+def _judged_round1():
+    r1 = _run([_cand("甲", "兵器", [("金箍棒", "S-0001"), ("宝杖", "S-0002")])], {})
+    r1["groups"][0]["verdict"] = {"choice": "金箍棒"}  # 作者在第 1 轮的值集合上下了判定
+    return r1
+
+
+def test_值变了之后再跑一轮_仍然标需重看():
+    r1 = _judged_round1()
+    three = [_cand("甲", "兵器", [("金箍棒", "S-0001"), ("宝杖", "S-0002"), ("钉耙", "S-0003")])]
+    r2 = _run(three, r1)
+    assert r2["groups"][0]["verdict_stale"] is True
+    r3 = _run(three, r2)  # 什么都没变，但作者还没看过「钉耙」
+    assert r3["groups"][0]["verdict_stale"] is True, "作者没重新判定前，stale 要一直带着"
+    r4 = _run(three, r3)
+    assert r4["groups"][0]["verdict_stale"] is True
+
+
+def test_值集合变回作者判定时的样子_不再标需重看():
+    r1 = _judged_round1()
+    r2 = _run([_cand("甲", "兵器", [("金箍棒", "S-0001"), ("宝杖", "S-0002"), ("钉耙", "S-0003")])], r1)
+    r3 = _run([_cand("甲", "兵器", [("金箍棒", "S-0001"), ("宝杖", "S-0002")])], r2)
+    assert r3["groups"][0]["verdict_stale"] is False, "跟作者判定时的值集合一样了，判定重新有效"
+
+
+def test_stale经过orphan回来仍然标需重看():
+    r1 = _judged_round1()
+    three = [_cand("甲", "兵器", [("金箍棒", "S-0001"), ("宝杖", "S-0002"), ("钉耙", "S-0003")])]
+    other = [_cand("乙", "年龄", [("十六", "S-0004"), ("二十", "S-0005")])]
+    r2 = _run(three, r1)
+    assert r2["groups"][0]["verdict_stale"] is True
+    r3 = _run(other, r2)  # 甲消失一轮，进 orphan
+    r4 = _run(three + other, r3)
+    g = next(g for g in r4["groups"] if g["subject"] == "甲")
+    assert g["verdict"] == {"choice": "金箍棒"}
+    assert g["verdict_stale"] is True, "经过 orphan 回来不能把 stale 洗掉"
+
+
+def test_verdict_sig记下判定依据的值集合_随组和orphan一起传():
+    r1 = _judged_round1()
+    sig1 = r1["groups"][0]["values_sig"]
+    r2 = _run([_cand("甲", "兵器", [("金箍棒", "S-0001"), ("宝杖", "S-0002"), ("钉耙", "S-0003")])], r1)
+    assert r2["groups"][0]["verdict_sig"] == sig1
+    r3 = _run([], r2)
+    assert r3["orphan_verdicts"][0]["verdict_sig"] == sig1
 
 
 def test_场景里带上故事时间和所属线():
