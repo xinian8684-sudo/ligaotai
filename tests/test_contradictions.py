@@ -549,3 +549,53 @@ def test_clean保留真矛盾的严重度_非真矛盾的清空():
     got = clean_output(data, {"C-001", "C-002"})
     assert got["C-001"]["level"] == "严重"
     assert got["C-002"]["level"] == ""
+
+
+# --- I1（F+DE 合并审查）：矛盾.json 是设计上要给作者手改的文件，坏了不该崩在
+# 模型都调完、钱都花完之后。build_result 对 old 的内层字段（groups / orphan_verdicts /
+# next_id）补上跟 archive.load_index 一个调子的兜底：类型不对就当空/当 1，不抛异常。
+
+def _one_cand():
+    return [_cand("甲", "兵器", [("v", "S-0001"), ("w", "S-0002")])]
+
+
+def test_build_result_old的groups是dict_不崩且能出summary():
+    old = {"next_id": 1, "groups": {"甲": "兵器"}}
+    res = build_result(_one_cand(), {}, {}, old, stats={})
+    assert res["groups"][0]["subject"] == "甲"
+    assert isinstance(res["stats"], dict)
+
+
+def test_build_result_old的groups混了字符串元素_跳过坏元素不崩():
+    old = {"next_id": 1, "groups": ["坏元素", {"id": "C-009", "subject": "乙", "attribute": "外貌", "verdict": None}]}
+    res = build_result(_one_cand(), {}, {}, old, stats={})
+    assert res["groups"][0]["id"] != "C-009", "字符串元素不该被当成合法组接了编号"
+    assert isinstance(res["groups"][0]["id"], str) and res["groups"][0]["id"].startswith("C-")
+
+
+def test_build_result_next_id是字符串_不崩且回退成1():
+    old = {"next_id": "abc", "groups": []}
+    res = build_result(_one_cand(), {}, {}, old, stats={})
+    assert res["groups"][0]["id"] == "C-001"
+    assert res["next_id"] == 2
+
+
+def test_build_result_next_id是list_不崩且回退成1():
+    old = {"next_id": ["坏"], "groups": []}
+    res = build_result(_one_cand(), {}, {}, old, stats={})
+    assert res["groups"][0]["id"] == "C-001"
+    assert res["next_id"] == 2
+
+
+def test_build_result_orphan_verdicts是dict_不崩且能出summary():
+    old = {"next_id": 1, "groups": [], "orphan_verdicts": {"甲": "x"}}
+    res = build_result(_one_cand(), {}, {}, old, stats={})
+    assert res["groups"][0]["subject"] == "甲"
+    assert isinstance(res["orphan_verdicts"], list)
+
+
+def test_build_result_条目缺字段_不崩且能出summary():
+    old = {"next_id": 1, "groups": [{"id": "C-001"}], "orphan_verdicts": [{"id": "C-002"}]}
+    res = build_result(_one_cand(), {}, {}, old, stats={})
+    assert isinstance(res["groups"][0]["id"], str)
+    assert isinstance(res["stats"], dict)

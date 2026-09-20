@@ -195,13 +195,23 @@ def build_result(cands: list[dict], judged: dict[int, dict], times: dict[str, di
     `judged` 的键是 cands 的下标。编号按 (规范主语, 属性) 沿用上一次的，沿用不到的取
     只增不减的 next_id（②a / ②b 撞号踩过的坑）。作者的 verdict 也按 (主语, 属性) 迁移。
     """
+    # 矛盾.json 是设计上要给作者手改的文件，坏了不该崩在模型都调完、钱都花完之后
+    # （I1，跟 archive.load_index 一个调子）：groups / orphan_verdicts 类型不对（比如被
+    # 手改成 dict，或者列表里混了非 dict 元素）就当空 / 跳过坏元素处理；next_id 转不成
+    # int（字符串、list）就回退成 1，交给下面的 I3 逻辑用登记表兜住不会撞号。
+    old_groups = old.get("groups")
+    old_groups = old_groups if isinstance(old_groups, list) else []
+    old_orphans = old.get("orphan_verdicts")
+    old_orphans = old_orphans if isinstance(old_orphans, list) else []
     # 索引既要包含上一轮还在的组，也要包含上一轮已经是 orphan 的——不然组消失一轮
     # 再回来时，既接不回原编号也接不回 verdict（D 组审查必须修3）。当前活跃组优先。
     old_by_key: dict[tuple, dict] = {}
-    for o in old.get("orphan_verdicts") or []:
-        old_by_key[(o.get("subject"), o.get("attribute"))] = o
-    for g in old.get("groups") or []:
-        old_by_key[(g.get("subject"), g.get("attribute"))] = g
+    for o in old_orphans:
+        if isinstance(o, dict):
+            old_by_key[(o.get("subject"), o.get("attribute"))] = o
+    for g in old_groups:
+        if isinstance(g, dict):
+            old_by_key[(g.get("subject"), g.get("attribute"))] = g
     # 编号登记表：只增不减的 {(主语, 属性): 编号}。orphan 只收有 verdict 的组，没判过的组
     # （二期之前是全部）一消失原号就找不回来了（DE 审查必须修2）；登记表不看 verdict，
     # 出现过的 (主语, 属性) 永远占着自己的号。老数据没有登记表，从 groups / orphan 补。
@@ -212,7 +222,10 @@ def build_result(cands: list[dict], judged: dict[int, dict], times: dict[str, di
     for k, g in old_by_key.items():
         if isinstance(g.get("id"), str) and g["id"]:
             registry.setdefault(k, g["id"])
-    next_id = int(old.get("next_id") or 1)
+    try:
+        next_id = int(old.get("next_id") or 1)
+    except (TypeError, ValueError):
+        next_id = 1
     used_keys = set()
     groups = []
     for i, c in enumerate(cands):
