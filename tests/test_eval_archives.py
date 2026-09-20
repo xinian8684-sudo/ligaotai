@@ -162,3 +162,69 @@ def test_抽不满n条就有几条给几条():
     import random
     md = sample_for_review(bodies, {"S-0003": "原文"}, random.Random(1), n=10)
     assert md.count("## 第") == 1
+
+
+# --------------------------------------------------------------------------------------
+# C2（9-20 GHIJ 审查）：outdated 的档案不能进 bodies/allowed，也不能让验收报 pass=True
+# --------------------------------------------------------------------------------------
+
+import json as _json
+
+from ligaotai.book import Book
+from tools.eval_archives import load_scopes_and_bodies, main as eval_main
+
+
+def _make_book_with_outdated(tmp_path):
+    """一本最小的书：一条线是 outdated（模拟步骤 7 跑了一半坏掉，旧档案还留着），
+    一条线正常，地图也被标了 outdated + blocked_by。"""
+    book = Book(tmp_path)
+    (book.thread_archive_dir).mkdir(parents=True, exist_ok=True)
+    (book.world_archive_dir).mkdir(parents=True, exist_ok=True)
+    book.scenes_dir.mkdir(parents=True, exist_ok=True)
+    (book.thread_archive_dir / "L-001.md").write_text(
+        "## 来龙去脉\n他救了人 [S-0001]。\n", encoding="utf-8")
+    (book.thread_archive_dir / "L-002.md").write_text(
+        "## 来龙去脉\n（这是上一轮跑坏之前留下的旧档案）[S-0002]。\n", encoding="utf-8")
+    (book.world_archive_dir / "W-01.md").write_text("## 设定\n无引用。\n", encoding="utf-8")
+    book.map_path.write_text("## 全书概况\n（上一轮的旧地图）[S-0001]。\n", encoding="utf-8")
+    (book.scenes_dir / "S-0001.md").write_text("正文", encoding="utf-8")
+    (book.scenes_dir / "S-0002.md").write_text("正文", encoding="utf-8")
+    index = {
+        "threads": {
+            "L-001": {"file": "档案/支线/L-001.md", "scenes": ["S-0001"], "world": "W-01",
+                      "outdated": False},
+            "L-002": {"file": "档案/支线/L-002.md", "scenes": ["S-0002"], "world": "W-01",
+                      "outdated": True},
+        },
+        "worlds": {"W-01": {"file": "档案/世界/W-01.md", "outdated": False}},
+        "map": {"file": "全书地图.md", "outdated": True, "blocked_by": ["L-002"]},
+    }
+    book.archive_index_path.parent.mkdir(parents=True, exist_ok=True)
+    book.archive_index_path.write_text(_json.dumps(index, ensure_ascii=False), encoding="utf-8")
+    return book
+
+
+def test_outdated的线和地图不进bodies(tmp_path):
+    book = _make_book_with_outdated(tmp_path)
+    bodies, allowed, existing, lenient, outdated = load_scopes_and_bodies(book)
+    assert "L-001" in bodies
+    assert "L-002" not in bodies  # outdated，旧档案不该被读进来打分
+    assert "全书地图" not in bodies  # map 也 outdated
+    assert outdated["threads"] == ["L-002"]
+    assert outdated["worlds"] == []
+    assert outdated["map"] is True
+    assert outdated["map_blocked_by"] == ["L-002"]
+
+
+def test_有outdated档案时main报不通过且退出码非0(tmp_path, capsys):
+    """C2 的核心场景：产物目录里全绿（L-001 引用合规），但有一份 outdated 的旧档案，
+    验收结果不可信，不能 pass=True、退出码不能是 0。"""
+    book = _make_book_with_outdated(tmp_path)
+    try:
+        eval_main(["--book", str(tmp_path), "--report", str(tmp_path / "验收.json")])
+        assert False, "应该以非 0 退出"
+    except SystemExit as e:
+        assert e.code != 0 and e.code is not None
+    report = _json.loads((tmp_path / "验收.json").read_text(encoding="utf-8"))
+    assert "outdated" in report
+    assert report["outdated"]["threads"] == ["L-002"]

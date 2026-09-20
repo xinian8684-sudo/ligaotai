@@ -69,9 +69,10 @@ def test_从场景卡跑到地图(book_with_threads, fake_client):
 
     # ---- 验收工具能吃下这些产出并算出数：中间数据全部来自 run_archive 真正落盘的
     #      档案/index.json + 产物文件，不是这个测试自己手工拼的一份材料。----
-    bodies, allowed, existing, lenient = load_scopes_and_bodies(b)
+    bodies, allowed, existing, lenient, outdated = load_scopes_and_bodies(b)
     assert set(bodies) == {"L-001", "L-002", "W-01", "全书地图"}
     assert existing == {f"S-{i:04d}" for i in range(1, 7)}
+    assert outdated == {"threads": [], "worlds": [], "map": False, "map_blocked_by": []}
 
     check = check_refs(bodies, allowed, existing, lenient)
     assert check["bad"] == 0, check["details"]

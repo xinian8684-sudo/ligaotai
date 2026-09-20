@@ -232,14 +232,21 @@ def generation_scopes(book: Book) -> tuple[dict[str, set[str]], dict[str, set[st
 
 
 def load_scopes_and_bodies(book: Book) -> tuple[dict[str, str], dict[str, set[str]],
-                                                set[str], dict[str, set[str]]]:
+                                                set[str], dict[str, set[str]], dict]:
     """从 档案/index.json 拿到各份档案的路径与范围：线的范围 = index 里记的这条线的
     scenes；世界的范围 = 这个世界下所有线（index 线条目的 world 字段）的场景并集；
     地图的范围 = 全书场景（场景/ 目录下现存的编号）。
 
     第四个返回值是「缺口 / 开放的伏笔」两个小节用的宽范围（见 `check_refs`），取自生成
     档案时的真实 scope。世界设定集没有可区分的小节结构，它要用到的设定笔记场景同样可能
-    落在本世界各线之外，所以世界的严格范围直接并上生成时的 world_scope。"""
+    落在本世界各线之外，所以世界的严格范围直接并上生成时的 world_scope。
+
+    第五个返回值是 outdated 统计（C2，9-20 GHIJ 审查）：`archive.py` 的设计是一份档案
+    生成失败、或跑的途中上游变了，旧文件留着给作者看，只在 index 里标 `outdated`
+    （`archive.py:422-427`、`settle()`、`map()` 的 blocked 分支）。**标了 outdated 的
+    档案不进 bodies/allowed**——不然验收工具会拿一份作废的旧档案打分，产物目录里留着
+    上一轮的东西，读进来算出来的编造率/无引用句率照样很漂亮，报 pass=True，
+    而这其实是一次假通过。调用方要检查这个返回值，有 outdated 就不能信这次验收结果。"""
     index = {}
     if book.archive_index_path.exists():
         try:
@@ -248,6 +255,7 @@ def load_scopes_and_bodies(book: Book) -> tuple[dict[str, str], dict[str, set[st
             index = {}
     threads = index.get("threads") if isinstance(index.get("threads"), dict) else {}
     worlds = index.get("worlds") if isinstance(index.get("worlds"), dict) else {}
+    map_entry = index.get("map") if isinstance(index.get("map"), dict) else {}
 
     thread_scope = {tid: set(e.get("scenes") or []) for tid, e in threads.items() if isinstance(e, dict)}
     world_scope: dict[str, set[str]] = {wid: set() for wid, e in worlds.items() if isinstance(e, dict)}
@@ -265,23 +273,35 @@ def load_scopes_and_bodies(book: Book) -> tuple[dict[str, str], dict[str, set[st
     bodies: dict[str, str] = {}
     allowed: dict[str, set[str]] = {}
     lenient: dict[str, set[str]] = {}
+    outdated: dict = {"threads": [], "worlds": [], "map": False, "map_blocked_by": []}
     for tid, e in threads.items():
-        if isinstance(e, dict) and e.get("file"):
-            p = book.root / e["file"]
-            if p.exists():
-                bodies[tid] = p.read_text(encoding="utf-8")
-                allowed[tid] = thread_scope.get(tid, set())
-                lenient[tid] = allowed[tid] | gen_thread.get(tid, set())
+        if not (isinstance(e, dict) and e.get("file")):
+            continue
+        if e.get("outdated"):
+            outdated["threads"].append(tid)
+            continue
+        p = book.root / e["file"]
+        if p.exists():
+            bodies[tid] = p.read_text(encoding="utf-8")
+            allowed[tid] = thread_scope.get(tid, set())
+            lenient[tid] = allowed[tid] | gen_thread.get(tid, set())
     for wid, e in worlds.items():
-        if isinstance(e, dict) and e.get("file"):
-            p = book.root / e["file"]
-            if p.exists():
-                bodies[wid] = p.read_text(encoding="utf-8")
-                allowed[wid] = world_scope.get(wid, set()) | gen_world.get(wid, set())
-    if book.map_path.exists():
+        if not (isinstance(e, dict) and e.get("file")):
+            continue
+        if e.get("outdated"):
+            outdated["worlds"].append(wid)
+            continue
+        p = book.root / e["file"]
+        if p.exists():
+            bodies[wid] = p.read_text(encoding="utf-8")
+            allowed[wid] = world_scope.get(wid, set()) | gen_world.get(wid, set())
+    if map_entry.get("outdated"):
+        outdated["map"] = True
+        outdated["map_blocked_by"] = list(map_entry.get("blocked_by") or [])
+    elif book.map_path.exists():
         bodies["全书地图"] = book.map_path.read_text(encoding="utf-8")
         allowed["全书地图"] = set(existing)  # 地图的范围 = 全书场景
-    return bodies, allowed, existing, lenient
+    return bodies, allowed, existing, lenient, outdated
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -309,7 +329,7 @@ def main(argv: list[str] | None = None) -> None:
     book = Book(Path(args.book))
 
     if args.sample:
-        bodies, _, existing, _lenient = load_scopes_and_bodies(book)
+        bodies, _, existing, _lenient, _outdated = load_scopes_and_bodies(book)
         scenes = _scene_texts(book, existing)
         md = sample_for_review(bodies, scenes, _random.Random(args.seed), args.sample)
         out_path = Path(args.out)
@@ -318,10 +338,15 @@ def main(argv: list[str] | None = None) -> None:
         print(f"sampled={md.count('## 第')} out={out_path}")
         return
 
-    bodies, allowed, existing, lenient = load_scopes_and_bodies(book)
+    bodies, allowed, existing, lenient, outdated = load_scopes_and_bodies(book)
     refs = check_refs(bodies, allowed, existing, lenient)
     report: dict = {"refs": refs}
     ok = refs["fabricated_rate"] <= FABRICATED_LIMIT and refs["no_ref_rate"] <= NO_REF_LIMIT
+
+    n_outdated = len(outdated["threads"]) + len(outdated["worlds"]) + (1 if outdated["map"] else 0)
+    if n_outdated:
+        report["outdated"] = outdated
+        ok = False
 
     if args.key:
         if not args.folder:
@@ -341,6 +366,9 @@ def main(argv: list[str] | None = None) -> None:
     report_path = Path(args.report)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    if n_outdated:
+        print(f"警告：本次读到的档案里有 {n_outdated} 份被标 outdated / 地图 blocked，验收结果不可信 "
+              f"（threads={outdated['threads']} worlds={outdated['worlds']} map_blocked={outdated['map']}）")
     print(
         f"fabricated_rate={refs['fabricated_rate']} no_ref_rate={refs['no_ref_rate']} "
         f"bad={refs['bad']}/{refs['total']} recall={report.get('recall', {}).get('recall')} "
