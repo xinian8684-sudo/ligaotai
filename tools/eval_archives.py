@@ -409,7 +409,19 @@ def main(argv: list[str] | None = None) -> None:
         if not args.folder:
             sys.exit("--key 需要搭配 --folder（乱稿文件夹名）")
         key = json.loads(Path(args.key).read_text(encoding="utf-8"))
+        # I3（9-20 GHIJ 审查）：答案文件没有 contradictions（加这功能之前生成的旧答案文件）
+        # 时，召回门槛原来会被静默跳过、还打印 recall=0.0 pass=True——看着像失败，退出码
+        # 却是 0。拿 --key 就是为了顺带算召回率，答案文件里压根没植入矛盾就没什么可算的，
+        # 硬报错逼着换一份带矛盾的答案文件，别让「没法算」悄悄看起来像「算出来是 0」。
+        if not key.get("contradictions"):
+            sys.exit("这份答案文件没有植入矛盾，重新跑 scramble --contradictions N")
         chapter_scenes = chapter_to_scenes(book, key, args.folder)
+        # 对称的坑：--folder 传错时 by_path 一个都对不上，chapter_scenes 全空，recall
+        # 会静默变 0（这次 pass=False，但原因跟上面「没有 contradictions」完全不同，
+        # 报告里分不出来）。同样硬报错，别让两种「0」看起来一样。
+        if not chapter_scenes:
+            sys.exit(f"--folder {args.folder} 在这本书里一个场景都没对上，"
+                      "多半是乱稿文件夹名传错了")
         result = {}
         if book.contradictions_path.exists():
             try:

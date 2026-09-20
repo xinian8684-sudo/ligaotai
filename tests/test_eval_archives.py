@@ -380,3 +380,61 @@ def test_编造率超门槛时main退出码非0(tmp_path):
         assert False, "编造率超门槛应该以非 0 退出"
     except SystemExit as e:
         assert e.code != 0 and e.code is not None
+
+
+# --------------------------------------------------------------------------------------
+# I3（9-20 GHIJ 审查）：答案文件没有 contradictions / --folder 传错时不能静默出错数
+# --------------------------------------------------------------------------------------
+
+def test_答案文件没有contradictions键时硬报错(tmp_path):
+    """仓库里现有的旧答案文件就没有 contradictions 键（加这功能之前生成的）。拿它跑
+    验收不能打印 recall=0.0 pass=True——那是假通过，得硬报错逼着换一份带矛盾的答案。"""
+    from tools.eval_archives import main as eval_main
+    book = Book(tmp_path)
+    book.thread_archive_dir.mkdir(parents=True, exist_ok=True)
+    book.scenes_dir.mkdir(parents=True, exist_ok=True)
+    (book.thread_archive_dir / "L-001.md").write_text("## 来龙去脉\n他救了人 [S-0001]。\n",
+                                                        encoding="utf-8")
+    (book.scenes_dir / "S-0001.md").write_text("正文", encoding="utf-8")
+    index = {"threads": {"L-001": {"file": "档案/支线/L-001.md", "scenes": ["S-0001"],
+                                    "world": "", "outdated": False}}}
+    book.archive_index_path.parent.mkdir(parents=True, exist_ok=True)
+    book.archive_index_path.write_text(_json.dumps(index, ensure_ascii=False), encoding="utf-8")
+    key_path = tmp_path / "旧答案.json"
+    key_path.write_text(_json.dumps({"seed": 1, "files": []}), encoding="utf-8")  # 没有 contradictions 键
+    try:
+        eval_main(["--book", str(tmp_path), "--key", str(key_path), "--folder", "乱稿",
+                  "--report", str(tmp_path / "验收.json")])
+        assert False, "没有 contradictions 键应该直接报错退出，不能悄悄 pass"
+    except SystemExit as e:
+        assert e.code != 0 and "contradictions" in str(e.code)
+
+
+def test_folder传错导致chapter_scenes全空时硬报错(tmp_path):
+    """--folder 传错时 truth_positions 的 by_path 一个都对不上，chapter_scenes 全空，
+    recall 会静默变 0——这跟「答案文件没有 contradictions」是两种完全不同的 0，
+    不能都表现成看不出原因的 pass=False/pass=True。"""
+    from ligaotai.scenes import Scene, write_scene
+    from tools.eval_archives import main as eval_main
+    book = Book(tmp_path)
+    book.thread_archive_dir.mkdir(parents=True, exist_ok=True)
+    book.scenes_dir.mkdir(parents=True, exist_ok=True)
+    (book.thread_archive_dir / "L-001.md").write_text("## 来龙去脉\n他救了人 [S-0001]。\n",
+                                                        encoding="utf-8")
+    write_scene(book, Scene(id="S-0001", source="真实乱稿文件夹/x.txt", index=1,
+                            start=0, end=2, chars=2, hash="h", text="正文"))
+    index = {"threads": {"L-001": {"file": "档案/支线/L-001.md", "scenes": ["S-0001"],
+                                    "world": "", "outdated": False}}}
+    book.archive_index_path.parent.mkdir(parents=True, exist_ok=True)
+    book.archive_index_path.write_text(_json.dumps(index, ensure_ascii=False), encoding="utf-8")
+    key_path = tmp_path / "答案.json"
+    key_path.write_text(_json.dumps({
+        "seed": 1, "files": [{"path": "x.txt", "chapter": 1, "piece": 1, "pieces": 1, "kind": "original"}],
+        "contradictions": [{"chapter": 1, "subject": "x", "attribute": "兵器", "old": "a", "new": "b"}],
+    }), encoding="utf-8")
+    try:
+        eval_main(["--book", str(tmp_path), "--key", str(key_path), "--folder", "不存在的乱稿文件夹",
+                  "--report", str(tmp_path / "验收.json")])
+        assert False, "--folder 传错、chapter_scenes 全空时应该直接报错退出"
+    except SystemExit as e:
+        assert e.code != 0 and "folder" in str(e.code)
