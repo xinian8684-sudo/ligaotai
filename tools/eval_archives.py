@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # 自己所在目录，给 `from eval_threads import ...` 用
 
 from ligaotai.archive import refs_in  # noqa: E402
 from ligaotai.book import Book  # noqa: E402
@@ -22,6 +23,8 @@ from ligaotai.book import Book  # noqa: E402
 _SENT = re.compile(r"[^。！？\n]+[。！？]?")
 FABRICATED_LIMIT = 0.02
 NO_REF_LIMIT = 0.10
+RECALL_FLOOR = 0.8
+_HIT_STATUS = ("真矛盾", "无法判断")  # 宁可多报：这两种在界面上一起显示，一起算召回
 
 
 def sentences(text: str) -> list[str]:
@@ -67,6 +70,52 @@ def check_refs(bodies: dict[str, str], allowed: dict[str, set[str]],
         "no_ref_rate": round(no_ref / n_sent, 4) if n_sent else 0.0,
         "details": details[:50],
     }
+
+
+def recall(key: dict, chapter_scenes: dict[int, set[str]], result: dict) -> dict:
+    """植入矛盾的召回（spec 9.1）：植入点所在章节的场景编号，出现在某个
+    status ∈ {真矛盾, 无法判断} 的组里，且该组属性等于植入的属性，就算召回。"""
+    groups = [g for g in (result.get("groups") or []) if g.get("status") in _HIT_STATUS]
+    planted = key.get("contradictions") or []
+    hit, misses = 0, []
+    matched_ids = set()
+    for p in planted:
+        scenes = chapter_scenes.get(p["chapter"], set())
+        found = None
+        for g in groups:
+            if g.get("attribute") != p["attribute"]:
+                continue
+            ids = {s["id"] for v in g.get("values") or [] for s in v.get("scenes") or []}
+            if ids & scenes:
+                found = g["id"]
+                break
+        if found:
+            hit += 1
+            matched_ids.add(found)
+        else:
+            misses.append(p)
+    return {
+        "planted": len(planted), "hit": hit,
+        "recall": round(hit / len(planted), 4) if planted else 0.0,
+        "misses": misses,
+        # 误报只报数不设门槛——作者定了宁可多报，留着人工翻
+        "false_positives": sum(1 for g in groups if g.get("status") == "真矛盾"
+                               and g["id"] not in matched_ids),
+    }
+
+
+def chapter_to_scenes(book: Book, key: dict, folder_name: str) -> dict[int, set[str]]:
+    """章节号 → 场景编号集合。答案文件记的是章节，S- 编号是导入时才分配的，
+    所以要通过 key["files"] 的 path 和书的导入清单反查。
+
+    直接复用 eval_threads.truth_positions——它返回 {场景编号: (章节, 段序, 段数)}，
+    这边只要反过来聚合。别另起炉灶，两处读法不一致就会对不上。"""
+    from eval_threads import truth_positions  # tools/ 已在 sys.path 里
+
+    out: dict[int, set[str]] = {}
+    for sid, pos in truth_positions(book, key, folder_name).items():
+        out.setdefault(pos[0], set()).add(sid)
+    return out
 
 
 # --------------------------------------------------------------------------------------
@@ -118,22 +167,41 @@ def load_scopes_and_bodies(book: Book) -> tuple[dict[str, str], dict[str, set[st
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description="验收步骤 7（档案/矛盾/地图）产出的引用质量")
+    ap = argparse.ArgumentParser(description="验收步骤 7（档案/矛盾/地图）产出的引用质量与植入矛盾召回")
     ap.add_argument("--book", required=True, help="书目录路径，比如 data/验收书库/验收-归档-西游记")
+    ap.add_argument("--key", help="乱稿答案文件（含 --contradictions 植入的矛盾），给了就顺带算召回率")
+    ap.add_argument("--folder", help="--key 对应的乱稿文件夹名（章节→场景映射要用），跟 --key 搭配必填")
     ap.add_argument("--report", default="data/验收-档案.json")
     args = ap.parse_args(argv)
 
     book = Book(Path(args.book))
     bodies, allowed, existing = load_scopes_and_bodies(book)
-    res = check_refs(bodies, allowed, existing)
+    refs = check_refs(bodies, allowed, existing)
+    report: dict = {"refs": refs}
+    ok = refs["fabricated_rate"] <= FABRICATED_LIMIT and refs["no_ref_rate"] <= NO_REF_LIMIT
+
+    if args.key:
+        if not args.folder:
+            sys.exit("--key 需要搭配 --folder（乱稿文件夹名）")
+        key = json.loads(Path(args.key).read_text(encoding="utf-8"))
+        chapter_scenes = chapter_to_scenes(book, key, args.folder)
+        result = {}
+        if book.contradictions_path.exists():
+            try:
+                result = json.loads(book.contradictions_path.read_text(encoding="utf-8")) or {}
+            except (OSError, ValueError):
+                result = {}
+        rec = recall(key, chapter_scenes, result)
+        report["recall"] = rec
+        ok = ok and (rec["planted"] == 0 or rec["recall"] >= RECALL_FLOOR)
 
     report_path = Path(args.report)
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(json.dumps(res, ensure_ascii=False, indent=2), encoding="utf-8")
-    ok = res["fabricated_rate"] <= FABRICATED_LIMIT and res["no_ref_rate"] <= NO_REF_LIMIT
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(
-        f"fabricated_rate={res['fabricated_rate']} no_ref_rate={res['no_ref_rate']} "
-        f"bad={res['bad']}/{res['total']} pass={ok} report={report_path}"
+        f"fabricated_rate={refs['fabricated_rate']} no_ref_rate={refs['no_ref_rate']} "
+        f"bad={refs['bad']}/{refs['total']} recall={report.get('recall', {}).get('recall')} "
+        f"pass={ok} report={report_path}"
     )
     if not ok:
         sys.exit(1)
