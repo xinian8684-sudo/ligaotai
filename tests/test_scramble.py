@@ -304,3 +304,81 @@ def test_不给contradictions参数时行为不变(tmp_path):
     import json
     key = json.loads((tmp_path / "乱稿-答案.json").read_text(encoding="utf-8"))
     assert key["contradictions"] == []
+
+
+# --------------------------------------------------------------------------------------
+# C1（9-20 GHIJ 审查）：锚点表繁简都认、配额分散、subject 不再恒为空
+# --------------------------------------------------------------------------------------
+
+def test_n为0时真的不植入且正文一个字没变():
+    """语料里放真锚点（M5 的空测漏洞：旧版用「甲乙丙」这种没有锚点的语料，n<=0 的短路
+    删不删结果都一样）。这里用含真锚点的语料，n=0 必须一处都不动，正文原样。"""
+    chapters = [Chapter(1, "第一回", "行者取出金箍棒，年方十六，左臂有伤，穿红衣。")]
+    original = chapters[0].body
+    planted = plant_contradictions(chapters, random.Random(1), n=0)
+    assert planted == []
+    assert chapters[0].body == original
+
+
+def test_是替换不是追加():
+    """M6：只在章末追加新值而不替换原词，也能让「old not in body or count<2」这种弱断言
+    通过。这里直接数 old 的出现次数，追加不替换的话次数不会减少。"""
+    chapters = [Chapter(1, "第一回", "行者取出金箍棒。行者又取金箍棒来。")]
+    before = chapters[0].body.count("金箍棒")
+    planted = plant_contradictions(chapters, random.Random(1), n=1)
+    assert len(planted) == 1
+    after = chapters[0].body.count(planted[0]["old"])
+    assert after == before - 1
+
+
+def test_植入章节必须在kept里(tmp_path):
+    """M20：矛盾不能植入到会被删掉的章节——scramble() 传给 plant_contradictions 的必须
+    是 kept，不是全量 chapters。"""
+    chapters = make_chapters(20)
+    for c in chapters:
+        c.body += "，行者取出金箍棒。"
+    out = tmp_path / "乱稿"
+    key = scramble(chapters, out, seed=3, n_delete=5, n_truncate=0, n_full=0, n_excerpt=0,
+                    alias_chapters=5, n_contradictions=10)
+    deleted = set(key["deleted"])
+    assert key["contradictions"]
+    assert not ({p["chapter"] for p in key["contradictions"]} & deleted)
+
+
+def test_繁体语料按繁体写回新值():
+    """C1 核心：语料是繁体，旧版词表全简体，10 处植入 8 处撞同一条。这里验证繁体语料上
+    锚点能匹配、新值写回去也是繁体字形（不会把简体新词塞进简体正文）。一个章节最多
+    植一处，所以拆两个章节各放一类锚点。"""
+    chapters = [
+        Chapter(1, "第一回", "行者掣出九齒釘鈀。"),
+        Chapter(2, "第二回", "八戒穿紅衣。"),
+    ]
+    planted = plant_contradictions(chapters, random.Random(2), n=3)
+    assert len(planted) == 2  # 兵器、外貌各一处；这段没有年龄锚点
+    by_attr = {p["attribute"]: p for p in planted}
+    assert by_attr["兵器"]["old"] == "九齒釘鈀" and by_attr["兵器"]["new"] == "青鋒劍"
+    assert by_attr["外貌"]["old"] == "紅衣" and by_attr["外貌"]["new"] == "青衣"
+    assert by_attr["兵器"]["new"] in chapters[0].body
+    assert by_attr["外貌"]["new"] in chapters[1].body
+
+
+def test_同一old_new对有配额上限():
+    """C1：同一个 (old,new) 有向对最多用 max_per_pair 次，逼植入分散，不能像旧版那样
+    10 处里 8 处是同一条替换。"""
+    chapters = [
+        Chapter(i, f"第{i}回", "行者又取金箍棒来也。") for i in range(1, 11)
+    ]
+    planted = plant_contradictions(chapters, random.Random(4), n=10, max_per_pair=2)
+    from collections import Counter
+    counts = Counter((p["old"], p["new"]) for p in planted)
+    assert all(c <= 2 for c in counts.values())
+    assert len(planted) == 2  # 只有一种锚点词、一种换法，配额封顶后不会凑满 n=10
+
+
+def test_植入记录带非空subject():
+    """spec 9.1 要记 subject；旧版恒为空字符串。这里给一个典型的「XX道」叙述，
+    subject 至少要能抓到点名的那个名字。"""
+    chapters = [Chapter(1, "第一回", "行者笑道：「不打紧。」伸手取出金箍棒。")]
+    planted = plant_contradictions(chapters, random.Random(1), n=1)
+    assert len(planted) == 1
+    assert planted[0]["subject"] != ""
