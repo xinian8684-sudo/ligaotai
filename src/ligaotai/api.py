@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from . import __version__
 from . import entities as ent
 from . import threads_ops as tops
+from .archive import load_index, run_archive, write_index
 from .book import STEP_LABELS, STEPS, Book, create_book, list_books, open_book, recover_interrupted
 from .cards import is_fresh, load_card, load_cards, run_cards
 from .config import (
@@ -24,7 +25,7 @@ from .config import (
     save_config,
 )
 from .dedup import run_dedup, set_main
-from .fsutil import ensure_within, read_json
+from .fsutil import ensure_within, read_json, safe_name
 from .importer import check_import_folder, run_import
 from .jobs import BusyError, JobCancelled, JobRunner
 from .llm import ChatBackend, LLMClient, NoKeyError, OpenAIBackend, check_model
@@ -32,7 +33,7 @@ from .readers import read_text
 from .scenes import SCENE_ID_RE, get_scene, load_scenes, run_split
 from .threads import normalize, run_threads
 
-RUNNABLE = ("split", "dedup", "cards", "entities", "threads")
+RUNNABLE = ("split", "dedup", "cards", "entities", "threads", "archive")
 PAUSED = "已暂停：做完的部分已经保存，重跑会接着做"
 
 
@@ -85,6 +86,12 @@ class MainThreadReq(BaseModel):
 
 class WorldReq(BaseModel):
     world: str
+
+
+class RerunReq(BaseModel):
+    threads: list[str] = []
+    worlds: list[str] = []
+    map: bool = False
 
 
 def create_app(
@@ -159,6 +166,8 @@ def create_app(
             return lambda p: run_cards(book, client, p)
         if step == "threads":
             return lambda p: run_threads(book, client, p)
+        if step == "archive":
+            return lambda p: run_archive(book, client, p)
         return lambda p: ent.run_entities(book, client, p)
 
     def entity_op(fn: Callable[[], object]):
@@ -410,5 +419,49 @@ def create_app(
             raise HTTPException(404, "没有这个原稿")
         text, enc = read_text(ensure_within(b.originals_dir, b.originals_dir / path))
         return {"path": path, "encoding": enc, "text": text}
+
+    @app.get("/api/books/{name}/archive")
+    def archive_index(name: str) -> dict:
+        b = get_book(name)
+        # I2（作者 9-20 拍板）：附上当前配置的模型名，好让界面跟每份档案 index 里记的
+        # model 字段比对，提示作者「这份档案是 X 模型写的，当前配置是 Y，要不要重跑」。
+        # 只读配置，不建后端连接——不需要真的能连上模型才能看这个对比。
+        return {**load_index(b), "current_model": load_config(app_dir).synth.model}
+
+    @app.get("/api/books/{name}/contradictions")
+    def contradictions(name: str) -> dict:
+        b = get_book(name)
+        return read_json(b.contradictions_path, {"groups": [], "stats": {}})
+
+    @app.get("/api/books/{name}/archive/{kind}/{oid}")
+    def archive_body(name: str, kind: str, oid: str) -> dict:
+        b = get_book(name)
+        if kind not in ("thread", "world"):
+            raise HTTPException(400, "kind 只能是 thread 或 world")
+        base = b.thread_archive_dir if kind == "thread" else b.world_archive_dir
+        path = ensure_within(base, base / f"{safe_name(oid)}.md")
+        if not path.exists():
+            raise HTTPException(404, "没有这份档案")
+        return {"id": oid, "body": path.read_text(encoding="utf-8")}
+
+    @app.post("/api/books/{name}/archive/rerun")
+    def archive_rerun(name: str, req: RerunReq) -> dict:
+        """把指定的档案标过期，下次跑步骤 7 只重跑它们。"""
+        b = get_book(name)
+        data = read_json(b.threads_path, {}) or {}
+        tids = {t["id"] for t in data.get("threads") or []}
+        wids = {w["id"] for w in data.get("worlds") or []}
+        bad = [x for x in req.threads if x not in tids] + [x for x in req.worlds if x not in wids]
+        if bad:
+            raise HTTPException(400, "没有这些编号：" + "、".join(bad))
+        index = load_index(b)
+        for tid in req.threads:
+            index["threads"].setdefault(tid, {})["outdated"] = True
+        for wid in req.worlds:
+            index["worlds"].setdefault(wid, {})["outdated"] = True
+        if req.map:
+            index["map"]["outdated"] = True
+        write_index(b, index)
+        return {"ok": True}
 
     return app

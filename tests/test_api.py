@@ -90,9 +90,9 @@ def test_import_own_book_folder_is_400(client, tmp_path):
 
 def test_errors(client, src):
     client.post("/api/books", json={"title": "我的书"})
-    # threads 从计划②b 起是合法步骤名，上游没做完时返回 409；archive（计划②c）还不能跑，返回 400。
+    # threads / archive 从计划②b、②c 起都是合法步骤名，上游没做完时统一返回 409。
     assert client.post("/api/books/我的书/steps/threads/run").status_code == 409
-    assert client.post("/api/books/我的书/steps/archive/run").status_code == 400
+    assert client.post("/api/books/我的书/steps/archive/run").status_code == 409
     assert client.post("/api/books/我的书/import", json={"folder": str(src / "没有")}).status_code == 400
     assert client.get("/api/books/我的书/scenes/..%2Fbook").status_code == 404
     assert client.get("/api/books/我的书/scenes/S-0001").status_code == 404
