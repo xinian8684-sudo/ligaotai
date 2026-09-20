@@ -29,6 +29,12 @@ _LENIENT_SECTIONS = ("缺口", "开放的伏笔")
 FABRICATED_LIMIT = 0.02
 NO_REF_LIMIT = 0.10
 RECALL_FLOOR = 0.8
+# I1（9-20 GHIJ 审查）经验重试系数：llm.py 的 MAX_ATTEMPTS=3 是最坏情况——一次调用
+# 失败重试到底，3 次全额计费；但多数调用一次就成功，按 3 倍算会明显高估。这里跟
+# tools/eval_threads.py 的 CARD_CALLS(1.75)/THREAD_PASSES(5) 一样按经验系数估，不按
+# 最坏情况的整数倍算。步骤 7 的 check_archive 硬规则（每句结论都要带编号+编号必须在
+# 范围内）触发重试的概率不低，1.5 比「完全不算重试」（旧版）更诚实。
+RETRY_FACTOR = 1.5
 _HIT_STATUS = ("真矛盾", "无法判断")  # 宁可多报：这两种在界面上一起显示，一起算召回
 
 
@@ -198,38 +204,64 @@ def sample_for_review(bodies: dict[str, str], scenes: dict[str, str],
 
 
 def estimate(book: Book, cfg: AppConfig) -> dict:
-    """不调模型，只粗估要花多少钱（spec 9.4）：②b 的教训是这类步骤输出可能比输入还多，
-    这里四件产出的输出都按输入的 1.0 倍算，别再犯只数输入的老毛病。分项给，别只给总数——
-    作者要据此决定跑不跑、跑几本。
+    """不调模型，只粗估要花多少钱（spec 9.4）。分项给，别只给总数——作者要据此决定
+    跑不跑、跑几本。
+
+    I1 订正（9-20 GHIJ 审查）：旧版有三处偏差，方向相反、互相抵消得不明不白——
+    1. 不算重试：`llm.py` 的 `MAX_ATTEMPTS=3`，且 `finish_reason=="length"` 时会把
+       `max_tokens` 翻倍再调一次，一次调用最坏 3 次全额计费。这里按 `RETRY_FACTOR`
+       的经验系数估（同 `tools/eval_threads.py` 的 `CARD_CALLS`/`THREAD_PASSES` 口径），
+       不按最坏情况的 3 倍算。
+    2. 输出不受 `max_tokens` 约束：旧版按「输出 = 输入 × 1.0」算总字符数，但 synth 档
+       `max_tokens=32768`（`config.py`），世界设定集/全书地图这类大输入根本不可能真
+       输出那么多——实测西游记世界设定集输入 128888 字、全书地图输入 221435 字，
+       实际输出最多 32768，旧版把这两项高估 4-7 倍。这里按**每次调用**（每条线/每个
+       世界/每批矛盾/地图这一次）把输出封顶在 `min(该次输入字符数, synth.max_tokens)`，
+       再对所有调用求和——不能对聚合后的总字符数封顶，那样会把「很多次小调用」错误地
+       压成「一次大调用」的量级，反而低估。
+    3. docstring 曾经写「②b 的教训是归线输出比输入还多」——这句话跟这个仓库自己的
+       ②b 真实日志相反：threads 的输出只有输入的 0.407 倍、entities 0.931 倍、cards
+       0.326 倍，一次都没超过 1（见 `reports/GHIJ-审查.md` 的日志校准表）。这次订正为
+       实话：char→token 按 1:1 估是保守的上界（②b 真值 0.700–0.845 token/字符，比
+       1:1 更省），输出按输入 1.0 倍（封顶前）也是上界假设，不是「归线输出比输入多」
+       这条（查无实据的）经验。
 
     - 支线档案：线数 × 每线输入字符数（archive_input.thread_input 渲染出的文本，用
       prepare_inputs() 算好的 thread_text 直接求和，比「平均每线」更准）。
     - 世界设定集：世界数 × 该世界渲染文本字符数（world_text，含 facts + 设定笔记原文）。
     - 矛盾扫描：批数 × 批输入字符数（contradictions.batches 已经按预算切好的批）。
     - 全书地图：全部档案字符数——地图读的是**生成好的档案正文**，不是这些输入文本；
-      估算时档案还没生成，用「输出 = 输入 × 1.0」这同一条假设，拿支线 + 世界的
-      输入字符数近似档案生成后的大小。
+      估算时档案还没生成，用「输出 = 输入 × 1.0（封顶前）」这同一条假设，拿支线 + 世界的
+      输入字符数近似档案生成后的大小；这是上界近似，不是真实的地图输入渲染。
     """
     inp = prepare_inputs(book)
     price_in, price_out = cfg.price_input, cfg.price_output
+    cap = cfg.synth.max_tokens
 
-    def usd(chars: int) -> float:
-        # 1 字符按 1 token 估（偏保守，同全项目口径）；输出量按输入的 1.0 倍算（②b 教训：
-        # 按 0.5 倍这类比例估会把归线这类「输出比输入还多」的步骤估低）
-        return round(chars * price_in / 1e6 + chars * 1.0 * price_out / 1e6, 4)
+    def usd(input_chars: int, per_call_chars: list[int]) -> float:
+        # 输入按 1 字符 1 token 估（偏保守，同全项目口径）；输出按每次调用自己的输入
+        # 字符数封顶在 synth.max_tokens（不能对聚合总数封顶，见上面 docstring 第 2 条），
+        # 再乘经验重试系数。
+        output_tokens = sum(min(c, cap) for c in per_call_chars)
+        return round((input_chars * price_in / 1e6 + output_tokens * price_out / 1e6) * RETRY_FACTOR, 4)
 
-    thread_chars = sum(len(t) for t in inp.thread_text.values())
-    world_chars = sum(len(t) for t in inp.world_text.values())
-    contra_chars = sum(len(b["text"]) for b in inp.contra["batches"])
-    map_chars = thread_chars + world_chars  # 见上面的注释
+    thread_lens = [len(t) for t in inp.thread_text.values()]
+    world_lens = [len(t) for t in inp.world_text.values()]
+    contra_lens = [len(b["text"]) for b in inp.contra["batches"]]
+    thread_chars, world_chars, contra_chars = sum(thread_lens), sum(world_lens), sum(contra_lens)
+    map_chars = thread_chars + world_chars  # 见上面 docstring 关于全书地图的注释
 
     parts = {
-        "支线档案": {"n": len(inp.thread_text), "input_chars": thread_chars, "usd": usd(thread_chars)},
-        "世界设定集": {"n": len(inp.world_text), "input_chars": world_chars, "usd": usd(world_chars)},
-        "矛盾扫描": {"n": len(inp.contra["batches"]), "input_chars": contra_chars, "usd": usd(contra_chars)},
-        "全书地图": {"n": 1, "input_chars": map_chars, "usd": usd(map_chars)},
+        "支线档案": {"n": len(thread_lens), "input_chars": thread_chars,
+                   "usd": usd(thread_chars, thread_lens)},
+        "世界设定集": {"n": len(world_lens), "input_chars": world_chars,
+                    "usd": usd(world_chars, world_lens)},
+        "矛盾扫描": {"n": len(contra_lens), "input_chars": contra_chars,
+                  "usd": usd(contra_chars, contra_lens)},
+        "全书地图": {"n": 1, "input_chars": map_chars, "usd": usd(map_chars, [map_chars])},
     }
-    return {**parts, "total_usd": round(sum(p["usd"] for p in parts.values()), 4)}
+    return {**parts, "total_usd": round(sum(p["usd"] for p in parts.values()), 4),
+            "retry_factor": RETRY_FACTOR, "output_cap_tokens": cap}
 
 
 def _scene_texts(book: Book, ids: set[str]) -> dict[str, str]:

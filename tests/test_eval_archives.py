@@ -273,3 +273,110 @@ def test_不相关标题带括号不会被当成缺口():
                      existing={"S-0003", "S-0150"},
                      lenient={"L-001": {"S-0003", "S-0150"}})
     assert res["bad"] == 1 and res["details"][0]["why"] == "不属于这份档案"
+
+
+# --------------------------------------------------------------------------------------
+# I1（9-20 GHIJ 审查）：estimate() 原来一个测试都没有（M9/M10/M18/M19 全部漏网）
+# --------------------------------------------------------------------------------------
+
+from ligaotai.archive import Inputs
+from ligaotai.config import AppConfig
+from tools.eval_archives import estimate
+
+
+def _fake_inputs(thread_chars=1000, n_threads=2, world_chars=2000, n_worlds=1,
+                  contra_chars=500, n_batches=1):
+    inp = Inputs(unit="年", threads=[], worlds=[], gaps=[], times={})
+    inp.thread_text = {f"L-{i:03d}": "字" * thread_chars for i in range(n_threads)}
+    inp.world_text = {f"W-{i:02d}": "字" * world_chars for i in range(n_worlds)}
+    inp.contra = {"batches": [{"text": "字" * contra_chars} for _ in range(n_batches)]}
+    return inp
+
+
+def test_estimate四项分项都在且总数是分项之和(monkeypatch, tmp_path):
+    monkeypatch.setattr("tools.eval_archives.prepare_inputs", lambda book: _fake_inputs())
+    est = estimate(Book(tmp_path), AppConfig())
+    for key in ("支线档案", "世界设定集", "矛盾扫描", "全书地图"):
+        assert key in est and est[key]["usd"] > 0
+    assert est["total_usd"] == round(sum(est[k]["usd"] for k in
+                                         ("支线档案", "世界设定集", "矛盾扫描", "全书地图")), 4)
+
+
+def test_estimate输出计价_price_output为0和非0结果不同(monkeypatch, tmp_path):
+    """M9：估算里去掉输出 token 那一项。price_output=0 和 price_output=1.2 必须算出不同的钱。"""
+    monkeypatch.setattr("tools.eval_archives.prepare_inputs", lambda book: _fake_inputs())
+    est_zero = estimate(Book(tmp_path), AppConfig(price_output=0.0))
+    est_paid = estimate(Book(tmp_path), AppConfig(price_output=1.2))
+    assert est_zero["total_usd"] < est_paid["total_usd"]
+    for key in ("支线档案", "世界设定集", "矛盾扫描", "全书地图"):
+        assert est_zero[key]["usd"] < est_paid[key]["usd"]
+
+
+def test_estimate矛盾扫描分项算进总数(monkeypatch, tmp_path):
+    """M10：估算漏掉「矛盾扫描」分项。有矛盾批次时总价必须比没有时高。"""
+    monkeypatch.setattr("tools.eval_archives.prepare_inputs",
+                        lambda book: _fake_inputs(n_batches=0))
+    est_no_contra = estimate(Book(tmp_path), AppConfig())
+    monkeypatch.setattr("tools.eval_archives.prepare_inputs",
+                        lambda book: _fake_inputs(n_batches=1, contra_chars=5000))
+    est_with_contra = estimate(Book(tmp_path), AppConfig())
+    assert est_no_contra["矛盾扫描"]["usd"] == 0.0
+    assert est_with_contra["矛盾扫描"]["usd"] > 0
+    assert est_with_contra["total_usd"] > est_no_contra["total_usd"]
+
+
+def test_estimate全书地图分项算进总数(monkeypatch, tmp_path):
+    """M19：估算把「全书地图」一项去掉。地图的 usd 必须 > 0 且计入 total_usd。"""
+    monkeypatch.setattr("tools.eval_archives.prepare_inputs", lambda book: _fake_inputs())
+    est = estimate(Book(tmp_path), AppConfig())
+    assert est["全书地图"]["usd"] > 0
+    others = sum(est[k]["usd"] for k in ("支线档案", "世界设定集", "矛盾扫描"))
+    assert est["total_usd"] > round(others, 4)
+
+
+def test_estimate输出按maxtokens封顶(monkeypatch, tmp_path):
+    """I1：单次调用的输出不能超过 synth.max_tokens，大输入不该被当成「输出=输入×1.0」
+    不封顶地算钱——世界设定集/全书地图这种大文本会被高估好几倍。"""
+    cfg = AppConfig()
+    cap = cfg.synth.max_tokens
+    big = cap * 3  # 远超封顶
+    monkeypatch.setattr("tools.eval_archives.prepare_inputs",
+                        lambda book: _fake_inputs(world_chars=big, n_worlds=1,
+                                                  n_threads=0, n_batches=0))
+    est = estimate(Book(tmp_path), AppConfig(price_input=0.0))  # 只看输出那一项
+    expected_output_usd = round(cap * cfg.price_output / 1e6 * est["retry_factor"], 4)
+    assert est["世界设定集"]["usd"] == expected_output_usd
+
+
+def test_estimate带重试系数(monkeypatch, tmp_path):
+    """I1：不算重试会把钱估低——llm.py 的 MAX_ATTEMPTS=3、超长还会翻倍重调。
+    estimate() 必须报出用了多大的重试系数，且系数 > 1。"""
+    monkeypatch.setattr("tools.eval_archives.prepare_inputs", lambda book: _fake_inputs())
+    est = estimate(Book(tmp_path), AppConfig())
+    assert est["retry_factor"] > 1.0
+
+
+def test_门槛常量没被改动():
+    """M18：门槛常量全拉满（2%→100%、10%→100%、0.8→0.0）也没有测试报警。"""
+    from tools.eval_archives import FABRICATED_LIMIT, NO_REF_LIMIT, RECALL_FLOOR
+    assert (FABRICATED_LIMIT, NO_REF_LIMIT, RECALL_FLOOR) == (0.02, 0.10, 0.8)
+
+
+def test_编造率超门槛时main退出码非0(tmp_path):
+    """端到端：编号不存在（编造）超过 2% 门槛，main() 必须以非 0 退出，不能悄悄 pass。"""
+    from tools.eval_archives import main as eval_main
+    book = Book(tmp_path)
+    book.thread_archive_dir.mkdir(parents=True, exist_ok=True)
+    book.scenes_dir.mkdir(parents=True, exist_ok=True)
+    (book.thread_archive_dir / "L-001.md").write_text(
+        "## 来龙去脉\n他救了人 [S-9999]。\n", encoding="utf-8")  # S-9999 不存在，编造
+    (book.scenes_dir / "S-0001.md").write_text("正文", encoding="utf-8")
+    index = {"threads": {"L-001": {"file": "档案/支线/L-001.md", "scenes": ["S-0001"],
+                                    "world": "", "outdated": False}}}
+    book.archive_index_path.parent.mkdir(parents=True, exist_ok=True)
+    book.archive_index_path.write_text(_json.dumps(index, ensure_ascii=False), encoding="utf-8")
+    try:
+        eval_main(["--book", str(tmp_path), "--report", str(tmp_path / "验收.json")])
+        assert False, "编造率超门槛应该以非 0 退出"
+    except SystemExit as e:
+        assert e.code != 0 and e.code is not None
