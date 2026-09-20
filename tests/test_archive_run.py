@@ -309,6 +309,70 @@ def test_矛盾某批失败_沿用上一轮花钱买的判断(book_with_threads,
     assert b.step("archive")["status"] == "outdated"
 
 
+def test_矛盾某批失败且值集合真变了_不沿用旧判断落无法判断(book_with_threads, fake_client):
+    """I4（F+DE 合并审查）：跟上一条对照——上一条只改了摘录（值集合没变），沿用是对的；
+    这次真的改了值（不是摘录），values_sig 不一样了，就不能拿旧判断顶上，得落「无法判断」。
+    这条守卫是「花过钱要保住」和「别用错数据」的分界线，必须钉住。"""
+    from ligaotai.archive import load_index, run_archive
+
+    b = book_with_threads
+    run_archive(b, fake_client)
+    [g0] = read_json(b.contradictions_path)["groups"]
+    assert g0["status"] == "真矛盾"
+
+    # 值真的变了：如意金箍棒 → 定海神针（不是摘录变了）
+    rec = read_json(card_path(b, "S-0001"))
+    rec["card"]["facts"][0]["value"] = "定海神针"
+    write_json(card_path(b, "S-0001"), rec)
+    c2 = make_client(b, overrides={"archive/contradictions": lambda u: LLMError("假的失败")})
+    res = run_archive(b, c2)
+    assert any(f["call"].startswith("contradictions/") for f in res["failed"])
+    [g1] = read_json(b.contradictions_path)["groups"]
+    assert g1["id"] == g0["id"]
+    assert g1["status"] == "无法判断", "值集合真变了，不能拿旧判断顶上"
+    assert load_index(b)["contradictions"]["failed"] is True
+
+
+def test_回填幂等且换号重填(book_with_threads):
+    """I5（F+DE 合并审查，DE 建议1要求的行为）：回填先把上一轮回填过的还原成占位再重填——
+    (a) 连跑两次、输入什么都没变，W-01.md 正文一字不差；
+    (b) 矛盾编号被手工改掉之后重跑，正文里的旧编号要换成新号，不能留着指错的旧号。"""
+    from ligaotai.archive import run_archive
+
+    def world(_user):
+        return json.dumps(
+            {"body": "# W-01 测试世界\n\n### 兵器\n- **行者**：如意金箍棒 / 降妖宝杖（多个说法）[S-0001,S-0003]\n"},
+            ensure_ascii=False,
+        )
+
+    b = book_with_threads
+    c1 = make_client(b, overrides={"archive/world": world})
+    run_archive(b, c1)
+    body1 = (b.world_archive_dir / "W-01.md").read_text(encoding="utf-8")
+    assert "见矛盾 C-001" in body1
+
+    # (a) 什么都没变再跑一次：正文一字不差
+    c2 = make_client(b, overrides={"archive/world": world})
+    run_archive(b, c2)
+    body2 = (b.world_archive_dir / "W-01.md").read_text(encoding="utf-8")
+    assert body2 == body1
+
+    # (b) 手工把矛盾编号从 C-001 改成 C-077，重跑：正文里的旧编号要换成新号
+    data = read_json(b.contradictions_path)
+    for g in data["groups"]:
+        if g["id"] == "C-001":
+            g["id"] = "C-077"
+    for e in data.get("id_registry") or []:
+        if e.get("id") == "C-001":
+            e["id"] = "C-077"
+    write_json(b.contradictions_path, data)
+    c3 = make_client(b, overrides={"archive/world": world})
+    run_archive(b, c3)
+    body3 = (b.world_archive_dir / "W-01.md").read_text(encoding="utf-8")
+    assert "见矛盾 C-077" in body3
+    assert "C-001" not in body3, "换了号之后正文不能留着指错的旧编号"
+
+
 def test_档案用自己的缓存_不碰归线缓存(book_with_threads, fake_client):
     from ligaotai.archive import run_archive
 
@@ -631,6 +695,23 @@ def test_矛盾每批组数上限按本书参数切批(book_with_threads):
     batches = [t for t in c.calls if t.startswith("archive/contradictions")]
     assert len(batches) == 2, "两个候选组、每批最多 1 组，要切成两批"
     assert len(read_json(b.contradictions_path)["groups"]) == 2
+
+
+def test_矛盾只比对归进线或世界的块_没分配的块不参与(book_with_threads):
+    """I6（F+DE 合并审查）：矛盾扫描只比对归进了世界 / 线的块，S-0009 是没分配的块
+    （threads_data() 里的 unassigned），不归任何线也不归任何世界。给它加一条会跟
+    S-0001 冲突的 fact，S-0009 不该被拉进候选组一起比对——否则版本组里的非主版本、
+    没分配的块混进来，会把「同一场景的两个版本」误判成矛盾（F 组的有意偏离，spec 没写）。"""
+    from ligaotai.archive import prepare_inputs
+
+    b = book_with_threads
+    set_card(b, "S-0009", facts=[{"subject": "悟空", "attribute": "兵器", "value": "定海神针",
+                                  "quote": "悟空竟拿着定海神针"}], hooks_planted=[], hooks_resolved=[])
+    inp = prepare_inputs(b)
+    hits = [c for c in inp.contra["cands"] if c["subject"] == "孙悟空" and c["attribute"] == "兵器"]
+    assert len(hits) == 1
+    values = {v["value"] for v in hits[0]["values"]}
+    assert values == {"如意金箍棒", "降妖宝杖"}, "S-0009 没分配，不该被拉进比对"
 
 
 # ---------- DE 审查第 6 条（作者 9-19 拍板要做）：签名带提示词内容，改了提示词用到它的档案判过期 ----------
