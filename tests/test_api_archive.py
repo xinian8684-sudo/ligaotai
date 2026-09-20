@@ -4,6 +4,8 @@
 client_with_book_run 拿到一本真的跑完步骤 7 的书，不用重新造一遍 archive_handler。
 """
 
+import threading
+
 import pytest
 from fastapi.testclient import TestClient
 from helpers import FakeBackend, seed_book
@@ -141,6 +143,26 @@ def test_单独重跑接口(client_with_book_run):
 def test_重跑不存在的线给400(client_with_book_run):
     r = client_with_book_run.post(f"{BOOK}/archive/rerun", json={"threads": ["L-999"], "worlds": [], "map": False})
     assert r.status_code == 400
+
+
+def test_有任务在跑时重跑接口给409(client_with_book_run):
+    """I2（9-20 GHIJ 审查）：archive_rerun 对 档案/index.json 做读-改-写，跟正在跑的
+    步骤 7（_Run._save_index() 每落一份档案就整份覆盖写）互相没锁。有任务在跑时点
+    重跑，标记可能被下一次 _save_index() 静默盖掉，作者以为标了、其实没标。最小修法：
+    有任务在跑就 409，不做读-改-写——这里直接验证 index.json 真的没被改。"""
+    c = client_with_book_run
+    before = c.get(f"{BOOK}/archive").json()
+    gate = threading.Event()
+    job = c.app.state.runner.submit("x", "测试书", lambda p: gate.wait(5) and {})
+    try:
+        r = c.post(f"{BOOK}/archive/rerun", json={"threads": ["L-001"], "worlds": [], "map": True})
+        assert r.status_code == 409
+    finally:
+        gate.set()
+        c.app.state.runner.wait(job.id)
+    after = c.get(f"{BOOK}/archive").json()
+    assert after["threads"]["L-001"]["outdated"] == before["threads"]["L-001"]["outdated"] is False
+    assert after["map"]["outdated"] == before["map"]["outdated"] is False
 
 
 def test_重跑标过期后再跑步骤7只重跑那一份(client_with_book_run):

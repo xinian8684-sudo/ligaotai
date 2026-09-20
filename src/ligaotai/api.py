@@ -446,7 +446,18 @@ def create_app(
 
     @app.post("/api/books/{name}/archive/rerun")
     def archive_rerun(name: str, req: RerunReq) -> dict:
-        """把指定的档案标过期，下次跑步骤 7 只重跑它们。"""
+        """把指定的档案标过期，下次跑步骤 7 只重跑它们。
+
+        I2（9-20 GHIJ 审查）：`archive_rerun` 对 档案/index.json 做读-改-写，
+        `_Run._save_index()`（archive.py）每落一份档案就把整份 index 覆盖写一遍。
+        两边都没锁，这本书有任务在跑时点这个接口，要么标记被下一次 _save_index()
+        用进程内旧副本静默盖掉（作者以为标了，其实没标），要么反过来把 job 刚写的
+        sig/generated/model 回退成旧值（一份刚花钱生成的档案在 index 里「不存在」，
+        下一轮再付一次钱）。最小修法：跟 submit() 的 BusyError 同一套话术，有任务在
+        跑（不分是不是这本书）就 409，不做读-改-写。"""
+        cur = runner.current()
+        if cur is not None and cur.status in ("queued", "running"):
+            raise HTTPException(409, f"已有任务在跑：{cur.name}（{cur.book}）")
         b = get_book(name)
         data = read_json(b.threads_path, {}) or {}
         tids = {t["id"] for t in data.get("threads") or []}
