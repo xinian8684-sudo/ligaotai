@@ -160,6 +160,64 @@ def mutate(text: str, rng: random.Random, drop=0.08, modify=0.08, add=0.04) -> s
     return "".join(out)
 
 
+# 锚点：正则 → (属性, 换成什么)。换的值必须跟原值同类但不同，好让矛盾扫描能认出来。
+# spec 9.1 还提到「地名（从答案文件里已有的实体取）」一类锚点，这里没做——scramble 在切场景、
+# 建实体表之前跑，这个阶段还没有「答案文件里已有的实体」可取，留给以后有实体表可用时再补。
+_ANCHORS: list[tuple[str, str, dict[str, str]]] = [
+    ("年龄", r"年方([一二三四五六七八九十]+)", {"十六": "二十", "二十": "十六",
+                                              "十八": "二十四", "十五": "十九"}),
+    ("年龄", r"([一二三四五六七八九十]+)岁", {"十六": "二十", "二十": "十六",
+                                            "十八": "二十四", "十五": "十九"}),
+    ("兵器", r"(金箍棒|九齿钉耙|降妖宝杖|青锋剑|方天画戟)",
+     {"金箍棒": "降妖宝杖", "降妖宝杖": "金箍棒", "九齿钉耙": "青锋剑",
+      "青锋剑": "九齿钉耙", "方天画戟": "青锋剑"}),
+    ("外貌", r"(左臂|右臂|左脸|右脸|左手|右手)",
+     {"左臂": "右臂", "右臂": "左臂", "左脸": "右脸", "右脸": "左脸",
+      "左手": "右手", "右手": "左手"}),
+    ("外貌", r"(红衣|白衣|青衣|皂衣)",
+     {"红衣": "青衣", "青衣": "红衣", "白衣": "皂衣", "皂衣": "白衣"}),
+]
+
+
+def plant_contradictions(chapters: list[Chapter], rng: random.Random, n: int) -> list[dict]:
+    """在章节正文里植入 n 处人造矛盾，一个章节最多一处，就地改 chapters 的 body。
+
+    只改**原文里真出现的词**，换成同类但不同的值，答案记 (章节, 属性, 原值, 新值)。
+    找不到锚点就少植入几处，不硬来（spec 9.1）。
+
+    注：任务书给的实现里 n=0 时会误植入 1 处——「先 setdefault 进去、再判断
+    len(by_chapter) >= n」在 n=0 时第一条就已经 1 >= 0，立刻当「够了」保留下来。
+    这里补一道 n <= 0 直接短路，保证不给 --contradictions 参数时（默认 0）行为
+    跟改之前完全一样，一处都不植入。
+    """
+    if n <= 0:
+        return []
+    spots = []
+    for c in chapters:
+        for attribute, pattern, table in _ANCHORS:
+            for m in re.finditer(pattern, c.body):
+                old = m.group(1)
+                new = table.get(old)
+                if new and new not in c.body:
+                    spots.append({"chapter": c.num, "attribute": attribute,
+                                  "old": old, "new": new, "pos": m.start(1)})
+    rng.shuffle(spots)
+    by_chapter: dict[int, dict] = {}
+    for s in spots:
+        by_chapter.setdefault(s["chapter"], s)
+        if len(by_chapter) >= n:
+            break
+    planted = []
+    for c in chapters:
+        s = by_chapter.get(c.num)
+        if not s:
+            continue
+        c.body = c.body[:s["pos"]] + s["new"] + c.body[s["pos"] + len(s["old"]):]
+        planted.append({"chapter": c.num, "subject": "", "attribute": s["attribute"],
+                        "old": s["old"], "new": s["new"]})
+    return sorted(planted, key=lambda p: p["chapter"])
+
+
 class NameGen:
     def __init__(self, rng: random.Random):
         self.rng = rng
@@ -203,6 +261,7 @@ def scramble(
     n_full: int = 10,
     n_excerpt: int = 5,
     alias_chapters: int = 15,
+    n_contradictions: int = 0,
 ) -> dict:
     rng = random.Random(seed)
     source_text = "\n".join(f"{c.heading}\n{c.body}" for c in chapters)
@@ -222,6 +281,11 @@ def scramble(
     full = take(n_full)
     excerpt = take(n_excerpt)
     kept = [c for c in chapters if c.num not in deleted]
+
+    # 矛盾要在截断、别名替换之前植入，且只挑 kept（会被删掉的章节植了也白植，答案里
+    # 记的东西压根不会出现在任何输出文件里）；顺序上还要在截断之前，不然锚点词可能
+    # 正好在截断切掉的后半段，植了也白植。
+    contradictions = plant_contradictions(kept, rng, n_contradictions)
 
     # 先把截断做完：别名要挑「截断之后的正文里真的还有这个词」的章节，不然会挑到
     # 词恰好被切掉了的章节，答案里写着有别名、实际打开文件搜不到（空跑）。
@@ -305,6 +369,7 @@ def scramble(
         "variants": variants,
         "aliases": alias_log,
         "files": files,
+        "contradictions": contradictions,
     }
 
 
@@ -314,6 +379,12 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--aliases", help="JSON 文件：替换规则列表，每条有 replaces / alias / canonical；不给就用西游记的默认别名")
+    ap.add_argument("--contradictions", type=int, default=0,
+                     help="植入 N 处人造矛盾（年龄/兵器/外貌类锚点），默认 0 不植入")
+    ap.add_argument("--n-delete", type=int, default=5)
+    ap.add_argument("--n-truncate", type=int, default=5)
+    ap.add_argument("--n-full", type=int, default=10)
+    ap.add_argument("--n-excerpt", type=int, default=5)
     args = ap.parse_args(argv)
     out = Path(args.out)
     if out.exists() and any(out.iterdir()):
@@ -321,12 +392,15 @@ def main(argv: list[str] | None = None) -> None:
     raw = Path(args.src).read_text(encoding="utf-8")
     chapters = parse_chapters(strip_gutenberg(raw))
     aliases = json.loads(Path(args.aliases).read_text(encoding="utf-8")) if args.aliases else DEFAULT_ALIASES
-    key = scramble(chapters, out, args.seed, aliases=aliases)
+    key = scramble(chapters, out, args.seed, aliases=aliases, n_delete=args.n_delete,
+                   n_truncate=args.n_truncate, n_full=args.n_full, n_excerpt=args.n_excerpt,
+                   n_contradictions=args.contradictions)
     key_path = out.parent / f"{out.name}-答案.json"
     key_path.write_text(json.dumps(key, ensure_ascii=False, indent=2), encoding="utf-8")
     print(
         f"chapters={len(chapters)} files={len(key['files'])} "
-        f"deleted={len(key['deleted'])} variants={len(key['variants'])}"
+        f"deleted={len(key['deleted'])} variants={len(key['variants'])} "
+        f"contradictions={len(key['contradictions'])}"
     )
 
 

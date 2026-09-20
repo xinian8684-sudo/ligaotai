@@ -238,3 +238,69 @@ def test_main_accepts_custom_aliases(tmp_path):
     main(["--src", str(src), "--out", str(out), "--seed", "5", "--aliases", str(aliases)])
     key = json.loads((tmp_path / "乱稿-答案.json").read_text(encoding="utf-8"))
     assert [a["alias"] for a in key["aliases"]] == ["豬先生"] and key["aliases"][0]["chapters"]
+
+
+from tools.scramble import Chapter, plant_contradictions
+
+
+def test_植入的是原文里真出现的词():
+    chapters = [Chapter(1, "第一回", "行者取出金箍棒，年方十六，左臂有伤。"),
+                Chapter(2, "第二回", "行者又取金箍棒来，仍是十六岁。")]
+    import random
+    planted = plant_contradictions(chapters, random.Random(1), n=1)
+    assert len(planted) == 1
+    p = planted[0]
+    assert p["new"] != p["old"]
+    assert p["attribute"] in ("年龄", "兵器", "外貌")
+    body = next(c.body for c in chapters if c.num == p["chapter"])
+    assert p["new"] in body, "改完要真的写回正文"
+    assert p["old"] not in body or body.count(p["old"]) < 2
+
+
+def test_一个章节最多植入一处():
+    chapters = [Chapter(1, "第一回", "行者取出金箍棒，年方十六，左臂有伤，穿红衣。")]
+    import random
+    planted = plant_contradictions(chapters, random.Random(1), n=5)
+    assert len({p["chapter"] for p in planted}) == len(planted)
+
+
+def test_没有锚点时不硬植入():
+    chapters = [Chapter(1, "第一回", "天气很好。")]
+    import random
+    assert plant_contradictions(chapters, random.Random(1), n=3) == []
+
+
+def test_答案文件带植入记录(tmp_path):
+    """task19 任务书原样给的书里没有「悟空/八戒/唐僧」，main() 不给 --aliases 时默认走
+    DEFAULT_ALIASES，会因为源文里找不到替换对象而报错——这不是本任务要测的东西，
+    传个空的别名列表绕开（跟能不能植入矛盾无关）。"""
+    from tools.scramble import main
+    src = tmp_path / "book.txt"
+    src.write_text("第一回 起头\n行者取出金箍棒，年方十六。\n" * 3 +
+                   "第二回 再来\n行者又见金箍棒，左臂有伤。\n" * 3 +
+                   "第三回 收尾\n行者归来，年方十六。\n" * 3, encoding="utf-8")
+    aliases = tmp_path / "aliases.json"
+    aliases.write_text("[]", encoding="utf-8")
+    out = tmp_path / "乱稿"
+    main(["--src", str(src), "--out", str(out), "--contradictions", "1", "--aliases", str(aliases),
+          "--n-delete", "0", "--n-truncate", "0", "--n-full", "0", "--n-excerpt", "0"])
+    import json
+    key = json.loads((tmp_path / "乱稿-答案.json").read_text(encoding="utf-8"))
+    assert len(key["contradictions"]) == 1
+    assert set(key["contradictions"][0]) >= {"chapter", "subject", "attribute", "old", "new"}
+
+
+def test_不给contradictions参数时行为不变(tmp_path):
+    """②b 的乱稿重跑不能受影响。同样传空别名列表绕开默认别名表找不到源词的问题。"""
+    from tools.scramble import main
+    src = tmp_path / "book.txt"
+    src.write_text("第一回 起头\n甲乙丙。\n" * 5 + "第二回 再来\n丁戊己。\n" * 5 +
+                   "第三回 收尾\n庚辛壬。\n" * 5, encoding="utf-8")
+    aliases = tmp_path / "aliases.json"
+    aliases.write_text("[]", encoding="utf-8")
+    out = tmp_path / "乱稿"
+    main(["--src", str(src), "--out", str(out), "--aliases", str(aliases), "--n-delete", "0",
+          "--n-truncate", "0", "--n-full", "0", "--n-excerpt", "0"])
+    import json
+    key = json.loads((tmp_path / "乱稿-答案.json").read_text(encoding="utf-8"))
+    assert key["contradictions"] == []
