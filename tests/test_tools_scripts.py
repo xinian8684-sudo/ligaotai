@@ -14,7 +14,8 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 
 
-@pytest.mark.parametrize("script", ["eval_threads.py", "probe_book.py", "eval_entities.py", "scramble.py"])
+@pytest.mark.parametrize("script", ["eval_threads.py", "probe_book.py", "eval_entities.py", "scramble.py",
+                                    "eval_archives.py"])
 def test_tool_runs_as_a_script(script):
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     r = subprocess.run(
