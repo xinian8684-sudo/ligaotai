@@ -24,6 +24,8 @@ from ligaotai.config import AppConfig, load_config  # noqa: E402
 from ligaotai.scenes import read_scene, scene_path  # noqa: E402
 
 _SENT = re.compile(r"[^。！？\n]+[。！？]?")
+# 这两个小节里的编号是程序发给模型的材料，合法地可能不属于本线（见 check_refs）。
+_LENIENT_SECTIONS = ("缺口", "开放的伏笔")
 FABRICATED_LIMIT = 0.02
 NO_REF_LIMIT = 0.10
 RECALL_FLOOR = 0.8
@@ -44,24 +46,52 @@ def sentences(text: str) -> list[str]:
     return out
 
 
+def sections(text: str) -> list[tuple[str, str]]:
+    """按句切，同时记下每句在哪个小节下（跟 `sentences` 同一套切法，标题行不算句子）。"""
+    cur = ""
+    out = []
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("#"):
+            cur = s.lstrip("#").strip()
+            continue
+        for m in _SENT.finditer(s):
+            piece = m.group(0).strip()
+            if piece:
+                out.append((cur, piece))
+    return out
+
+
 def check_refs(bodies: dict[str, str], allowed: dict[str, set[str]],
-               existing: set[str]) -> dict:
-    """逐条核每个引用：编号存在、且属于这份档案的范围（spec 9.2）。"""
+               existing: set[str], lenient: dict[str, set[str]] | None = None) -> dict:
+    """逐条核每个引用：编号存在、且属于这份档案的范围（spec 9.2）。
+
+    `lenient` 给「缺口」「开放的伏笔」这两个小节用的宽范围。这两段里的编号合法地可能不
+    属于这条线：缺口就是「提到过、但书里找不到对应场景的事件」，提到它的那个场景常常在
+    别的线上；而且这些编号是程序渲染进输入材料、明确发给模型的（见 prompts/
+    archive_thread.md 的「## 缺口」行，`archive.py` 算 thread_scope 时也是这么并进去的）。
+    拿 spec 9.2 的严格归属去核这两段，会把合规引用判成编造。正文其余小节照旧严格按本线核，
+    编造出来的编号（不在 existing 里）无论在哪个小节都照抓。不传 `lenient` 时行为不变。"""
+    lenient = lenient or {}
     total = bad = n_sent = no_ref = 0
     details = []
     for oid, body in sorted(bodies.items()):
         scope = allowed.get(oid, set())
-        for s in sentences(body):
+        wide = lenient.get(oid) or scope
+        for sec, s in sections(body):
             n_sent += 1
             refs = refs_in(s)
             if not refs:
                 no_ref += 1
+            use = wide if sec in _LENIENT_SECTIONS else scope
             for r in refs:
                 total += 1
                 why = ""
                 if r not in existing:
                     why = "编号不存在"
-                elif scope and r not in scope:
+                elif use and r not in use:
                     why = "不属于这份档案"
                 if why:
                     bad += 1
@@ -191,10 +221,25 @@ def _scene_texts(book: Book, ids: set[str]) -> dict[str, str]:
 # main() 用到的书内数据装配
 # --------------------------------------------------------------------------------------
 
-def load_scopes_and_bodies(book: Book) -> tuple[dict[str, str], dict[str, set[str]], set[str]]:
+def generation_scopes(book: Book) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """生成档案时模型真正被允许引用的范围（`archive.py` 的 thread_scope / world_scope：
+    本线场景 ∪ 渲染进输入材料的全部编号）。上游数据不全时返回空的，调用方退回严格范围。"""
+    try:
+        inp = prepare_inputs(book)
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}, {}
+    return dict(inp.thread_scope), dict(inp.world_scope)
+
+
+def load_scopes_and_bodies(book: Book) -> tuple[dict[str, str], dict[str, set[str]],
+                                                set[str], dict[str, set[str]]]:
     """从 档案/index.json 拿到各份档案的路径与范围：线的范围 = index 里记的这条线的
     scenes；世界的范围 = 这个世界下所有线（index 线条目的 world 字段）的场景并集；
-    地图的范围 = 全书场景（场景/ 目录下现存的编号）。"""
+    地图的范围 = 全书场景（场景/ 目录下现存的编号）。
+
+    第四个返回值是「缺口 / 开放的伏笔」两个小节用的宽范围（见 `check_refs`），取自生成
+    档案时的真实 scope。世界设定集没有可区分的小节结构，它要用到的设定笔记场景同样可能
+    落在本世界各线之外，所以世界的严格范围直接并上生成时的 world_scope。"""
     index = {}
     if book.archive_index_path.exists():
         try:
@@ -215,24 +260,28 @@ def load_scopes_and_bodies(book: Book) -> tuple[dict[str, str], dict[str, set[st
 
     existing = {p.stem for p in book.scenes_dir.glob("S-*.md")} if book.scenes_dir.exists() else set()
 
+    gen_thread, gen_world = generation_scopes(book)
+
     bodies: dict[str, str] = {}
     allowed: dict[str, set[str]] = {}
+    lenient: dict[str, set[str]] = {}
     for tid, e in threads.items():
         if isinstance(e, dict) and e.get("file"):
             p = book.root / e["file"]
             if p.exists():
                 bodies[tid] = p.read_text(encoding="utf-8")
                 allowed[tid] = thread_scope.get(tid, set())
+                lenient[tid] = allowed[tid] | gen_thread.get(tid, set())
     for wid, e in worlds.items():
         if isinstance(e, dict) and e.get("file"):
             p = book.root / e["file"]
             if p.exists():
                 bodies[wid] = p.read_text(encoding="utf-8")
-                allowed[wid] = world_scope.get(wid, set())
+                allowed[wid] = world_scope.get(wid, set()) | gen_world.get(wid, set())
     if book.map_path.exists():
         bodies["全书地图"] = book.map_path.read_text(encoding="utf-8")
         allowed["全书地图"] = set(existing)  # 地图的范围 = 全书场景
-    return bodies, allowed, existing
+    return bodies, allowed, existing, lenient
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -260,7 +309,7 @@ def main(argv: list[str] | None = None) -> None:
     book = Book(Path(args.book))
 
     if args.sample:
-        bodies, _, existing = load_scopes_and_bodies(book)
+        bodies, _, existing, _lenient = load_scopes_and_bodies(book)
         scenes = _scene_texts(book, existing)
         md = sample_for_review(bodies, scenes, _random.Random(args.seed), args.sample)
         out_path = Path(args.out)
@@ -269,8 +318,8 @@ def main(argv: list[str] | None = None) -> None:
         print(f"sampled={md.count('## 第')} out={out_path}")
         return
 
-    bodies, allowed, existing = load_scopes_and_bodies(book)
-    refs = check_refs(bodies, allowed, existing)
+    bodies, allowed, existing, lenient = load_scopes_and_bodies(book)
+    refs = check_refs(bodies, allowed, existing, lenient)
     report: dict = {"refs": refs}
     ok = refs["fabricated_rate"] <= FABRICATED_LIMIT and refs["no_ref_rate"] <= NO_REF_LIMIT
 

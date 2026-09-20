@@ -38,6 +38,54 @@ def test_全部合格时两个率都是0():
     assert res["fabricated_rate"] == 0.0 and res["no_ref_rate"] == 0.0
 
 
+# 缺口小节的「提到于 [S-xxxx]」合法地可能不属于这条线——缺口就是「书里找不到对应场景
+# 的事件」，提到它的那个场景常常在别的线上，而且这个编号是程序渲染进输入材料、明确发给
+# 模型的（prompts/archive_thread.md 的「## 缺口」行、archive.py 的 thread_scope 也是
+# 这么算的）。拿 spec 9.2 的严格归属去核这一段，会把合规引用judgment成编造。
+# 开放的伏笔同理。正文其余小节仍然严格按本线核。
+
+def test_缺口小节引用别的线的场景不算编造():
+    body = ("## 来龙去脉\n他救了人 [S-0003]。\n"
+            "## 缺口\n- 夺宝一事：提到于 [S-0150]，位置大约在 [S-0003] 之后\n")
+    res = check_refs({"L-001": body}, allowed={"L-001": {"S-0003"}},
+                     existing={"S-0003", "S-0150"},
+                     lenient={"L-001": {"S-0003", "S-0150"}})
+    assert res["bad"] == 0, res["details"]
+
+
+def test_开放的伏笔小节同样按宽范围核():
+    body = "## 开放的伏笔\n- 那封信：埋于 [S-0150]，至今没回收\n"
+    res = check_refs({"L-001": body}, allowed={"L-001": {"S-0003"}},
+                     existing={"S-0003", "S-0150"},
+                     lenient={"L-001": {"S-0003", "S-0150"}})
+    assert res["bad"] == 0
+
+
+def test_宽范围只管那两个小节_来龙去脉还是严格按本线核():
+    body = ("## 来龙去脉\n他在别处露过面 [S-0150]。\n"
+            "## 缺口\n- 夺宝一事：提到于 [S-0150]\n")
+    res = check_refs({"L-001": body}, allowed={"L-001": {"S-0003"}},
+                     existing={"S-0003", "S-0150"},
+                     lenient={"L-001": {"S-0003", "S-0150"}})
+    assert res["bad"] == 1, "来龙去脉里的越界引用必须照抓"
+    assert res["details"][0]["why"] == "不属于这份档案"
+
+
+def test_缺口小节里编造出来的编号照样抓():
+    body = "## 缺口\n- 夺宝一事：提到于 [S-9999]\n"
+    res = check_refs({"L-001": body}, allowed={"L-001": {"S-0003"}},
+                     existing={"S-0003", "S-0150"},
+                     lenient={"L-001": {"S-0003", "S-0150"}})
+    assert res["bad"] == 1 and res["details"][0]["why"] == "编号不存在"
+
+
+def test_不给lenient时行为跟以前一模一样():
+    body = "## 缺口\n- 夺宝一事：提到于 [S-0150]\n"
+    res = check_refs({"L-001": body}, allowed={"L-001": {"S-0003"}},
+                     existing={"S-0003", "S-0150"})
+    assert res["bad"] == 1
+
+
 from tools.eval_archives import recall
 
 
