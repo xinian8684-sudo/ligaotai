@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # 自己所在目录，给 `from eval_threads import ...` 用
 
-from ligaotai.archive import prepare_inputs, refs_in  # noqa: E402
+from ligaotai.archive import _DECOR, prepare_inputs, refs_in  # noqa: E402
 from ligaotai.book import Book  # noqa: E402
 from ligaotai.config import AppConfig, load_config  # noqa: E402
 from ligaotai.scenes import read_scene, scene_path  # noqa: E402
@@ -32,36 +32,56 @@ RECALL_FLOOR = 0.8
 _HIT_STATUS = ("真矛盾", "无法判断")  # 宁可多报：这两种在界面上一起显示，一起算召回
 
 
-def sentences(text: str) -> list[str]:
-    """按句切，跳过标题行和空行——标题不是结论句，不该算进无引用句率。"""
-    out = []
-    for line in (text or "").splitlines():
-        s = line.strip()
-        if not s or s.startswith("#"):
-            continue
-        for m in _SENT.finditer(s):
-            piece = m.group(0).strip()
-            if piece:
-                out.append(piece)
-    return out
+# C3 修复（9-20 GHIJ 审查，75c866a 的漏）：旧版 sections() 认标题只看 `#` 前缀、
+# 小节名直接拿 lstrip("#").strip() 的原文比对，而生成期 archive.check_archive() 判
+# 小节齐不齐用的是子串（`f"## {h}" not in md`），两边口径不一致。模型只要在标题后面
+# 加个括号或冒号（真数据上很常见），`## 缺口（3 处）` 生成期放行、验收却判「缺口」小节
+# 不存在，把合规引用当编造。改成：标题识别、去装饰跟 archive._section_attr 同一套口径
+# （容忍加粗/反引号/方括号等装饰、末尾冒号，也认模型整行用加粗包住标题、没有 # 前缀
+# 的写法，比如 `**缺口**`），小节名比对从「相等」改成「去装饰后前缀匹配」。
+_HEADING_HASH = re.compile(r"^#{1,4}\s*(.+)$")
+_HEADING_BOLD = re.compile(r"^(?:\*\*|__)(.+?)(?:\*\*|__)$")
+
+
+def _heading_title(line: str) -> str | None:
+    """一行是不是标题，是就返回标题原文（还没去装饰）。跟生成期 archive._HEADING 一样
+    认 `#{1,4}` 开头；另外模型偶尔整行只用加粗包住标题、不带 `#`（比如 `**缺口**`），
+    `archive.backfill_refs` 那边专门为这种写法做了 `_DECOR` 去装饰，这边原来没认，
+    顺手补上。不是标题返回 None。"""
+    m = _HEADING_HASH.match(line)
+    if m:
+        return m.group(1)
+    m = _HEADING_BOLD.match(line)
+    if m:
+        return m.group(1)
+    return None
 
 
 def sections(text: str) -> list[tuple[str, str]]:
-    """按句切，同时记下每句在哪个小节下（跟 `sentences` 同一套切法，标题行不算句子）。"""
+    """按句切，同时记下每句在哪个小节下（标题行不算句子）。"""
     cur = ""
     out = []
     for line in (text or "").splitlines():
         s = line.strip()
         if not s:
             continue
-        if s.startswith("#"):
-            cur = s.lstrip("#").strip()
+        title = _heading_title(s)
+        if title is not None:
+            cur = _DECOR.sub("", title).strip().rstrip("：:")
             continue
         for m in _SENT.finditer(s):
             piece = m.group(0).strip()
             if piece:
                 out.append((cur, piece))
     return out
+
+
+def sentences(text: str) -> list[str]:
+    """按句切，跳过标题行和空行——标题不是结论句，不该算进无引用句率。
+
+    直接复用 `sections()`，别另起一套切句实现：两份平行实现改一处漏一处，会出现
+    「抽查材料里的句子和核对时数的句子不是一批」（GHIJ 审查 Minor 条目，顺手做掉）。"""
+    return [s for _, s in sections(text)]
 
 
 def check_refs(bodies: dict[str, str], allowed: dict[str, set[str]],
@@ -73,7 +93,12 @@ def check_refs(bodies: dict[str, str], allowed: dict[str, set[str]],
     别的线上；而且这些编号是程序渲染进输入材料、明确发给模型的（见 prompts/
     archive_thread.md 的「## 缺口」行，`archive.py` 算 thread_scope 时也是这么并进去的）。
     拿 spec 9.2 的严格归属去核这两段，会把合规引用判成编造。正文其余小节照旧严格按本线核，
-    编造出来的编号（不在 existing 里）无论在哪个小节都照抓。不传 `lenient` 时行为不变。"""
+    编造出来的编号（不在 existing 里）无论在哪个小节都照抓。不传 `lenient` 时行为不变。
+
+    小节名判据是「去装饰后前缀匹配」，不是相等（C3，9-20 GHIJ 审查）：`sections()` 判小节
+    齐不齐用的口径原来是相等，生成期 `archive.check_archive()` 判小节存在用的是子串
+    （`f"## {h}" not in md`），模型只要在标题后面加个括号或冒号（真数据上很常见），
+    比如 `## 缺口（3 处）`，旧版就认不出这是「缺口」小节，把合规引用误判成编造。"""
     lenient = lenient or {}
     total = bad = n_sent = no_ref = 0
     details = []
@@ -85,7 +110,7 @@ def check_refs(bodies: dict[str, str], allowed: dict[str, set[str]],
             refs = refs_in(s)
             if not refs:
                 no_ref += 1
-            use = wide if sec in _LENIENT_SECTIONS else scope
+            use = wide if any(sec.startswith(h) for h in _LENIENT_SECTIONS) else scope
             for r in refs:
                 total += 1
                 why = ""

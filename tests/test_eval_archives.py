@@ -228,3 +228,48 @@ def test_有outdated档案时main报不通过且退出码非0(tmp_path, capsys):
     report = _json.loads((tmp_path / "验收.json").read_text(encoding="utf-8"))
     assert "outdated" in report
     assert report["outdated"]["threads"] == ["L-002"]
+
+
+# --------------------------------------------------------------------------------------
+# C3（9-20 GHIJ 审查，75c866a 的漏）：小节名判据要跟生成期一样是「前缀/去装饰」，不是「相等」
+# --------------------------------------------------------------------------------------
+
+def test_缺口标题带括号也按宽范围核():
+    """真数据上模型常写 `## 缺口（3 处）`，生成期 archive.check_archive 认（子串匹配），
+    验收不能因为多了个括号就把这段当严格范围核，冤枉合规引用。"""
+    body = ("## 来龙去脉\n他救了人 [S-0003]。\n"
+            "## 缺口（3 处）\n- 夺宝一事：提到于 [S-0150]\n")
+    res = check_refs({"L-001": body}, allowed={"L-001": {"S-0003"}},
+                     existing={"S-0003", "S-0150"},
+                     lenient={"L-001": {"S-0003", "S-0150"}})
+    assert res["bad"] == 0, res["details"]
+
+
+def test_缺口标题带冒号也按宽范围核():
+    body = ("## 来龙去脉\n他救了人 [S-0003]。\n"
+            "## 缺口：\n- 夺宝一事：提到于 [S-0150]\n")
+    res = check_refs({"L-001": body}, allowed={"L-001": {"S-0003"}},
+                     existing={"S-0003", "S-0150"},
+                     lenient={"L-001": {"S-0003", "S-0150"}})
+    assert res["bad"] == 0, res["details"]
+
+
+def test_加粗不带井号的缺口标题也能识别():
+    """模型整行只用加粗包住标题、不带 `#`：`**缺口**`。archive.backfill_refs 那边专门
+    为这种写法做了去装饰，check_refs 这边原来认不出来，会把这行之后的内容错记到
+    上一个小节名下，按错误的范围核。"""
+    body = ("## 来龙去脉\n他救了人 [S-0003]。\n"
+            "**缺口**\n- 夺宝一事：提到于 [S-0150]\n")
+    res = check_refs({"L-001": body}, allowed={"L-001": {"S-0003"}},
+                     existing={"S-0003", "S-0150"},
+                     lenient={"L-001": {"S-0003", "S-0150"}})
+    assert res["bad"] == 0, res["details"]
+
+
+def test_不相关标题带括号不会被当成缺口():
+    """前缀匹配不能太松：跟「缺口」不沾边的标题即便带括号，也不该被并入宽范围。"""
+    body = "## 人物设定（补充）\n他在别处露过面 [S-0150]。\n"
+    res = check_refs({"L-001": body}, allowed={"L-001": {"S-0003"}},
+                     existing={"S-0003", "S-0150"},
+                     lenient={"L-001": {"S-0003", "S-0150"}})
+    assert res["bad"] == 1 and res["details"][0]["why"] == "不属于这份档案"
