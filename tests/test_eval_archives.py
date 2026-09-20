@@ -87,3 +87,30 @@ def test_误报只报数():
          "values": [{"value": "c", "scenes": [{"id": "S-0100"}]}]}]}
     res = recall(key, {3: {"S-0005"}}, result)
     assert res["hit"] == 1 and res["false_positives"] == 1
+
+
+from tools.eval_archives import sample_for_review
+
+
+def test_抽查材料是结论句配原文():
+    bodies = {"L-001": "他救了人 [S-0003]。后来去了青州 [S-0004]。"}
+    scenes = {"S-0003": "林清救下受伤的赵五。", "S-0004": "林清一路行至青州。"}
+    import random
+    md = sample_for_review(bodies, scenes, random.Random(1), n=2)
+    assert "他救了人" in md and "林清救下受伤的赵五" in md
+    assert "S-0003" in md
+
+
+def test_抽查只抽带编号的句子():
+    bodies = {"L-001": "天气很好。他救了人 [S-0003]。"}
+    scenes = {"S-0003": "林清救下受伤的赵五。"}
+    import random
+    md = sample_for_review(bodies, scenes, random.Random(1), n=5)
+    assert "天气很好" not in md
+
+
+def test_抽不满n条就有几条给几条():
+    bodies = {"L-001": "他救了人 [S-0003]。"}
+    import random
+    md = sample_for_review(bodies, {"S-0003": "原文"}, random.Random(1), n=10)
+    assert md.count("## 第") == 1

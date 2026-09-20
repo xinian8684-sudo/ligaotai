@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random as _random
 import re
 import sys
 from pathlib import Path
@@ -17,8 +18,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # 自己所在目录，给 `from eval_threads import ...` 用
 
-from ligaotai.archive import refs_in  # noqa: E402
+from ligaotai.archive import prepare_inputs, refs_in  # noqa: E402
 from ligaotai.book import Book  # noqa: E402
+from ligaotai.config import AppConfig, load_config  # noqa: E402
+from ligaotai.scenes import read_scene, scene_path  # noqa: E402
 
 _SENT = re.compile(r"[^。！？\n]+[。！？]?")
 FABRICATED_LIMIT = 0.02
@@ -118,6 +121,72 @@ def chapter_to_scenes(book: Book, key: dict, folder_name: str) -> dict[int, set[
     return out
 
 
+def sample_for_review(bodies: dict[str, str], scenes: dict[str, str],
+                      rng: _random.Random, n: int) -> str:
+    """随机抽 n 条带编号的结论句，配上它引用的场景原文，写成对照材料给作者人工判（spec 9.3）。"""
+    pool = []
+    for oid, body in sorted(bodies.items()):
+        for s in sentences(body):
+            refs = refs_in(s)
+            if refs:
+                pool.append((oid, s, refs))
+    rng.shuffle(pool)
+    picked = pool[:n]
+    out = ["# 档案人工抽查", "", f"共 {len(picked)} 条。逐条判：这句结论，它引用的原文撑得住吗？", ""]
+    for i, (oid, s, refs) in enumerate(picked, 1):
+        out += [f"## 第 {i} 条（来自 {oid}）", "", f"**档案里写的**：{s}", "", "**引用的原文**："]
+        for r in refs:
+            text = scenes.get(r, "（找不到这个场景）")
+            out.append(f"- [{r}] {text[:300]}")
+        out += ["", "判断：□ 撑得住　□ 撑不住　□ 不好说", "", "---", ""]
+    return "\n".join(out)
+
+
+def estimate(book: Book, cfg: AppConfig) -> dict:
+    """不调模型，只粗估要花多少钱（spec 9.4）：②b 的教训是这类步骤输出可能比输入还多，
+    这里四件产出的输出都按输入的 1.0 倍算，别再犯只数输入的老毛病。分项给，别只给总数——
+    作者要据此决定跑不跑、跑几本。
+
+    - 支线档案：线数 × 每线输入字符数（archive_input.thread_input 渲染出的文本，用
+      prepare_inputs() 算好的 thread_text 直接求和，比「平均每线」更准）。
+    - 世界设定集：世界数 × 该世界渲染文本字符数（world_text，含 facts + 设定笔记原文）。
+    - 矛盾扫描：批数 × 批输入字符数（contradictions.batches 已经按预算切好的批）。
+    - 全书地图：全部档案字符数——地图读的是**生成好的档案正文**，不是这些输入文本；
+      估算时档案还没生成，用「输出 = 输入 × 1.0」这同一条假设，拿支线 + 世界的
+      输入字符数近似档案生成后的大小。
+    """
+    inp = prepare_inputs(book)
+    price_in, price_out = cfg.price_input, cfg.price_output
+
+    def usd(chars: int) -> float:
+        # 1 字符按 1 token 估（偏保守，同全项目口径）；输出量按输入的 1.0 倍算（②b 教训：
+        # 按 0.5 倍这类比例估会把归线这类「输出比输入还多」的步骤估低）
+        return round(chars * price_in / 1e6 + chars * 1.0 * price_out / 1e6, 4)
+
+    thread_chars = sum(len(t) for t in inp.thread_text.values())
+    world_chars = sum(len(t) for t in inp.world_text.values())
+    contra_chars = sum(len(b["text"]) for b in inp.contra["batches"])
+    map_chars = thread_chars + world_chars  # 见上面的注释
+
+    parts = {
+        "支线档案": {"n": len(inp.thread_text), "input_chars": thread_chars, "usd": usd(thread_chars)},
+        "世界设定集": {"n": len(inp.world_text), "input_chars": world_chars, "usd": usd(world_chars)},
+        "矛盾扫描": {"n": len(inp.contra["batches"]), "input_chars": contra_chars, "usd": usd(contra_chars)},
+        "全书地图": {"n": 1, "input_chars": map_chars, "usd": usd(map_chars)},
+    }
+    return {**parts, "total_usd": round(sum(p["usd"] for p in parts.values()), 4)}
+
+
+def _scene_texts(book: Book, ids: set[str]) -> dict[str, str]:
+    out = {}
+    for sid in ids:
+        try:
+            out[sid] = read_scene(scene_path(book, sid)).text.strip()
+        except (OSError, ValueError):
+            out[sid] = ""
+    return out
+
+
 # --------------------------------------------------------------------------------------
 # main() 用到的书内数据装配
 # --------------------------------------------------------------------------------------
@@ -172,9 +241,34 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--key", help="乱稿答案文件（含 --contradictions 植入的矛盾），给了就顺带算召回率")
     ap.add_argument("--folder", help="--key 对应的乱稿文件夹名（章节→场景映射要用），跟 --key 搭配必填")
     ap.add_argument("--report", default="data/验收-档案.json")
+    ap.add_argument("--sample", type=int, help="随机抽这么多条带编号的结论句给作者人工判（spec 9.3），不跑引用核对")
+    ap.add_argument("--out", default="data/验收-档案-抽查.md", help="--sample 的输出文件")
+    ap.add_argument("--seed", type=int, default=1, help="--sample 用的随机种子")
+    ap.add_argument("--estimate", action="store_true", help="只粗估四件产出要花多少钱，不调模型")
     args = ap.parse_args(argv)
 
+    cfg = load_config()
+
+    if args.estimate:
+        est = estimate(Book(Path(args.book)), cfg)
+        out_path = Path(args.report).with_name(Path(args.report).stem + "-估算.json")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(est, ensure_ascii=False, indent=2), encoding="utf-8")
+        print("total_usd=" + str(est["total_usd"]) + " report=" + str(out_path))
+        return
+
     book = Book(Path(args.book))
+
+    if args.sample:
+        bodies, _, existing = load_scopes_and_bodies(book)
+        scenes = _scene_texts(book, existing)
+        md = sample_for_review(bodies, scenes, _random.Random(args.seed), args.sample)
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(md, encoding="utf-8")
+        print(f"sampled={md.count('## 第')} out={out_path}")
+        return
+
     bodies, allowed, existing = load_scopes_and_bodies(book)
     refs = check_refs(bodies, allowed, existing)
     report: dict = {"refs": refs}
