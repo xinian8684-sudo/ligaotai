@@ -616,6 +616,53 @@ def test_单独标过期的档案会重跑(book_with_threads, fake_client):
     assert b.step("archive")["status"] == "done"
 
 
+def test_有档案本来就过期时即使途中没变_地图也标过期(book):
+    """I7（F+DE 合并审查）：settle() 里除了「途中输入变了」（changed）之外，
+    「有一份档案本来就是过期状态」也要连累地图过期——这条独立于 map_blockers()
+    （那条只挡「这一轮刚发现的过期」），是给「档案带着过期标记进入 settle」兜底的，
+    在 map_blockers 那条路上有测试，在 settle 这条路上没有。直接构造 _Run 单测，
+    不用跑一整轮模型。"""
+    from ligaotai.archive import Inputs, _Run, thread_sig
+
+    inp = Inputs(unit="年", threads=[], worlds=[], gaps=[], times={})
+    inp.thread_text = {"L-001": "正文"}
+    inp.contra = {"sig": "c-sig"}
+    index = {
+        "threads": {"L-001": {"sig": thread_sig("正文"), "outdated": True}},
+        "worlds": {},
+        "map": {"outdated": False},
+        "contradictions": {"sig": "c-sig", "outdated": False},
+    }
+    run = _Run(book, None, inp, index)
+    changed = run.settle(inp)
+    assert changed is False, "跟自己比，途中输入没变"
+    assert index["map"]["outdated"] is True, "有一份档案本来就过期，地图也该跟着过期"
+
+
+def test_矛盾上一轮批次失败_这一轮即使签名没变也要重试(book_with_threads):
+    """I8（F+DE 合并审查）：矛盾沿用条件里除了签名一样，还要看上一轮是不是 failed——
+    上一批失败过，下一轮该重试补判断，不能因为签名没变就一直沿用「这一批调用失败」的
+    旧结果，永远不重判。"""
+    from ligaotai.archive import load_index, run_archive
+
+    b = book_with_threads
+    c1 = make_client(b, overrides={"archive/contradictions": lambda u: LLMError("假的失败")})
+    run_archive(b, c1)
+    idx1 = load_index(b)
+    assert idx1["contradictions"]["failed"] is True
+    [g0] = read_json(b.contradictions_path)["groups"]
+    assert g0["status"] == "无法判断"
+
+    # 输入没变，这次正常跑：应该重试（不能因为签名一样就沿用上一轮「调用失败」的旧结果）
+    c2 = make_client(b)
+    run_archive(b, c2)
+    assert any(t.startswith("archive/contradictions") for t in c2.calls), "上一轮失败过，这一轮该重试"
+    idx2 = load_index(b)
+    assert idx2["contradictions"]["failed"] is False
+    [g1] = read_json(b.contradictions_path)["groups"]
+    assert g1["status"] == "真矛盾"
+
+
 def test_线被删了_旧档案标过期不删文件(book_with_threads, fake_client):
     from ligaotai.archive import load_index, run_archive
 
