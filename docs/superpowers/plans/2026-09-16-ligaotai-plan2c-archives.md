@@ -2551,6 +2551,13 @@ class RerunReq(BaseModel):
 
 **注意**：Task 16/17 里子协程判「要不要跳过」时，除了比 `sig`，还要看 `index[...]["outdated"]` 是不是 `True`——被这个接口标过期的，即使 `sig` 没变也要重跑。
 
+**注意（I2，9-20 作者拍板）**：换模型 / 改模型配置**不进 `input_sig`**（换一次模型 = 全部档案重付一次钱，
+不值）。`archive.py` 已经在每份档案 / `矛盾.json` / 全书地图落盘时把生成它用的模型名记进
+`index[...]["model"]`（跟 `cache_config(client, "synth")` 取同一个来源）。`archive_index` /
+`archive_body` 这几个接口接进来时，要把这个字段吐给界面——界面对比 index 里的 `model` 和当前
+`config.json` 里配的 `synth.model`，不一样就提示作者「这份档案是用 X 模型生成的，当前配置是 Y，
+要不要重跑」。见 `docs/已知问题与待办.md`「已知问题」一节同一条。
+
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `uv run pytest tests/test_api_archive.py tests/test_api.py tests/test_api_threads.py -q`

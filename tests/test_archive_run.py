@@ -234,6 +234,21 @@ def test_index记下每份档案的签名(book_with_threads, fake_client):
     assert idx["map"]["sig"] and idx["map"]["outdated"] is False
 
 
+def test_index记下生成每份档案用的模型名(book_with_threads, fake_client):
+    """I2（F+DE 合并审查，作者 9-20 拍板）：换模型不进签名（换一次模型 = 全部档案重付一次钱，
+    不值），但要记下生成时用的模型名，好让界面对比 index 里的模型名和当前配置提示作者重跑。"""
+    from ligaotai.archive import load_index, run_archive
+
+    run_archive(book_with_threads, fake_client)
+    idx = load_index(book_with_threads)
+    model = fake_client.cfg.synth.model
+    assert idx["threads"]["L-001"]["model"] == model
+    assert idx["threads"]["L-002"]["model"] == model
+    assert idx["worlds"]["W-01"]["model"] == model
+    assert idx["contradictions"]["model"] == model
+    assert idx["map"]["model"] == model
+
+
 def test_输入是真实渲染的文本_设定笔记读的是正文(book_with_threads, fake_client):
     from ligaotai.archive import run_archive
 

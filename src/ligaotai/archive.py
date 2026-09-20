@@ -425,11 +425,15 @@ class _Run:
                 self._save_index()
             return
         atomic_write_text(path, got)
-        new = {"file": rel, "sig": sig, "outdated": False, "generated": now_iso()}
+        # I2（作者 9-20 拍板）：换模型不进签名（换一次模型 = 全部档案重付一次钱，不值），
+        # 但记下生成时用的模型名，给界面对比 index 里的模型名和当前配置、提示作者要不要重跑
+        # （docs/已知问题与待办.md）。
+        model = self.caller.cfg.get("model", "")
+        new = {"file": rel, "sig": sig, "outdated": False, "generated": now_iso(), "model": model}
         if kind == "threads":
             t = next(t for t in inp.threads if t["id"] == oid)
             new = {"file": rel, "sig": sig, "scenes": _ids(t.get("scenes")), "world": t.get("world", ""),
-                   "outdated": False, "generated": new["generated"]}
+                   "outdated": False, "generated": new["generated"], "model": model}
         self.index[kind][oid] = new
         self.generated[kind].append(oid)
         self._save_index()
@@ -508,7 +512,8 @@ class _Run:
         self.contra_failed = bool(failed)
         self.contra_status = "generated"
         index["contradictions"] = {"file": "矛盾.json", "sig": c["sig"], "failed": bool(failed),
-                                   "outdated": False, "generated": now_iso()}
+                                   "outdated": False, "generated": now_iso(),
+                                   "model": self.caller.cfg.get("model", "")}
         self._save_index()
         return result
 
@@ -581,7 +586,8 @@ class _Run:
             self._save_index()
             return "failed"
         atomic_write_text(book.map_path, got)
-        self.index["map"] = {"file": "全书地图.md", "sig": sig, "outdated": False, "generated": now_iso()}
+        self.index["map"] = {"file": "全书地图.md", "sig": sig, "outdated": False, "generated": now_iso(),
+                             "model": self.caller.cfg.get("model", "")}
         self._save_index()
         return "generated"
 
