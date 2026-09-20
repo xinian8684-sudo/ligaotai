@@ -459,9 +459,17 @@ def create_app(
         if cur is not None and cur.status in ("queued", "running"):
             raise HTTPException(409, f"已有任务在跑：{cur.name}（{cur.book}）")
         b = get_book(name)
-        data = read_json(b.threads_path, {}) or {}
-        tids = {t["id"] for t in data.get("threads") or []}
-        wids = {w["id"] for w in data.get("worlds") or []}
+        # I5（9-20 GHIJ 审查）：这里原来直接 read_json(b.threads_path, {})，脏文件（坏
+        # JSON）会抛 JSONDecodeError，缺 id / 非 dict 的条目会抛 KeyError/TypeError，
+        # 全都没接，接口裸 500。同一个文件在 GET /threads 那边有 BrokenThreadsFile →
+        # 409 的映射（tops.read_threads + thread_op），这里没有，口径不一致。改成套
+        # thread_op(...) 读（JSON 坏了给 409），再照 archive.prepare_inputs 那样
+        # isinstance 过滤，缺 id / 非 dict 的条目直接跳过，不让它们炸整个请求。
+        data = thread_op(lambda: tops.read_threads(b)) or {}
+        tids = {t["id"] for t in data.get("threads") or []
+               if isinstance(t, dict) and isinstance(t.get("id"), str) and t["id"]}
+        wids = {w["id"] for w in data.get("worlds") or []
+               if isinstance(w, dict) and isinstance(w.get("id"), str) and w["id"]}
         bad = [x for x in req.threads if x not in tids] + [x for x in req.worlds if x not in wids]
         if bad:
             raise HTTPException(400, "没有这些编号：" + "、".join(bad))

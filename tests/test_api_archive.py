@@ -145,6 +145,31 @@ def test_重跑不存在的线给400(client_with_book_run):
     assert r.status_code == 400
 
 
+def test_世界与支线文件坏了时重跑接口给409不是裸500(tmp_path):
+    """I5（9-20 GHIJ 审查）：世界与支线.json 是坏 JSON 时，原来的 read_json(path, {})
+    会直接抛 JSONDecodeError，接口裸 500。同一个文件在 GET /threads 那边有
+    BrokenThreadsFile → 409 的映射，这里原来没有。"""
+    c = make_client(tmp_path)
+    c.post("/api/books", json={"title": "测试书"})
+    b = _open(tmp_path)
+    b.threads_path.write_text("{坏 json", encoding="utf-8")
+    r = c.post(f"{BOOK}/archive/rerun", json={"threads": [], "worlds": [], "map": False})
+    assert r.status_code == 409, r.text
+
+
+def test_世界与支线里条目缺id时重跑接口不裸500(tmp_path):
+    """同一个漏洞的另一半：threads/worlds 里有条目缺 id 或不是 dict，旧版
+    {t["id"] for t in ...} 会抛 KeyError/TypeError。这里照 archive.prepare_inputs
+    的写法 isinstance 过滤，缺 id 的条目直接跳过，不炸请求。"""
+    c = make_client(tmp_path)
+    c.post("/api/books", json={"title": "测试书"})
+    b = _open(tmp_path)
+    write_json(b.threads_path, {"threads": [{"no_id": "x"}, "不是dict"],
+                                "worlds": [{"id": "W-01"}]})
+    r = c.post(f"{BOOK}/archive/rerun", json={"threads": [], "worlds": ["W-01"], "map": False})
+    assert r.status_code == 200, r.text
+
+
 def test_有任务在跑时重跑接口给409(client_with_book_run):
     """I2（9-20 GHIJ 审查）：archive_rerun 对 档案/index.json 做读-改-写，跟正在跑的
     步骤 7（_Run._save_index() 每落一份档案就整份覆盖写）互相没锁。有任务在跑时点
