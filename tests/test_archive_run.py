@@ -304,6 +304,42 @@ def test_档案用自己的缓存_不碰归线缓存(book_with_threads, fake_cli
     assert b.threads_cache_path.read_bytes() == before
     assert len(read_json(b.archive_cache_path)) == 5
 
+    # 第二次跑：什么都没变，全部按签名跳过（0 次调用）；跳过的条目也不该被 prune 清掉——
+    # 花过钱买的缓存不能因为「这一轮没真调用」就被当垃圾扫掉（C1）
+    c2 = make_client(b)
+    run_archive(b, c2)
+    assert c2.calls == []
+    assert len(read_json(b.archive_cache_path)) == 5
+
+
+def test_空转一次之后标过期重跑_命中缓存不花钱(book_with_threads, fake_client):
+    """C1 回归：第一次跑完，第二次空转（0 次调用，缓存本该保留）；
+    第三次把 L-001 标过期重跑——输入文本一个字都没变，只是 index 里的 outdated 标记变了。
+    如果空转把缓存清空了（C1 的 bug），这一步会真调用模型重付一次钱；
+    缓存留着的话，L-001 会走 caller.call() 那条「没被判定为 fresh，得重新走一遍」的路，
+    但 render 出来的文本没变，命中的还是原来那条缓存，一分钱不花（对照 client.usage.calls）。"""
+    from ligaotai.archive import load_index, run_archive, write_index
+
+    b = book_with_threads
+    run_archive(b, fake_client)
+    assert len(read_json(b.archive_cache_path)) == 5
+
+    c2 = make_client(b)
+    run_archive(b, c2)
+    assert c2.calls == []
+
+    idx = load_index(b)
+    idx["threads"]["L-001"]["outdated"] = True
+    write_index(b, idx)
+
+    c3 = make_client(b)
+    res = run_archive(b, c3)
+    assert c3.calls == [], "输入没变，应该命中缓存，不该真调模型"
+    assert c3.usage.calls == 0
+    assert res["calls"] == 0
+    assert res["generated"]["threads"] == ["L-001"], "L-001 走了非 fresh 那条路，只是命中了缓存"
+    assert "L-002" in res["reused"]["threads"]
+
 
 def test_暂停后重跑_做完的不重复花钱(book_with_threads):
     """暂停（JobCancelled）时正在路上的调用让它跑完进缓存，不再开新的；

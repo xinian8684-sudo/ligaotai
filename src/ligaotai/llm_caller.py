@@ -146,6 +146,17 @@ class Caller:
         self.progress(self.done, self.total)  # 暂停检查点：做完的调用都在缓存里
         return result
 
+    def keep(self, prompt: str, values: dict) -> None:
+        """跳过（判断输入没变、不用真调模型）的那一项，也占住它在缓存里的位置。
+
+        `used` 只在 `call()` 真的走完（无论缓存命中还是真调用）时才会加进去；调用方按签名
+        判断「这次不用调」的分支，压根不会调 `call()`，于是这些花过钱换来的缓存条目在
+        `used` 里没有记录，`prune_cache()` 会把它们当成「这次没用到」的垃圾清掉。下次只要
+        任何一份被标过期需要重跑，之前一直没变的那些也会因为缓存被清空而被迫真调模型重付一次钱
+        （C1）。跟 `call()` 用完全相同的方式算键，保证占的是同一个位置。"""
+        system, user = render(prompt, **values)
+        self.used.add(cache_key(system, user, self.cfg))
+
     def prune_cache(self) -> None:
         """跑成功了：这次没用到的缓存条目清掉，免得越积越多。"""
         if set(self.cache) - self.used:

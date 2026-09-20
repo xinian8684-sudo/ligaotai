@@ -407,6 +407,8 @@ class _Run:
         entry = self.index[kind].get(oid)
         if _fresh(entry, sig, path):
             self.reused[kind].append(oid)
+            # 按签名跳过、没真调模型：这一项对应的缓存条目也占住位置，别被 prune_cache 清掉（C1）
+            self.caller.keep(prompt, {"body": text})
             return
         self.caller.plan(1)
         got = await self.caller.call(
@@ -459,6 +461,9 @@ class _Run:
             old = self._read_contradictions()
             if old is not None:
                 self.contra_status = "reused"
+                # 沿用上一轮的矛盾判断、没真调模型：每一批对应的缓存条目也占住位置（C1）
+                for b in c["batches"]:
+                    self.caller.keep("contradictions", {"unit": self.inp.unit, "groups": b["text"]})
                 return old
         batches = c["batches"]
         self.caller.plan(len(batches))
@@ -558,6 +563,8 @@ class _Run:
         )
         sig = map_sig(text)
         if _fresh(self.index["map"], sig, book.map_path):
+            # 按签名跳过、没真调模型：这份地图对应的缓存条目也占住位置，别被 prune_cache 清掉（C1）
+            self.caller.keep("map", {"body": text})
             return "reused"
         allowed = set(_ANY_SCENE.findall(text)) | {s for sc in inp.world_scope.values() for s in sc} \
             | {s for sc in inp.thread_scope.values() for s in sc}
