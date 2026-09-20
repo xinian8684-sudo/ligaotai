@@ -382,3 +382,13 @@ def test_植入记录带非空subject():
     planted = plant_contradictions(chapters, random.Random(1), n=1)
     assert len(planted) == 1
     assert planted[0]["subject"] != ""
+
+
+def test_新值原文已存在时跳过这个候选():
+    """M8：去掉「新值不能是原文里已有的」guard 会让扫描没法认出矛盾——新值本来就在
+    原文里出现过，替换后看起来完全正常，根本制造不出矛盾。这里原文同时有 old 和
+    new 两个词，这个候选必须被跳过。"""
+    chapters = [Chapter(1, "第一回", "行者取出金箍棒，一旁还有降妖宝杖。")]
+    planted = plant_contradictions(chapters, random.Random(1), n=5)
+    assert planted == []
+    assert chapters[0].body == "行者取出金箍棒，一旁还有降妖宝杖。"

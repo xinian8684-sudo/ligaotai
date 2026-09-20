@@ -5,6 +5,7 @@ client_with_book_run 拿到一本真的跑完步骤 7 的书，不用重新造�
 """
 
 import threading
+from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
@@ -125,6 +126,25 @@ def test_读世界档案的正文(client_with_book_run):
 
 def test_读不存在的档案给404(client_with_book):
     assert client_with_book.get(f"{BOOK}/archive/thread/L-999").status_code == 404
+
+
+def test_archive_body路径穿越拿不到书根目录文件(client_with_book_run, tmp_path):
+    """G（9-20 GHIJ 审查补测，M1）：ensure_within + safe_name 是 archive_body 唯一的
+    路径穿越防护，原来没有回归测试钉住——把它们拿掉也不会有任何测试挂。
+
+    用 TestClient 发 `..%2F`（编码后的正斜杠）探不出来，URL 在路由阶段就被规范化了；
+    要用 `..%5C`（反斜杠）这种 Windows 上真能穿的写法。先证明「不设防」这条路径真能
+    从 档案/支线/ 穿到书根目录的 全书地图.md（不然这条测试测不出防护的意义），
+    再验证真正打接口拿不到。"""
+    b = _open(tmp_path)
+    b.map_path.write_text("机密：全书地图正文", encoding="utf-8")
+    unsafe = (b.thread_archive_dir / ".." / ".." / "全书地图.md").resolve()
+    assert unsafe == b.map_path.resolve(), "这条路径本该真能穿到书根目录，测试前提不成立"
+    assert unsafe.read_text(encoding="utf-8") == "机密：全书地图正文"
+
+    r = client_with_book_run.get(f"{BOOK}/archive/thread/" + quote("..\\..\\全书地图", safe=""))
+    assert r.status_code == 404
+    assert "机密" not in r.text
 
 
 def test_kind不对给400(client_with_book):
