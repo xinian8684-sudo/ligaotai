@@ -599,3 +599,18 @@ def test_build_result_条目缺字段_不崩且能出summary():
     res = build_result(_one_cand(), {}, {}, old, stats={})
     assert isinstance(res["groups"][0]["id"], str)
     assert isinstance(res["stats"], dict)
+
+
+# --- I3（F+DE 合并审查）：next_id 落后（老数据没有 next_id）时，编号登记表已经把
+# groups 里出现过的编号全部占住；分配新号前要跳过登记表里已用的号，不能发一个正在用的号出去 ---
+
+def test_next_id落后时新号不能撞上登记表已用的号():
+    old = {"groups": [
+        {"id": "C-001", "subject": "甲", "attribute": "兵器", "verdict": None},
+        {"id": "C-002", "subject": "乙", "attribute": "外貌", "verdict": None},
+    ]}  # 没有 next_id 字段（老数据 / 手改丢了）
+    cands = [_cand("丙", "居所", [("v", "S-0001")]), _cand("丁", "称谓", [("v", "S-0002")])]
+    res = build_result(cands, {}, {}, old, stats={})
+    ids = [g["id"] for g in res["groups"]]
+    assert len(set(ids)) == len(ids) == 2
+    assert not set(ids) & {"C-001", "C-002"}, "新号不能撞上登记表里已经在用的号"

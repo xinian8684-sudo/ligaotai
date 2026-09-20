@@ -226,6 +226,12 @@ def build_result(cands: list[dict], judged: dict[int, dict], times: dict[str, di
         next_id = int(old.get("next_id") or 1)
     except (TypeError, ValueError):
         next_id = 1
+    # I3：next_id 落后（老数据没有这个字段、或手改丢了）时，登记表已经把 groups 里出现过的
+    # 编号全部占住——分配新号前先跳过登记表里已用的号，不能发一个正在用的号出去
+    # （撞号：两个不同的 (主语, 属性) 拿到同一个 C- 编号）。
+    used_nums = [int(v[2:]) for v in registry.values() if isinstance(v, str) and v[2:].isdigit()]
+    if used_nums:
+        next_id = max(next_id, max(used_nums) + 1)
     used_keys = set()
     groups = []
     for i, c in enumerate(cands):
