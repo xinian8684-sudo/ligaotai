@@ -225,33 +225,18 @@ def _make_archive_client(book, overrides: dict | None = None, on_call=None):
     return client
 
 
+# I4（9-20 GHIJ 审查，这一轮判定不动结构）：这里的 `book_with_threads`/`fake_client`
+# 和下面的 `_make_archive_client` 是**第二套**「认提示词种类、拿真实场景/线编号现造
+# 回复」的假模型，跟 tests/test_archive_run.py 里那一套是各自独立的——test_archive_run.py
+# 定义了自己的同名模块级 fixture（fixture 就近优先于 conftest），种子数据也不一样
+# （那边 9 个场景，这边 6 个）。改提示词要同步两处，漏一处会出现「一边绿一边红」，
+# 更糟的是「都绿但测的不是同一件事」。审查建议要么让 test_archive_run.py 改用这一套，
+# 要么保持独立但删掉死代码；改前者要动两个测试文件的 fixture 结构，风险大于收益，
+# 这一轮不动，只删掉了没人用的 `failing_world_client`/`mutating_client`（原样抄自
+# test_archive_run.py、这边没有测试引用，纯粹是死代码 + 污染全局 fixture 命名空间）。
 @pytest.fixture
 def fake_client(book_with_threads):
     return _make_archive_client(book_with_threads)
-
-
-@pytest.fixture
-def failing_world_client(book_with_threads):
-    """世界设定集那次调用一直失败，其余照常——跟 test_archive_run.py 的同名 fixture 一个套路。"""
-    from ligaotai.llm import LLMError
-
-    return _make_archive_client(book_with_threads, overrides={"archive/world": lambda u: LLMError("假的失败")})
-
-
-@pytest.fixture
-def mutating_client(book_with_threads):
-    """第一次真调用之后，偷偷往 世界与支线.json 加一条线改名——模拟作者在跑的途中动了归线结果。"""
-    b = book_with_threads
-    done = {"x": False}
-
-    def on_call(tag, messages):
-        if not done["x"]:
-            done["x"] = True
-            data = read_json(b.threads_path, {})
-            data["threads"][1]["name"] = "龙宫夜宴"
-            write_json(b.threads_path, data)
-
-    return _make_archive_client(b, on_call=on_call)
 
 
 @pytest.fixture
