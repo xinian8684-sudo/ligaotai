@@ -86,55 +86,91 @@ def test_不给lenient时行为跟以前一模一样():
     assert res["bad"] == 1
 
 
+import pytest
+
 from tools.eval_archives import recall
 
 
-def test_命中判据是场景编号加属性():
-    key = {"contradictions": [{"chapter": 3, "attribute": "兵器", "old": "金箍棒", "new": "降妖宝杖"}]}
-    chapter_scenes = {3: {"S-0005", "S-0006"}}
-    result = {"groups": [{"id": "C-001", "subject": "孙悟空", "attribute": "兵器",
-                          "status": "真矛盾", "level": "严重",
-                          "values": [{"value": "金箍棒", "scenes": [{"id": "S-0005"}]},
-                                     {"value": "降妖宝杖", "scenes": [{"id": "S-0099"}]}]}]}
-    res = recall(key, chapter_scenes, result)
-    assert res["hit"] == 1 and res["planted"] == 1
-    assert res["recall"] == 1.0
+def _key(**over):
+    p = {"subject": "岑秀", "names": ["岑秀", "岑公子"], "attribute": "年龄",
+         "chapters": [3, 8], "ages": [16, 20], "values": ["十六", "二十"]}
+    p.update(over)
+    return {"contradictions": [p]}
+
+
+CH = {3: {"S-0005"}, 8: {"S-0009"}}
+
+
+def _group(**over):
+    g = {"id": "C-001", "subject": "岑秀", "attribute": "年龄", "status": "真矛盾", "level": "严重",
+         "values": [{"value": "十六", "scenes": [{"id": "S-0005"}]},
+                    {"value": "二十", "scenes": [{"id": "S-0009"}]}]}
+    g.update(over)
+    return {"groups": [g]}
+
+
+def test_两处说法都被同一组覆盖才算命中():
+    """新植入策略下一处矛盾横跨两个章节。只引了其中一处，说明扫描没把两处对比起来，
+    那就不算发现了这对矛盾。"""
+    res = recall(_key(), CH, _group())
+    assert res["hit"] == 1 and res["planted"] == 1 and res["recall"] == 1.0
+
+
+def test_只覆盖一处不算命中():
+    g = _group(values=[{"value": "十六", "scenes": [{"id": "S-0005"}]},
+                       {"value": "三十", "scenes": [{"id": "S-0777"}]}])
+    assert recall(_key(), CH, g)["hit"] == 0
+
+
+def test_两处落在同一个值上不算命中():
+    """同一个值出现在两章里不是矛盾，是一致。"""
+    g = _group(values=[{"value": "十六", "scenes": [{"id": "S-0005"}, {"id": "S-0009"}]}])
+    assert recall(_key(), CH, g)["hit"] == 0
 
 
 def test_属性对不上不算命中():
-    key = {"contradictions": [{"chapter": 3, "attribute": "兵器", "old": "金箍棒", "new": "降妖宝杖"}]}
-    result = {"groups": [{"id": "C-001", "subject": "孙悟空", "attribute": "外貌",
-                          "status": "真矛盾", "level": "严重",
-                          "values": [{"value": "x", "scenes": [{"id": "S-0005"}]}]}]}
-    assert recall(key, {3: {"S-0005"}}, result)["hit"] == 0
+    assert recall(_key(), CH, _group(attribute="外貌"))["hit"] == 0
 
 
 def test_无法判断也算命中():
     """作者定了宁可多报，「无法判断」跟「真矛盾」一起显示，所以一起算召回。"""
-    key = {"contradictions": [{"chapter": 3, "attribute": "兵器", "old": "a", "new": "b"}]}
-    result = {"groups": [{"id": "C-001", "subject": "x", "attribute": "兵器",
-                          "status": "无法判断", "level": "",
-                          "values": [{"value": "a", "scenes": [{"id": "S-0005"}]}]}]}
-    assert recall(key, {3: {"S-0005"}}, result)["hit"] == 1
+    assert recall(_key(), CH, _group(status="无法判断"))["hit"] == 1
 
 
 def test_合理变化不算命中():
-    key = {"contradictions": [{"chapter": 3, "attribute": "兵器", "old": "a", "new": "b"}]}
-    result = {"groups": [{"id": "C-001", "subject": "x", "attribute": "兵器",
-                          "status": "合理变化", "level": "",
-                          "values": [{"value": "a", "scenes": [{"id": "S-0005"}]}]}]}
-    assert recall(key, {3: {"S-0005"}}, result)["hit"] == 0
+    assert recall(_key(), CH, _group(status="合理变化"))["hit"] == 0
 
 
-def test_误报只报数():
-    key = {"contradictions": [{"chapter": 3, "attribute": "兵器", "old": "a", "new": "b"}]}
-    result = {"groups": [
-        {"id": "C-001", "subject": "x", "attribute": "兵器", "status": "真矛盾", "level": "严重",
-         "values": [{"value": "a", "scenes": [{"id": "S-0005"}]}]},
-        {"id": "C-002", "subject": "y", "attribute": "外貌", "status": "真矛盾", "level": "中等",
-         "values": [{"value": "c", "scenes": [{"id": "S-0100"}]}]}]}
-    res = recall(key, {3: {"S-0005"}}, result)
-    assert res["hit"] == 1 and res["false_positives"] == 1
+def test_主语对不对另外记不影响命中():
+    """模型可能用别名称呼（岑公子/岑御史），拿主语当硬判据会冤枉它；
+    但主语归错了（上次 ch15 把玉霜娘的话算到小梅名下）是真问题，单独记下来。"""
+    res = recall(_key(), CH, _group(subject="小梅"))
+    assert res["hit"] == 1
+    assert res["subject_mismatch"] == 1
+
+    res2 = recall(_key(), CH, _group(subject="岑公子"))
+    assert res2["hit"] == 1 and res2["subject_mismatch"] == 0
+
+
+def test_旧格式答案硬报错():
+    """旧答案文件是 {chapter, old, new}，新判据看的是 {chapters, values}。
+    静默算成 0 召回会让人以为是产品不行（I3 的精神：别静默出错数）。"""
+    old = {"contradictions": [{"chapter": 3, "attribute": "年龄", "old": "十六", "new": "二十"}]}
+    with pytest.raises(SystemExit, match="答案文件是旧格式"):
+        recall(old, CH, _group())
+
+
+def test_没对上植入点的真矛盾单独报_不叫误报():
+    """验收语料本身就有自己的矛盾。9-21 真跑报的 3 个「误报」全是书里真有的分歧
+    （蘇小姐年龄十八/十六、殷勇兵器鐵鐧/鋼刀、許俊卿位置），一条瞎编的都没有。
+    这个字段叫 false_positives 会误导，改名 unmatched_true，报告里写明它不等于误报。"""
+    g = {"groups": [
+        _group()["groups"][0],
+        {"id": "C-002", "subject": "蘇小姐", "attribute": "年龄", "status": "真矛盾", "level": "中等",
+         "values": [{"value": "十八", "scenes": [{"id": "S-0100"}]}]}]}
+    res = recall(_key(), CH, g)
+    assert res["hit"] == 1 and res["unmatched_true"] == 1
+    assert "false_positives" not in res
 
 
 from tools.eval_archives import sample_for_review

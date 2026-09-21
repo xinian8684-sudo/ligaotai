@@ -243,53 +243,6 @@ def test_main_accepts_custom_aliases(tmp_path):
 from tools.scramble import Chapter, plant_contradictions
 
 
-def test_植入的是原文里真出现的词():
-    chapters = [Chapter(1, "第一回", "行者取出金箍棒，年方十六，左臂有伤。"),
-                Chapter(2, "第二回", "行者又取金箍棒来，仍是十六岁。")]
-    import random
-    planted = plant_contradictions(chapters, random.Random(1), n=1)
-    assert len(planted) == 1
-    p = planted[0]
-    assert p["new"] != p["old"]
-    assert p["attribute"] in ("年龄", "兵器", "外貌")
-    body = next(c.body for c in chapters if c.num == p["chapter"])
-    assert p["new"] in body, "改完要真的写回正文"
-    assert p["old"] not in body or body.count(p["old"]) < 2
-
-
-def test_一个章节最多植入一处():
-    chapters = [Chapter(1, "第一回", "行者取出金箍棒，年方十六，左臂有伤，穿红衣。")]
-    import random
-    planted = plant_contradictions(chapters, random.Random(1), n=5)
-    assert len({p["chapter"] for p in planted}) == len(planted)
-
-
-def test_没有锚点时不硬植入():
-    chapters = [Chapter(1, "第一回", "天气很好。")]
-    import random
-    assert plant_contradictions(chapters, random.Random(1), n=3) == []
-
-
-def test_答案文件带植入记录(tmp_path):
-    """task19 任务书原样给的书里没有「悟空/八戒/唐僧」，main() 不给 --aliases 时默认走
-    DEFAULT_ALIASES，会因为源文里找不到替换对象而报错——这不是本任务要测的东西，
-    传个空的别名列表绕开（跟能不能植入矛盾无关）。"""
-    from tools.scramble import main
-    src = tmp_path / "book.txt"
-    src.write_text("第一回 起头\n行者取出金箍棒，年方十六。\n" * 3 +
-                   "第二回 再来\n行者又见金箍棒，左臂有伤。\n" * 3 +
-                   "第三回 收尾\n行者归来，年方十六。\n" * 3, encoding="utf-8")
-    aliases = tmp_path / "aliases.json"
-    aliases.write_text("[]", encoding="utf-8")
-    out = tmp_path / "乱稿"
-    main(["--src", str(src), "--out", str(out), "--contradictions", "1", "--aliases", str(aliases),
-          "--n-delete", "0", "--n-truncate", "0", "--n-full", "0", "--n-excerpt", "0"])
-    import json
-    key = json.loads((tmp_path / "乱稿-答案.json").read_text(encoding="utf-8"))
-    assert len(key["contradictions"]) == 1
-    assert set(key["contradictions"][0]) >= {"chapter", "subject", "attribute", "old", "new"}
-
-
 def test_不给contradictions参数时行为不变(tmp_path):
     """②b 的乱稿重跑不能受影响。同样传空别名列表绕开默认别名表找不到源词的问题。"""
     from tools.scramble import main
@@ -310,91 +263,6 @@ def test_不给contradictions参数时行为不变(tmp_path):
 # C1（9-20 GHIJ 审查）：锚点表繁简都认、配额分散、subject 不再恒为空
 # --------------------------------------------------------------------------------------
 
-def test_n为0时真的不植入且正文一个字没变():
-    """语料里放真锚点（M5 的空测漏洞：旧版用「甲乙丙」这种没有锚点的语料，n<=0 的短路
-    删不删结果都一样）。这里用含真锚点的语料，n=0 必须一处都不动，正文原样。"""
-    chapters = [Chapter(1, "第一回", "行者取出金箍棒，年方十六，左臂有伤，穿红衣。")]
-    original = chapters[0].body
-    planted = plant_contradictions(chapters, random.Random(1), n=0)
-    assert planted == []
-    assert chapters[0].body == original
-
-
-def test_是替换不是追加():
-    """M6：只在章末追加新值而不替换原词，也能让「old not in body or count<2」这种弱断言
-    通过。这里直接数 old 的出现次数，追加不替换的话次数不会减少。"""
-    chapters = [Chapter(1, "第一回", "行者取出金箍棒。行者又取金箍棒来。")]
-    before = chapters[0].body.count("金箍棒")
-    planted = plant_contradictions(chapters, random.Random(1), n=1)
-    assert len(planted) == 1
-    after = chapters[0].body.count(planted[0]["old"])
-    assert after == before - 1
-
-
-def test_植入章节必须在kept里(tmp_path):
-    """M20：矛盾不能植入到会被删掉的章节——scramble() 传给 plant_contradictions 的必须
-    是 kept，不是全量 chapters。"""
-    chapters = make_chapters(20)
-    for c in chapters:
-        c.body += "，行者取出金箍棒。"
-    out = tmp_path / "乱稿"
-    key = scramble(chapters, out, seed=3, n_delete=5, n_truncate=0, n_full=0, n_excerpt=0,
-                    alias_chapters=5, n_contradictions=10)
-    deleted = set(key["deleted"])
-    assert key["contradictions"]
-    assert not ({p["chapter"] for p in key["contradictions"]} & deleted)
-
-
-def test_繁体语料按繁体写回新值():
-    """C1 核心：语料是繁体，旧版词表全简体，10 处植入 8 处撞同一条。这里验证繁体语料上
-    锚点能匹配、新值写回去也是繁体字形（不会把简体新词塞进简体正文）。一个章节最多
-    植一处，所以拆两个章节各放一类锚点。"""
-    chapters = [
-        Chapter(1, "第一回", "行者掣出九齒釘鈀。"),
-        Chapter(2, "第二回", "八戒穿紅衣。"),
-    ]
-    planted = plant_contradictions(chapters, random.Random(2), n=3)
-    assert len(planted) == 2  # 兵器、外貌各一处；这段没有年龄锚点
-    by_attr = {p["attribute"]: p for p in planted}
-    assert by_attr["兵器"]["old"] == "九齒釘鈀" and by_attr["兵器"]["new"] == "青鋒劍"
-    assert by_attr["外貌"]["old"] == "紅衣" and by_attr["外貌"]["new"] == "青衣"
-    assert by_attr["兵器"]["new"] in chapters[0].body
-    assert by_attr["外貌"]["new"] in chapters[1].body
-
-
-def test_同一old_new对有配额上限():
-    """C1：同一个 (old,new) 有向对最多用 max_per_pair 次，逼植入分散，不能像旧版那样
-    10 处里 8 处是同一条替换。"""
-    chapters = [
-        Chapter(i, f"第{i}回", "行者又取金箍棒来也。") for i in range(1, 11)
-    ]
-    planted = plant_contradictions(chapters, random.Random(4), n=10, max_per_pair=2)
-    from collections import Counter
-    counts = Counter((p["old"], p["new"]) for p in planted)
-    assert all(c <= 2 for c in counts.values())
-    assert len(planted) == 2  # 只有一种锚点词、一种换法，配额封顶后不会凑满 n=10
-
-
-def test_植入记录带非空subject():
-    """spec 9.1 要记 subject；旧版恒为空字符串。这里给一个典型的「XX道」叙述，
-    subject 至少要能抓到点名的那个名字。"""
-    chapters = [Chapter(1, "第一回", "行者笑道：「不打紧。」伸手取出金箍棒。")]
-    planted = plant_contradictions(chapters, random.Random(1), n=1)
-    assert len(planted) == 1
-    assert planted[0]["subject"] != ""
-
-
-def test_新值原文已存在时跳过这个候选():
-    """M8：去掉「新值不能是原文里已有的」guard 会让扫描没法认出矛盾——新值本来就在
-    原文里出现过，替换后看起来完全正常，根本制造不出矛盾。这里原文同时有 old 和
-    new 两个词，这个候选必须被跳过。"""
-    chapters = [Chapter(1, "第一回", "行者取出金箍棒，一旁还有降妖宝杖。")]
-    planted = plant_contradictions(chapters, random.Random(1), n=5)
-    assert planted == []
-    assert chapters[0].body == "行者取出金箍棒，一旁还有降妖宝杖。"
-
-
-
 def _read_piece(path, encoding: str) -> str:
     """按答案里记的编码读一个乱稿文件。docx 也要读——跳过它会让「新值搜不到」的断言出现
     盲区：植入落在一个恰好被写成 docx 的章节时，跳过等于默认它没问题（9-21 扫 30 个种子
@@ -405,40 +273,142 @@ def _read_piece(path, encoding: str) -> str:
     return path.read_text(encoding=encoding)
 
 
-def test_植入不落在会被截断的章节(tmp_path):
-    """9-21：植入在 cut_at_ratio 之前跑，锚点落在被切掉的后半段（保留前 40%-70%）就会被
-    吃掉——答案里记着这处矛盾，乱稿正文里新值旧值都搜不到，召回必然 miss 一处。
-    真跑雪月梅 seed 默认那一份实际撞上了：ch7 的「十五→十九」新旧值都是 0 次。
-    修法（已知问题里写的正解）：plant_contradictions 跳过会被截断的章节。"""
-    chapters = make_chapters(20)
-    for c in chapters:
-        # 锚点放在正文末尾，保证落在被切掉的那 30%-60% 里
-        c.body += "，行者取出金箍棒。"
-    out = tmp_path / "乱稿"
-    key = scramble(chapters, out, seed=1, n_delete=2, n_truncate=8, n_full=0, n_excerpt=0,
-                    alias_chapters=3, n_contradictions=8)
-    truncated = {t["chapter"] for t in key["truncated"]}
-    assert truncated, "这个用例要真截断了才有意义"
-    assert key["contradictions"]
-    planted = {p["chapter"] for p in key["contradictions"]}
-    assert not (planted & truncated), f"植入落进了被截断的章节：{sorted(planted & truncated)}"
+# ==== 新植入策略（2026-09-21 重写）====
+# 旧实现「把原文里的一个词换成另一个词」造不出矛盾：矛盾需要两处说法并存，而替换改掉的
+# 是原值。真跑《雪月梅传》实测 10 处植入里 7 处从来就不是矛盾（docs/验收记录/2026-09-21）。
+# 新实现：给指定人物在两个不同章节各插一句年龄陈述、数值不同，主语一定相同、两处说法一定并存。
+
+CHARS = [
+    {"canonical": "岑秀", "names": ["岑秀", "岑公子"]},
+    {"canonical": "劉電", "names": ["劉電", "劉生"]},
+    {"canonical": "小梅", "names": ["小梅"]},
+]
 
 
-def test_答案里每处矛盾的新值在乱稿正文里真的搜得到(tmp_path):
-    """上一条的端到端版：不看章节号，直接打开输出文件核字。这是「花了钱才发现召回上限
-    不是 10/10」的最后一道闸。"""
-    chapters = make_chapters(20)
-    for c in chapters:
-        c.body += "，行者取出金箍棒。"
+def _chapters_with(names, n=8):
+    """造 n 回，每回正文里带一个人名。"""
+    out = []
+    for i in range(1, n + 1):
+        who = names[(i - 1) % len(names)]
+        out.append(Chapter(i, f"第{i}回", f"這日天氣晴和。{who}生得丰神俊雅，氣宇不凡。眾人都不做聲。"))
+    return out
+
+
+def test_植入造出的是一对并存的说法():
+    """核心：一处植入 = 同一个人、两个不同章节、两个不同的值。
+    只有两处说法并存才构成矛盾——这正是旧实现缺的东西。"""
+    chapters = _chapters_with(["岑秀"], 6)
+    planted = plant_contradictions(chapters, random.Random(1), n=1, characters=CHARS)
+    assert len(planted) == 1
+    p = planted[0]
+    assert p["subject"] == "岑秀"
+    assert p["attribute"] == "年龄"
+    assert len(p["chapters"]) == 2 and p["chapters"][0] != p["chapters"][1]
+    assert len(p["values"]) == 2 and p["values"][0] != p["values"][1]
+    bodies = {c.num: c.body for c in chapters}
+    for ch, val in zip(p["chapters"], p["values"]):
+        assert val in bodies[ch], f"第 {ch} 回正文里应该有值 {val}"
+        assert "岑秀" in bodies[ch]
+
+
+def test_两个值差得够远():
+    """十六 vs 十七 会被判成合理变化，拉不开的差距测不出东西。"""
+    chapters = _chapters_with(["岑秀"], 8)
+    planted = plant_contradictions(chapters, random.Random(3), n=1, characters=CHARS)
+    p = planted[0]
+    assert abs(p["ages"][0] - p["ages"][1]) >= 4
+
+
+def test_没有人物名单时不硬植入():
+    chapters = _chapters_with(["岑秀"], 6)
+    assert plant_contradictions(chapters, random.Random(1), n=3, characters=[]) == []
+
+
+def test_人物在书里只出现一个章节时跳过():
+    """只有一个章节提到这个人，插不出两处并存的说法，得跳过他而不是硬插。"""
+    chapters = [Chapter(1, "第一回", "岑秀生得丰神俊雅。"),
+                Chapter(2, "第二回", "這日天氣晴和。")]
+    planted = plant_contradictions(chapters, random.Random(1), n=3, characters=CHARS)
+    assert planted == []
+
+
+def test_一个章节最多参与一处植入():
+    chapters = _chapters_with(["岑秀", "劉電", "小梅"], 8)
+    planted = plant_contradictions(chapters, random.Random(2), n=3, characters=CHARS)
+    used = [ch for p in planted for ch in p["chapters"]]
+    assert len(used) == len(set(used)), "同一个章节被两处植入用了"
+
+
+def test_插入的句子跟着正文的字形走():
+    """繁体语料插繁体「歲」，简体语料插简体「岁」——简体新词混在繁体段落里是明显的人造痕迹（C1）。"""
+    trad = _chapters_with(["岑秀"], 6)
+    planted = plant_contradictions(trad, random.Random(1), n=1, characters=CHARS)
+    body = next(c.body for c in trad if c.num == planted[0]["chapters"][0])
+    assert "歲" in body and "岁" not in body
+
+    simp = [Chapter(i, f"第{i}回", f"这日天气晴和。岑秀生得丰神俊雅，气宇不凡。")
+            for i in range(1, 7)]
+    planted2 = plant_contradictions(simp, random.Random(1), n=1, characters=CHARS)
+    body2 = next(c.body for c in simp if c.num == planted2[0]["chapters"][0])
+    assert "岁" in body2 and "歲" not in body2
+
+
+def test_植入不落在被删或被截断的章节(tmp_path):
+    chapters = _chapters_with(["岑秀", "劉電", "小梅"], 20)
     out = tmp_path / "乱稿"
     key = scramble(chapters, out, seed=1, n_delete=2, n_truncate=8, n_full=0, n_excerpt=0,
-                    alias_chapters=3, n_contradictions=8)
+                   alias_chapters=0, aliases=[], n_contradictions=3, characters=CHARS)
+    bad = set(key["deleted"]) | {t["chapter"] for t in key["truncated"]}
+    used = {ch for p in key["contradictions"] for ch in p["chapters"]}
+    assert used and not (used & bad)
+
+
+def test_答案里每处矛盾的两个值在乱稿正文里都搜得到(tmp_path):
+    """端到端：打开输出文件核字。这是「花了钱才发现召回上限不是 10/10」的最后一道闸。"""
+    chapters = _chapters_with(["岑秀", "劉電", "小梅"], 20)
+    out = tmp_path / "乱稿"
+    key = scramble(chapters, out, seed=1, n_delete=2, n_truncate=8, n_full=0, n_excerpt=0,
+                   alias_chapters=0, aliases=[], n_contradictions=3, characters=CHARS)
     by_ch: dict[int, list] = {}
     for f in key["files"]:
         by_ch.setdefault(f["chapter"], []).append(f)
     for p in key["contradictions"]:
-        body = "".join(
-            _read_piece(out / f["path"], f["encoding"])
-            for f in sorted(by_ch[p["chapter"]], key=lambda x: x["piece"])
-        )
-        assert p["new"] in body, f"第 {p['chapter']} 章植入的 {p['old']}→{p['new']} 在乱稿正文里搜不到"
+        for ch, val in zip(p["chapters"], p["values"]):
+            body = "".join(
+                _read_piece(out / f["path"], f["encoding"])
+                for f in sorted(by_ch[ch], key=lambda x: x["piece"])
+            )
+            assert val in body, f"第 {ch} 回植入的 {val} 在乱稿正文里搜不到"
+            assert p["subject"] in body or any(nm in body for nm in p.get("names", [])), \
+                f"第 {ch} 回搜不到主语 {p['subject']}"
+
+
+def test_n为0时真的不植入且正文一个字没变_新版():
+    chapters = _chapters_with(["岑秀"], 6)
+    before = [c.body for c in chapters]
+    assert plant_contradictions(chapters, random.Random(1), n=0, characters=CHARS) == []
+    assert [c.body for c in chapters] == before
+
+
+def test_植入避开会被别名替换掉的人物(tmp_path):
+    """别名替换在植入之后跑，会把插入句里的人名一起换掉：答案记「雪姐年方二十」，
+    正文里却是「玉霜娘年方二十」，主语对不上，这处植入成不成还要看实体合并有没有把
+    两个名字并到一起——引入了跟矛盾扫描无关的变量。9-21 真语料上实测撞到过（雪姐 ch8）。
+    修法：名字会被别名替换的人物，直接不拿来植入。"""
+    chapters = _chapters_with(["岑秀", "劉電", "小梅"], 20)
+    aliases = [{"replaces": "劉電", "alias": "雷公將", "canonical": "劉電"}]
+    out = tmp_path / "乱稿"
+    key = scramble(chapters, out, seed=1, n_delete=2, n_truncate=4, n_full=0, n_excerpt=0,
+                   alias_chapters=6, aliases=aliases, n_contradictions=3, characters=CHARS)
+    assert key["contradictions"], "这个用例要真植入了才有意义"
+    assert all(p["subject"] != "劉電" for p in key["contradictions"]), \
+        "劉電 会被替换成雷公將，不该拿来当植入的主语"
+
+    by_ch: dict[int, list] = {}
+    for f in key["files"]:
+        by_ch.setdefault(f["chapter"], []).append(f)
+    for p in key["contradictions"]:
+        for ch in p["chapters"]:
+            body = "".join(_read_piece(out / f["path"], f["encoding"])
+                           for f in sorted(by_ch[ch], key=lambda x: x["piece"]))
+            assert p["subject"] in body, f"第 {ch} 回搜不到主语 {p['subject']}"

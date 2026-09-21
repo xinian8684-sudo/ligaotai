@@ -137,36 +137,60 @@ def check_refs(bodies: dict[str, str], allowed: dict[str, set[str]],
 
 
 def recall(key: dict, chapter_scenes: dict[int, set[str]], result: dict) -> dict:
-    """植入矛盾的召回（spec 9.1）：植入点所在章节的场景编号，出现在某个
-    status ∈ {真矛盾, 无法判断} 的组里，且该组属性等于植入的属性，就算召回。"""
-    groups = [g for g in (result.get("groups") or []) if g.get("status") in _HIT_STATUS]
+    """植入矛盾的召回（spec 9.1）。
+
+    一处植入 = 同一个人物在两个不同章节被写成两个不同的年龄（见 `tools/scramble.py`
+    的 `plant_contradictions`）。命中要求**两处说法都被同一个组覆盖、且落在两个不同的值上**——
+    只引了其中一处，说明扫描没把两处对比起来，那就不算发现了这对矛盾。
+
+    旧判据只要「属性相同 + 场景编号有交集」，宽得多。9-21 真跑《雪月梅传》时，植入点所在
+    场景往往还涉及书里本来就有的别的矛盾，属性一撞就算命中——那种命中证明不了任何事。
+    """
     planted = key.get("contradictions") or []
-    hit, misses = 0, []
-    matched_ids = set()
+    if planted and "chapters" not in planted[0]:
+        sys.exit("答案文件是旧格式（每条只有一个 chapter + old/new），新判据要的是 "
+                 "{chapters: [a, b], values: [v1, v2]}。拿新版 tools/scramble.py 重新生成乱稿。")
+
+    groups = [g for g in (result.get("groups") or []) if g.get("status") in _HIT_STATUS]
+    hit, misses, matched_ids, subject_mismatch = 0, [], set(), 0
     for p in planted:
-        scenes = chapter_scenes.get(p["chapter"], set())
+        want = [chapter_scenes.get(ch, set()) for ch in p["chapters"]]
         found = None
         for g in groups:
             if g.get("attribute") != p["attribute"]:
                 continue
-            ids = {s["id"] for v in g.get("values") or [] for s in v.get("scenes") or []}
-            if ids & scenes:
-                found = g["id"]
+            # 两处说法要落在两个不同的值上：同一个值出现在两章里是一致，不是矛盾
+            covering = []
+            for v in g.get("values") or []:
+                ids = {s["id"] for s in v.get("scenes") or []}
+                covering.append([bool(ids & w) for w in want])
+            if not covering:
+                continue
+            pairs = [(i, j) for i in range(len(covering)) for j in range(len(covering))
+                     if i != j and covering[i][0] and covering[j][1]]
+            if pairs:
+                found = g
                 break
         if found:
             hit += 1
-            matched_ids.add(found)
+            matched_ids.add(found["id"])
+            names = set(p.get("names") or []) | {p.get("subject", "")}
+            got = found.get("subject", "")
+            if not any(nm and (nm in got or got in nm) for nm in names):
+                subject_mismatch += 1
         else:
             misses.append(p)
     return {
         "planted": len(planted), "hit": hit,
         "recall": round(hit / len(planted), 4) if planted else 0.0,
         "misses": misses,
-        # 误报只报数不设门槛——作者定了宁可多报，留着人工翻
-        "false_positives": sum(1 for g in groups if g.get("status") == "真矛盾"
-                               and g["id"] not in matched_ids),
+        # 命中了但主语归错（9-21 实测：玉霜娘的年龄被算到小梅名下）。不影响命中，单独记。
+        "subject_mismatch": subject_mismatch,
+        # 没对上植入点的真矛盾。**这不等于误报**——验收语料本身就有自己的矛盾，
+        # 9-21 真跑报的 3 条全是书里真有的分歧，一条瞎编的都没有。只报数，不设门槛。
+        "unmatched_true": sum(1 for g in groups if g.get("status") == "真矛盾"
+                              and g["id"] not in matched_ids),
     }
-
 
 def chapter_to_scenes(book: Book, key: dict, folder_name: str) -> dict[int, set[str]]:
     """章节号 → 场景编号集合。答案文件记的是章节，S- 编号是导入时才分配的，

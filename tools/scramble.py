@@ -161,43 +161,6 @@ def mutate(text: str, rng: random.Random, drop=0.08, modify=0.08, add=0.04) -> s
     return "".join(out)
 
 
-# 锚点：换的值必须跟原值同类但不同，好让矛盾扫描能认出来。
-# spec 9.1 还提到「地名（从答案文件里已有的实体取）」一类锚点，这里没做——scramble 在切场景、
-# 建实体表之前跑，这个阶段还没有「答案文件里已有的实体」可取，留给以后有实体表可用时再补。
-#
-# C1 修复（9-20 GHIJ 审查）：旧版词表全是简体，验收语料（西游记）是繁体，整张表在那本书上
-# 只有「金箍棒」（简繁同形）能匹配，10 处植入 8 处落在同一个 (孫悟空,兵器) 组，召回门槛
-# ≥8/10 形同虚设。修法：
-# 1. 每个词按 (简体写法, 繁体写法) 成对登记；正则同时认两种写法，新值按「匹配到的这段文本
-#    整体是简体还是繁体」（见 _script_of）挑对应写法写回去，不会把简体新词塞进繁体正文。
-# 2. 加配额（见 plant_contradictions 的 max_per_pair）：同一个 (old,new) 有向对最多用
-#    max_per_pair 次，逼植入分散到不同的兵器/部位/颜色上——这些锚点本来就对应不同人物，
-#    分散锚点约等于分散 (主语,属性) 分组。
-_ANCHOR_GROUPS: list[tuple[str, list[tuple[str, str]], dict[str, str]]] = [
-    ("兵器", [
-        ("金箍棒", "金箍棒"), ("九齿钉耙", "九齒釘鈀"), ("降妖宝杖", "降妖寶杖"),
-        ("青锋剑", "青鋒劍"), ("方天画戟", "方天畫戟"),
-    ], {
-        "金箍棒": "降妖宝杖", "降妖宝杖": "金箍棒", "九齿钉耙": "青锋剑",
-        "青锋剑": "九齿钉耙", "方天画戟": "青锋剑",
-    }),
-    ("外貌", [
-        ("左臂", "左臂"), ("右臂", "右臂"), ("左脸", "左臉"), ("右脸", "右臉"),
-        ("左手", "左手"), ("右手", "右手"),
-    ], {
-        "左臂": "右臂", "右臂": "左臂", "左脸": "右脸", "右脸": "左脸",
-        "左手": "右手", "右手": "左手",
-    }),
-    ("外貌", [
-        ("红衣", "紅衣"), ("白衣", "白衣"), ("青衣", "青衣"), ("皂衣", "皂衣"),
-    ], {
-        "红衣": "青衣", "青衣": "红衣", "白衣": "皂衣", "皂衣": "白衣",
-    }),
-]
-# 年龄锚点：汉字数字（十六、二十…）两岸同形，不受简繁影响；唯独单位字有「岁/歲」两种
-# 写法，正则里两种都认，数字本身直接用同一张表换，不用另外分简繁。
-_AGE_TABLE = {"十六": "二十", "二十": "十六", "十八": "二十四", "十五": "十九"}
-
 _TRAD_CHARS = frozenset(hanfold._TRAD)
 _SIMP_CHARS = frozenset(hanfold._SIMP)
 
@@ -211,139 +174,124 @@ def _script_of(text: str) -> str:
     return "trad" if trad > simp else "simp"
 
 
-def _make_word_resolver(pairs: list[tuple[str, str]], swap: dict[str, str]):
-    """把 (简体,繁体) 词对 + 简体换表，展开成 old(任意字形) -> new(按 script 挑字形) 的函数。"""
-    simp_to_trad = dict(pairs)
-    canon = {}
-    for s, t in pairs:
-        canon[s] = s
-        canon[t] = s
-
-    def resolve(old: str, script: str) -> str | None:
-        s = canon.get(old)
-        if s is None:
-            return None
-        new_s = swap.get(s)
-        if new_s is None:
-            return None
-        return simp_to_trad[new_s] if script == "trad" else new_s
-
-    return resolve
+# 年龄池：两个值要差得够远，差一两岁会被判成「合理变化」，测不出东西。
+_AGES = [14, 16, 18, 20, 22, 24, 28, 32, 36, 40, 46, 52]
+_AGE_GAP = 4  # 同一处矛盾的两个值至少差这么多岁
+_CN_DIGITS = "〇一二三四五六七八九"
 
 
-def _age_resolver(old: str, script: str) -> str | None:
-    return _AGE_TABLE.get(old)
-
-
-_ANCHORS: list[tuple[str, re.Pattern, object]] = [
-    ("年龄", re.compile(r"年方([一二三四五六七八九十]+)"), _age_resolver),
-    ("年龄", re.compile(r"([一二三四五六七八九十]+)(?:岁|歲)"), _age_resolver),
-    *[
-        (attribute, re.compile("(" + "|".join(sorted({f for p in pairs for f in p},
-                                                       key=len, reverse=True)) + ")"),
-         _make_word_resolver(pairs, swap))
-        for attribute, pairs, swap in _ANCHOR_GROUPS
-    ],
-]
-
-_CLAUSE_BOUND = re.compile(r"[，,。！？；：\n]")
-_SUBJECT_STOP_CHARS = set("将把手舉举執执拿佩戴穿披是有來来仍又也便就卻却年方歲岁正慌急直忙早")
-_SUBJECT_DECOR = re.compile(r"[「『“」』”\s]")
-# 章回小说里最常见的「点名」形态是「XX道/說/曰」——古白话零主语（承前省略）很多，
-# 锚点所在分句往往没有名字，反而是往前一两句的「某某道：」把名字重新点出来。
-# 优先找这个，比纯分句截取准得多；找不到再退回分句启发式。
-_SPEAKER = re.compile(r"([一-鿿]{1,8})(?:道|說|说|曰)[：:，,「『]")
-_SPEAKER_TRIM = re.compile(r"(?:那|這|这|那個|这个|又|便|忙|连忙|連忙|冷笑|大笑|笑|喝|叫|哭|應聲|应声|答)+$")
-
-
-def _extract_subject(body: str, pos: int, lookback: int = 200) -> str:
-    """从锚点前的文本里粗略挑一个「像主语」的候选，两级启发式：
-
-    1. 先找 `lookback` 范围内最近一处「某某道/說/曰」（`_SPEAKER`），去掉「那/这/笑/
-       忙」这类前缀修饰词，当作最近提到的说话人——章回小说的零主语句多，这一招覆盖
-       的场景比只看锚点所在分句多得多。
-    2. 找不到就退回分句启发式：从上一个标点切开，取分句开头到第一个常见谓语/虚词
-       字符之前的汉字串；这一分句抓不到（太短或全是虚词）就退到再前一个分句。
-
-    这是个粗糙的启发式，**不是命名实体识别**——scramble 在实体表建好之前跑，这个阶段
-    拿不到规范名。目的只是 spec 9.1 要求的「至少填上一个东西，供人工核对扫描结果时
-    判断主语对不对」，不追求精确；抓错、抓到虚词残留都可能发生，真实语料上的实测
-    结果（含抓错的例子）见 `reports/GHIJ-修复.md`。抓不到就留空，不瞎编。"""
-    left = _SUBJECT_DECOR.sub("", body[max(0, pos - lookback):pos])
-    speakers = list(_SPEAKER.finditer(left))
-    if speakers:
-        name = _SPEAKER_TRIM.sub("", speakers[-1].group(1))
-        if len(name) >= 1:
-            return name[-4:]
-    clauses = _CLAUSE_BOUND.split(left)
-    for clause in reversed(clauses):
-        if not clause:
-            continue
-        cut = len(clause)
-        for i, ch in enumerate(clause):
-            if ch in _SUBJECT_STOP_CHARS:
-                cut = i
-                break
-        chunk = clause[:cut]
-        if len(chunk) >= 2:
-            return chunk[:4]
-    return ""
+def _cn_number(n: int) -> str:
+    """阿拉伯数字转汉字（只需要 10-99，年龄够用）。"""
+    if n < 10:
+        return _CN_DIGITS[n]
+    tens, ones = divmod(n, 10)
+    head = "" if tens == 1 else _CN_DIGITS[tens]
+    return f"{head}十{_CN_DIGITS[ones] if ones else ''}"
 
 
 def plant_contradictions(chapters: list[Chapter], rng: random.Random, n: int,
-                          max_per_pair: int = 2, skip: set[int] | None = None) -> list[dict]:
-    """在章节正文里植入 n 处人造矛盾，一个章节最多一处，就地改 chapters 的 body。
+                          characters: list[dict] | None = None,
+                          skip: set[int] | None = None,
+                          avoid: set[str] | None = None) -> list[dict]:
+    """植入 n 处人造矛盾：给一个人物在**两个不同章节**各插一句年龄陈述，数值不同。
+    就地改 chapters 的 body，一个章节最多参与一处。
 
-    只改**原文里真出现的词**，换成同类但不同的值，答案记 (章节, 主语, 属性, 原值, 新值)。
-    找不到锚点就少植入几处，不硬来（spec 9.1）。同一个 (old,new) 有向对最多用
-    `max_per_pair` 次，避免像旧版那样 10 处里 8 处都是同一条替换（C1）。
+    ## 为什么不再用「把原文里的词换成另一个词」
 
-    `skip` 里的章节不植入。调用方拿它排掉会被截断的章节：截断保留前 40%-70%，锚点落在
-    被切掉的后半段就会被吃掉，答案里记着这处矛盾、乱稿正文里新旧值都搜不到，召回上限
-    白白掉一处（9-21：雪月梅真语料上实测 10 处里 ch7 被吃掉了一处）。
+    旧实现找原文里的锚点词（金箍棒/十六/红衣…）替换成同类的另一个值。那**造不出矛盾**：
+    矛盾要两处说法并存，而替换改掉的是原值——这个词在书里只出现这一次的话，改完全书自洽。
+    2026-09-21 真跑《雪月梅传》实测：10 处植入里 7 处从来就不是矛盾（3 处压根没被抽成
+    fact、2 处那个 (主语,属性) 全书只有一个值、2 处属性/主语跑偏），召回 3/10，而命中的
+    3 处全部落在书里本来就被反复提到的人物年龄上。详见 docs/验收记录/2026-09-21-计划2c-档案矛盾地图.md。
 
-    注：任务书给的实现里 n=0 时会误植入 1 处——「先 setdefault 进去、再判断
-    len(by_chapter) >= n」在 n=0 时第一条就已经 1 >= 0，立刻当「够了」保留下来。
-    这里补一道 n <= 0 直接短路，保证不给 --contradictions 参数时（默认 0）行为
-    跟改之前完全一样，一处都不植入。
+    换成「插一对说法」之后，每处植入天然满足三个条件：主语相同、两处说法并存、
+    属性是模型确实会抽成 fact 的那类（年龄）。**这是个下限测试**——矛盾造得直白，
+    测的是「这么明显的前后不一致能不能发现」，不能拿它的高分宣称产品多强。
+
+    ## 参数
+
+    `characters`：人物名单 `[{"canonical": "岑秀", "names": ["岑秀", "岑公子"]}, ...]`。
+    没名单就不植入——宁可少植几处，也不瞎认主语（旧实现的 `_extract_subject` 抽出来一半
+    是虚词残留，像 `個不用你`、`那火光中`）。
+
+    `skip`：不植入的章节。调用方拿它排掉会被截断的章节——截断保留前 40%-70%，插入的句子
+    落在被切掉的后半段就会被吃掉，答案里记着、乱稿里搜不到（9-21 实测真咬过一次）。
+
+    `avoid`：名字在这个集合里的人物不拿来植入。调用方拿它排掉会被别名替换的人——别名
+    替换在植入之后跑，会把插入句里的人名一起换掉（答案记「雪姐年方二十」、正文里成了
+    「玉霜娘年方二十」），这处植入成不成就还要看实体合并有没有把两个名字并到一起，
+    引入了跟矛盾扫描无关的变量。9-21 真语料上实测撞到过。
     """
-    if n <= 0:
+    if n <= 0 or not characters:
         return []
-    skipped = skip or set()
+    skipped = set(skip or ())
     script = _script_of("".join(c.body for c in chapters))
-    spots = []
-    for c in chapters:
-        for attribute, pattern, resolver in _ANCHORS:
-            for m in pattern.finditer(c.body):
-                old = m.group(1)
-                new = resolver(old, script)
-                if new and new != old and new not in c.body:
-                    subject = _extract_subject(c.body, m.start(1))
-                    spots.append({"chapter": c.num, "attribute": attribute, "subject": subject,
-                                  "old": old, "new": new, "pos": m.start(1)})
-    rng.shuffle(spots)
-    by_chapter: dict[int, dict] = {}
-    pair_count: dict[tuple[str, str], int] = {}
-    for s in spots:
-        if s["chapter"] in by_chapter or s["chapter"] in skipped:
-            continue
-        key = (s["old"], s["new"])
-        if pair_count.get(key, 0) >= max_per_pair:
-            continue
-        by_chapter[s["chapter"]] = s
-        pair_count[key] = pair_count.get(key, 0) + 1
-        if len(by_chapter) >= n:
-            break
-    planted = []
-    for c in chapters:
-        s = by_chapter.get(c.num)
-        if not s:
-            continue
-        c.body = c.body[:s["pos"]] + s["new"] + c.body[s["pos"] + len(s["old"]):]
-        planted.append({"chapter": c.num, "subject": s["subject"], "attribute": s["attribute"],
-                        "old": s["old"], "new": s["new"]})
-    return sorted(planted, key=lambda p: p["chapter"])
+    unit = "歲" if script == "trad" else "岁"
 
+    # 每个人物在哪些章节露过面（按名字直接搜；别名替换发生在这之后，不影响）
+    avoided = set(avoid or ())
+    usable = []
+    for ch in characters:
+        names = [x for x in (ch.get("names") or [ch["canonical"]]) if x]
+        if avoided and any(a in nm or nm in a for nm in names for a in avoided):
+            continue
+        spots = []
+        for c in chapters:
+            if c.num in skipped:
+                continue
+            hit = next(((nm, c.body.find(nm)) for nm in names if nm in c.body), None)
+            if hit:
+                spots.append({"chapter": c.num, "name": hit[0], "pos": hit[1]})
+        if len(spots) >= 2:  # 少于两个章节插不出两处并存的说法，跳过这个人
+            usable.append({"subject": ch["canonical"], "names": names, "spots": spots})
+
+    rng.shuffle(usable)
+    planted: list[dict] = []
+    used_chapters: set[int] = set()
+    for person in usable:
+        if len(planted) >= n:
+            break
+        free = [s for s in person["spots"] if s["chapter"] not in used_chapters]
+        if len(free) < 2:
+            continue
+        a, b = rng.sample(free, 2)
+        lo = rng.choice(_AGES)
+        far = [v for v in _AGES if abs(v - lo) >= _AGE_GAP]
+        if not far:
+            continue
+        hi = rng.choice(far)
+        planted.append({
+            "subject": person["subject"], "names": person["names"], "attribute": "年龄",
+            "chapters": [a["chapter"], b["chapter"]], "ages": [lo, hi],
+            "values": [_cn_number(lo), _cn_number(hi)],
+            "_spots": [a, b],
+        })
+        used_chapters |= {a["chapter"], b["chapter"]}
+
+    # 落笔：在含该人名的那一句之后插一句独立陈述，语法一定通顺、主语一定明确
+    by_chapter = {}
+    for p in planted:
+        for spot, age in zip(p["_spots"], p["ages"]):
+            by_chapter[spot["chapter"]] = (spot, p["subject"], age)
+    for c in chapters:
+        got = by_chapter.get(c.num)
+        if not got:
+            continue
+        spot, subject, age = got
+        cut = _sentence_end(c.body, spot["pos"])
+        sentence = f"{spot['name']}年方{_cn_number(age)}{unit}。"
+        c.body = c.body[:cut] + sentence + c.body[cut:]
+
+    for p in planted:
+        p.pop("_spots", None)
+    return sorted(planted, key=lambda p: p["chapters"])
+
+
+def _sentence_end(body: str, pos: int) -> int:
+    """从 pos 往后找最近的句末标点，返回它后面一个位置；找不到就退到正文末尾。
+    插在句子中间会把原句切坏，插在段落之外又容易被当成孤立行。"""
+    m = re.compile(r"[。！？]").search(body, pos)
+    return m.end() if m else len(body)
 
 class NameGen:
     def __init__(self, rng: random.Random):
@@ -389,6 +337,7 @@ def scramble(
     n_excerpt: int = 5,
     alias_chapters: int = 15,
     n_contradictions: int = 0,
+    characters: list[dict] | None = None,
 ) -> dict:
     rng = random.Random(seed)
     source_text = "\n".join(f"{c.heading}\n{c.body}" for c in chapters)
@@ -416,7 +365,9 @@ def scramble(
     # GHIJ 审查当时报「20 个种子 × 10 处 0 处被吃」，那是运气：9-21 真跑雪月梅生成乱稿时
     # ch7 的「十五→十九」就被吃掉了（新旧值在乱稿里都是 0 次），合成语料上 20 个种子有 12 个
     # 出现植入/截断重叠。这里传 truncated 进去从源头排掉。
-    contradictions = plant_contradictions(kept, rng, n_contradictions, skip=set(truncated))
+    contradictions = plant_contradictions(kept, rng, n_contradictions,
+                                           characters=characters, skip=set(truncated),
+                                           avoid={a["replaces"] for a in aliases})
 
     # 先把截断做完：别名要挑「截断之后的正文里真的还有这个词」的章节，不然会挑到
     # 词恰好被切掉了的章节，答案里写着有别名、实际打开文件搜不到（空跑）。
@@ -510,6 +461,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--aliases", help="JSON 文件：替换规则列表，每条有 replaces / alias / canonical；不给就用西游记的默认别名")
+    ap.add_argument("--characters", help="JSON 文件：人物名单，每条有 canonical / names；--contradictions 要用它当植入矛盾的主语，不给就一处也不植入")
     ap.add_argument("--contradictions", type=int, default=0,
                      help="植入 N 处人造矛盾（年龄/兵器/外貌类锚点），默认 0 不植入")
     ap.add_argument("--n-delete", type=int, default=5)
@@ -523,9 +475,10 @@ def main(argv: list[str] | None = None) -> None:
     raw = Path(args.src).read_text(encoding="utf-8")
     chapters = parse_chapters(strip_gutenberg(raw))
     aliases = json.loads(Path(args.aliases).read_text(encoding="utf-8")) if args.aliases else DEFAULT_ALIASES
+    characters = json.loads(Path(args.characters).read_text(encoding="utf-8")) if args.characters else None
     key = scramble(chapters, out, args.seed, aliases=aliases, n_delete=args.n_delete,
                    n_truncate=args.n_truncate, n_full=args.n_full, n_excerpt=args.n_excerpt,
-                   n_contradictions=args.contradictions)
+                   n_contradictions=args.contradictions, characters=characters)
     key_path = out.parent / f"{out.name}-答案.json"
     key_path.write_text(json.dumps(key, ensure_ascii=False, indent=2), encoding="utf-8")
     print(
