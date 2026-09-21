@@ -231,7 +231,7 @@ def sample_for_review(bodies: dict[str, str], scenes: dict[str, str],
 
 
 def estimate(book: Book, cfg: AppConfig) -> dict:
-    """不调模型，只粗估要花多少钱（spec 9.4）。分项给，别只给总数——作者要据此决定
+    """不调模型，只粗估要花多少钱（spec 9.4）。分项给，别只给总数——要据此决定
     跑不跑、跑几本。
 
     I1 订正（9-20 GHIJ 审查）：旧版有三处偏差，方向相反、互相抵消得不明不白——

@@ -241,7 +241,7 @@ def test_orphan在未回来前继续往下传_不会消失一轮就丢():
 
 
 # --- D 组审查后的待办 必须修4：值集合变了（多了新值，或作者选中的值不在了），
-# 旧判定保留但要标 verdict_stale=true，交给界面重新亮出来（作者 9-17 拍板）---
+# 旧判定保留但要标 verdict_stale=true，交给界面重新亮出来（9-17 定）---
 
 from ligaotai.contradictions import values_sig
 

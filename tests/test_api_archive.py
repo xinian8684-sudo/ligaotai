@@ -95,7 +95,7 @@ def test_读档案列表(client_with_book):
 
 
 def test_读档案列表带当前配置的模型名(client_with_book_run):
-    """I2（9-20 作者拍板）：接口要同时给每份档案生成时用的模型名、和当前配置的模型名，
+    """I2（9-20 定）：接口要同时给每份档案生成时用的模型名、和当前配置的模型名，
     界面才能对比、提示作者要不要重跑。"""
     r = client_with_book_run.get(f"{BOOK}/archive")
     assert r.status_code == 200

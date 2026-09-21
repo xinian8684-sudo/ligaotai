@@ -235,7 +235,7 @@ def test_index记下每份档案的签名(book_with_threads, fake_client):
 
 
 def test_index记下生成每份档案用的模型名(book_with_threads, fake_client):
-    """I2（F+DE 合并审查，作者 9-20 拍板）：换模型不进签名（换一次模型 = 全部档案重付一次钱，
+    """I2（F+DE 合并审查，9-20 定）：换模型不进签名（换一次模型 = 全部档案重付一次钱，
     不值），但要记下生成时用的模型名，好让界面对比 index 里的模型名和当前配置提示作者重跑。"""
     from ligaotai.archive import load_index, run_archive
 
@@ -761,7 +761,7 @@ def test_矛盾只比对归进线或世界的块_没分配的块不参与(book_w
     assert values == {"如意金箍棒", "降妖宝杖"}, "S-0009 没分配，不该被拉进比对"
 
 
-# ---------- DE 审查第 6 条（作者 9-19 拍板要做）：签名带提示词内容，改了提示词用到它的档案判过期 ----------
+# ---------- DE 审查第 6 条（9-19 定）：签名带提示词内容，改了提示词用到它的档案判过期 ----------
 
 
 @pytest.fixture

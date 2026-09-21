@@ -423,7 +423,7 @@ def create_app(
     @app.get("/api/books/{name}/archive")
     def archive_index(name: str) -> dict:
         b = get_book(name)
-        # I2（作者 9-20 拍板）：附上当前配置的模型名，好让界面跟每份档案 index 里记的
+        # I2（9-20 定）：附上当前配置的模型名，好让界面跟每份档案 index 里记的
         # model 字段比对，提示作者「这份档案是 X 模型写的，当前配置是 Y，要不要重跑」。
         # 只读配置，不建后端连接——不需要真的能连上模型才能看这个对比。
         return {**load_index(b), "current_model": load_config(app_dir).synth.model}

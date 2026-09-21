@@ -46,7 +46,7 @@ def _digest(*parts) -> str:
     return h.hexdigest()[:16]
 
 
-# 9-17 作者拍板改的签名契约（C 组审查「必须修 1」）：原先按 spec 7.1 挑出来的几个字段算签名
+# 9-17 改的签名契约（C 组审查「必须修 1」）：原先按 spec 7.1 挑出来的几个字段算签名
 # （线名/场景哈希/断点/缺口……），实测漏了模型实际会看到的输入——规范名映射（canonical_map）、
 # move_thread 换世界、这条线的故事时间、缺口的 after/before/mentioned_in、世界判定依据/设定
 # 笔记。这些字段改了，档案被判「签名没变」悄悄跳过，内容永远是旧的。
@@ -59,7 +59,7 @@ def prompt_sig(name: str) -> str:
     """提示词内容的签名：哈希 prompts/<name>.md 里真正发给模型的「## system」「## user」两段模板。
     第一个标题之前给人看的说明不算——改说明不该让档案重跑花钱。
 
-    DE 审查第 6 条（作者 9-19 拍板要做）：签名原来只带提示词**名字**，调了提示词已有档案
+    DE 审查第 6 条（9-19 定）：签名原来只带提示词**名字**，调了提示词已有档案
     被判「没过期」跳过，改提示词不生效。现在改了提示词，用到它的档案 / 矛盾 / 地图都判过期。"""
     system, user = load_prompt(name)
     return _digest(system.template, user.template)
@@ -425,7 +425,7 @@ class _Run:
                 self._save_index()
             return
         atomic_write_text(path, got)
-        # I2（作者 9-20 拍板）：换模型不进签名（换一次模型 = 全部档案重付一次钱，不值），
+        # I2（9-20 定）：换模型不进签名（换一次模型 = 全部档案重付一次钱，不值），
         # 但记下生成时用的模型名，给界面对比 index 里的模型名和当前配置、提示作者要不要重跑
         # （docs/已知问题与待办.md）。
         model = self.caller.cfg.get("model", "")

@@ -160,7 +160,7 @@ def render_values(cands: list[dict], start: int, times: dict[str, dict], unit: s
 
 def values_sig(values: list[dict]) -> str:
     """值集合签名：判断重跑后这一组的值集合是不是变了（多了新值、或原来的值不在了），
-    好决定要不要把 verdict 标成 verdict_stale（D 组审查必须修4，作者 9-17 拍板：
+    好决定要不要把 verdict 标成 verdict_stale（D 组审查必须修4，9-17 定：
     值集合变了，旧判定保留但标需重看）。
 
     繁简、首尾空白的差异不该算变化——值先做规范化（strip + facts.norm_number 的数字

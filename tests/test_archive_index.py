@@ -1,6 +1,6 @@
 from ligaotai.archive import input_sig, load_index, map_sig, reconcile, thread_sig, world_sig, write_index
 
-# 9-17 作者拍板改的签名契约：签名 = 哈希「渲染好、真正送给模型的输入文本」+ 提示词模板名。
+# 9-17 改的签名契约：签名 = 哈希「渲染好、真正送给模型的输入文本」+ 提示词模板名。
 # 见 dispatch.md「C 组审查后的待办 1」。旧版本按几个挑出来的字段算签名，
 # 漏了 canonical_map、move_thread、故事时间、缺口位置、世界判定依据/设定笔记，
 # 这些东西改了档案会被判「没变」悄悄跳过。新契约下这些全部自动被文本渲染带上，
