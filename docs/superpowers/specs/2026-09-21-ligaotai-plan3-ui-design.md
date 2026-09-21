@@ -137,7 +137,7 @@ L-005 一条线 36 个缺口里只有 7 个画得出区间；西游记算得出�
 
 ### 4.5 其它标记
 
-- **断 / 完 / 待定**：取 `thread.end.state`（真值是 `完结` / `待定`），画在该线最后一段的末端。`status` 字段在真数据里恒为 `draft`，不要拿它判。
+- **断 / 完 / 待定**：取 `thread.end.state`（真值是 `完结` / `待定`），画在该线最后一段的末端。**别拿 `status` 判完没完**——它说的是另一回事：`threads.py` 里 `status = CONFIRMED if t.locked else DRAFT`，表示作者确认过这条线的划分没有（`draft` / `confirmed`），跟故事写完没有正交。
 - **交汇点**：`intersections` 的 `(thread, scene, main_scene)`，在支线 `scene` 的位置画圆圈，悬停出 `reason`。
 - **多版本**：从 `GET /versions` 取，在对应场景位置标「N 版」。
 - **`t` 为 null 的场景**：**不插值**（插值等于编造位置），跟 orphan 缺口一样汇总到线尾标签。
@@ -199,7 +199,7 @@ L-005 一条线 36 个缺口里只有 7 个画得出区间；西游记算得出�
 
 - **算得出对错的一律单元测试**：断轴成轴（含全部点相同、无点、单点区块、间隙恰好等于阈值）、缺口两层聚合（含迭代收敛、orphan 分流）、段生成（含跨区块断开、`t` 为 null 排除）、job 状态机。
 - **`LaneChart` 组件测**：给定一份真实形态的数据，断言标记数量与落点位置。
-  - **测试数据从 `data/验收书库/验收-实体-乱稿-{西游记,雪月梅-c}-s7/世界与支线.json` 提取，固化成 `web/src/components/__fixtures__/` 下的样本提交进仓库**（`data/` 在 .gitignore 里，测试不能依赖它）。提取脚本放 `tools/`，可重跑。样本必须**原样保留**这几个真实形态：`offset` 相差三个数量级、`times[sid].t` 有 null、`gaps` 里只有 `before` 的和两端都没有的、`status` 恒为 `draft` 而真状态在 `end.state`、`outlines` 为空数组。
+  - **测试数据从 `data/验收书库/验收-实体-乱稿-{西游记,雪月梅-c}-s7/世界与支线.json` 提取，固化成 `web/src/components/__fixtures__/` 下的样本提交进仓库**（`data/` 在 .gitignore 里，测试不能依赖它）。提取脚本放 `tools/`，可重跑。样本必须**原样保留**这几个真实形态：`offset` 相差三个数量级、`times[sid].t` 有 null、`gaps` 里只有 `before` 的和两端都没有的、`status` 全是 `draft`（那两本书的线都没被作者确认过，所以 fixture **覆盖不到 `confirmed`**，要测得自己改副本）、`outlines` 为空数组。
   - 不自己凭空捏数据——②c 的教训是「测试自己捏的假契约，测的是自己的假设」（`canonical_map` 键写成中文那次，28 个测试全绿但真跑一条都归一不了）。
 - **不做 e2e。**
 - **关键页面人工截图核对**：测试和 typecheck 抓不到任何画面硬伤。每个页面第一次做完要在浏览器里看真实渲染。

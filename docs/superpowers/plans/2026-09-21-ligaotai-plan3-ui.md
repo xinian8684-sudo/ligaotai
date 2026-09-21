@@ -35,7 +35,7 @@
 - `Job` → `{id, name, book, status, done, total, message, error, result, started, finished, cancel_requested}`；`status` 是 `queued/running/done/failed/cancelled`。**全局同时只允许一个任务**，撞了抛 `BusyError`。
 - `GET /api/config` → `AppConfig` 的字段加上 `api_key`（打码）、`has_key`、`key_from_env`、`library_path`。`PUT /api/config` **整份替换**，前端必须提交完整表单。
 - `GET /api/books/{name}/archive` → `{...index, current_model}`。
-- 归线结果的真实形状见 Task 10 导出的 fixture。**`thread.status` 恒为 `"draft"`，真状态在 `thread.end.state`（`"完结"` / `"待定"`）。**
+- 归线结果的真实形状见 Task 10 导出的 fixture。**`thread.status` 和 `thread.end.state` 是正交的两件事，别混用**：`status` 是「作者确认过这条线的划分没有」（`threads.py`：`CONFIRMED if t.locked else DRAFT`）；**故事写完没有看 `end.state`**（`"完结"` / `"待定"`）。
 
 ---
 
@@ -1005,7 +1005,11 @@ export interface Thread {
   world: string         // W-01
   name: string
   about: string
-  /** 恒为 "draft"，**不要拿它判完没完**，真状态在 end.state。 */
+  /**
+   * 作者确认过这条线的划分没有：draft / confirmed
+   * （threads.py：CONFIRMED if t.locked else DRAFT）。
+   * **不是**「故事写完没有」——那个看 end.state。两者正交。
+   */
   status: string
   scenes: string[]
   times: Record<string, SceneTime>
@@ -1037,7 +1041,7 @@ export interface ThreadsFile {
   next_thread: number
   time_unit: string     // 实测是「年」
   main_thread: string
-  main_by: string       // auto / manual
+  main_by: string       // auto / author（不是 manual）
   worlds: World[]
   threads: Thread[]
   intersections: Intersection[]
@@ -1843,7 +1847,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 | `times[sid].t` 有 `null` | 雪月梅 L-001 有一个 | 排除 null 的逻辑没被测到 |
 | `gaps` 只有 `before` 没有 `after` | 雪月梅 41 个 | 定位退化逻辑没被测到 |
 | `gaps` 两端都没有 | 雪月梅 6 个 | orphan 分流没被测到 |
-| `status` 恒为 `draft`、真状态在 `end.state` | 两本都是 | 会拿错字段判完没完 |
+| `status` 全是 `draft`、完没完在 `end.state` | 两本的线都没被确认过 | 会拿错字段判完没完；且 fixture 覆盖不到 `confirmed` |
 | `outlines` 是空数组 | 两本都是 | 会画一个永远为空的图例 |
 
 **Files:**
@@ -3365,7 +3369,7 @@ it('unassigned 列出来并能选线归入', async () => {
 })
 
 it('线的完没完取 end.state，不取 status', async () => {
-  // 真数据里 status 恒为 draft，拿它判会把每条线都显示成「草稿」
+  // status 是「划分确认了没有」不是「故事完了没有」，拿它判完结会全错
   const d = structuredClone(雪月梅) as unknown as ThreadsFile
   vi.spyOn(api, 'getThreads').mockResolvedValue(d)
   const w = mount(ThreadsPage, { props: { name: 'guixu' }, global: { stubs } })
