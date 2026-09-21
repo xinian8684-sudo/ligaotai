@@ -1,0 +1,35 @@
+:root{
+  --ground:#EEF0EC; --panel:#F9FAF7; --sunk:#E5E8E2;
+  --ink:#1B2130; --ink-2:#4A5163; --ink-3:#7A8192;
+  --line:#D6D9D1; --line-2:#E4E6E0;
+  --accent:#33508C; --accent-soft:#DFE5F2; --on-accent:#FFFFFF;
+  --red:#B5372A; --red-soft:#F5DFDA;
+  --green:#3A7866; --green-soft:#DAEBE4;
+  --amber:#A26F1C; --amber-soft:#F2E5CD;
+  --w1:#5A7BB5; --w2:#3A8A80; --w3:#9468A4;
+  --serif:"Noto Serif SC","Songti SC","SimSun",serif;
+  --sans:"Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#13161C; --panel:#1A1E26; --sunk:#10131862;
+    --ink:#E3E5EA; --ink-2:#AEB4C0; --ink-3:#7D8494;
+    --line:#2D323D; --line-2:#232832;
+    --accent:#8FA7DB; --accent-soft:#243049; --on-accent:#10131A;
+    --red:#E26C5D; --red-soft:#3A2225;
+    --green:#6CB19D; --green-soft:#1D322C;
+    --amber:#D9A650; --amber-soft:#382E1B;
+    --w1:#7E9ED6; --w2:#5DB2A6; --w3:#B68BC6;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#13161C; --panel:#1A1E26; --sunk:#10131862;
+  --ink:#E3E5EA; --ink-2:#AEB4C0; --ink-3:#7D8494;
+  --line:#2D323D; --line-2:#232832;
+  --accent:#8FA7DB; --accent-soft:#243049; --on-accent:#10131A;
+  --red:#E26C5D; --red-soft:#3A2225;
+  --green:#6CB19D; --green-soft:#1D322C;
+  --amber:#D9A650; --amber-soft:#382E1B;
+  --w1:#7E9ED6; --w2:#5DB2A6; --w3:#B68BC6;
+}
