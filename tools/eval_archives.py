@@ -155,7 +155,8 @@ def recall(key: dict, chapter_scenes: dict[int, set[str]], result: dict) -> dict
     hit, misses, matched_ids, subject_mismatch = 0, [], set(), 0
     for p in planted:
         want = [chapter_scenes.get(ch, set()) for ch in p["chapters"]]
-        found = None
+        names = {nm for nm in (set(p.get("names") or []) | {p.get("subject", "")}) if nm}
+        cands = []
         for g in groups:
             if g.get("attribute") != p["attribute"]:
                 continue
@@ -164,19 +165,21 @@ def recall(key: dict, chapter_scenes: dict[int, set[str]], result: dict) -> dict
             for v in g.get("values") or []:
                 ids = {s["id"] for s in v.get("scenes") or []}
                 covering.append([bool(ids & w) for w in want])
-            if not covering:
-                continue
-            pairs = [(i, j) for i in range(len(covering)) for j in range(len(covering))
-                     if i != j and covering[i][0] and covering[j][1]]
-            if pairs:
-                found = g
-                break
+            if any(covering[i][0] and covering[j][1]
+                   for i in range(len(covering)) for j in range(len(covering)) if i != j):
+                cands.append(g)
+        # 几个组都覆盖到这两处时，先认主语对得上的那个：撞到哪个算哪个会把主语记成归错，
+        # 还让真正对应的那组被算进 unmatched_true（9-21 实测：植入的汪直命中了主语是
+        # 岑秀的组，C-108 汪直/年龄 反被算成没对上）。
+        def _same_subject(g):
+            got = g.get("subject", "")
+            return any(nm in got or got in nm for nm in names)
+
+        found = next((g for g in cands if _same_subject(g)), None) or (cands[0] if cands else None)
         if found:
             hit += 1
             matched_ids.add(found["id"])
-            names = set(p.get("names") or []) | {p.get("subject", "")}
-            got = found.get("subject", "")
-            if not any(nm and (nm in got or got in nm) for nm in names):
+            if not _same_subject(found):
                 subject_mismatch += 1
         else:
             misses.append(p)

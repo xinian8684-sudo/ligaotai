@@ -474,3 +474,22 @@ def test_folder传错导致chapter_scenes全空时硬报错(tmp_path):
         assert False, "--folder 传错、chapter_scenes 全空时应该直接报错退出"
     except SystemExit as e:
         assert e.code != 0 and "folder" in str(e.code)
+
+
+def test_有主语对得上的组就优先认它():
+    """两个组都覆盖了这两处场景时，撞到哪个算哪个会把主语记成归错，还让真正对应的那组
+    被算进「没对上的真矛盾」。9-21 实测：植入的汪直命中了主语是岑秀的组，而 C-108
+    汪直/年龄 反被算成没对上。判据要先挑主语对得上的。"""
+    g = {"groups": [
+        {"id": "C-015", "subject": "岑秀", "attribute": "年龄", "status": "真矛盾", "level": "中等",
+         "values": [{"value": "十六", "scenes": [{"id": "S-0005"}]},
+                    {"value": "二十", "scenes": [{"id": "S-0009"}]}]},
+        {"id": "C-108", "subject": "汪直", "attribute": "年龄", "status": "真矛盾", "level": "严重",
+         "values": [{"value": "十六", "scenes": [{"id": "S-0005"}]},
+                    {"value": "二十", "scenes": [{"id": "S-0009"}]}]}]}
+    key = {"contradictions": [{"subject": "汪直", "names": ["汪直"], "attribute": "年龄",
+                               "chapters": [3, 8], "ages": [16, 20], "values": ["十六", "二十"]}]}
+    res = recall(key, CH, g)
+    assert res["hit"] == 1
+    assert res["subject_mismatch"] == 0, "主语明明有对得上的组"
+    assert res["unmatched_true"] == 1, "岑秀那组才是没对上的那个"
