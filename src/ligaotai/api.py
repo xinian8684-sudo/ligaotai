@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Callable
 
@@ -32,7 +33,7 @@ from .importer import check_import_folder, run_import
 from .jobs import BusyError, JobCancelled, JobRunner
 from .llm import ChatBackend, LLMClient, NoKeyError, OpenAIBackend, check_model
 from .readers import read_text
-from .scenes import SCENE_ID_RE, get_scene, load_scenes, run_split
+from .scenes import SCENE_ID_RE, BrokenSceneFile, get_scene, load_scenes, run_split
 from .threads import normalize, run_threads
 
 RUNNABLE = ("split", "dedup", "cards", "entities", "threads", "archive")
@@ -94,6 +95,11 @@ class RerunReq(BaseModel):
     threads: list[str] = []
     worlds: list[str] = []
     map: bool = False
+
+
+def _读坏了(what: str, detail: str) -> HTTPException:
+    """手改坏的文件不能让接口返回裸 500——把出错的文件/条目和原因说清楚。"""
+    return HTTPException(500, f"{what} 读不了：{detail}。这个文件多半被手动改过或来自别处。")
 
 
 def _within(base: Path, target: Path) -> bool:
@@ -282,7 +288,11 @@ def create_app(
     @app.get("/api/books/{name}/scenes")
     def scenes(name: str, include_removed: bool = False) -> list:
         b = get_book(name)
-        return [s.meta() for s in load_scenes(b) if include_removed or not s.removed]
+        try:
+            all_scenes = load_scenes(b)
+        except BrokenSceneFile as e:
+            raise HTTPException(500, str(e))
+        return [s.meta() for s in all_scenes if include_removed or not s.removed]
 
     @app.get("/api/books/{name}/scenes/{sid}")
     def scene(name: str, sid: str) -> dict:

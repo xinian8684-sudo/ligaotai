@@ -62,6 +62,19 @@ def text_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+class BrokenSceneFile(ValueError):
+    """某个场景文件读不出来。带上文件名，好让界面说清是哪一个。
+
+    继承 ValueError 是为了兼容既有调用方（get_scene 的 `except (ValueError, FileNotFoundError)`
+    等）——它们不用改，照样能接住；API 层想单独区分「场景文件坏了」时再单独 except 这个类型。
+    """
+
+    def __init__(self, path: Path, reason: str) -> None:
+        self.path = path
+        self.reason = reason
+        super().__init__(f"场景文件读不了：{path.name}（{reason}）")
+
+
 def scene_path(book: Book, sid: str) -> Path:
     return book.scenes_dir / f"{sid}.md"
 
@@ -88,7 +101,7 @@ def read_scene(path: Path) -> Scene:
     try:
         return parse_scene(path.read_text(encoding="utf-8"))
     except Exception as e:  # 手改坏了一个场景文件，报错要指出是哪个
-        raise ValueError(f"场景文件读不了：{path.name}（{type(e).__name__}: {e}）") from e
+        raise BrokenSceneFile(path, f"{type(e).__name__}: {e}") from e
 
 
 def load_scenes(book: Book, with_text: bool = False) -> list[Scene]:
