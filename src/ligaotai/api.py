@@ -7,6 +7,8 @@ from typing import Callable
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import __version__
@@ -94,10 +96,19 @@ class RerunReq(BaseModel):
     map: bool = False
 
 
+def _within(base: Path, target: Path) -> bool:
+    try:
+        target.resolve().relative_to(base.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def create_app(
     app_dir: Path = APP_DIR,
     allowed_hosts: tuple[str, ...] = ("127.0.0.1", "localhost"),
     backend_factory: Callable[[AppConfig], ChatBackend] = OpenAIBackend,
+    web_dist: Path | None = None,
 ) -> FastAPI:
     app = FastAPI(title="理稿台", version=__version__)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(allowed_hosts))
@@ -482,5 +493,27 @@ def create_app(
             index["map"]["outdated"] = True
         write_index(b, index)
         return {"ok": True}
+
+    # 前端静态站。必须在所有 /api 路由注册之后挂，兜底路由才不会抢在 API 前面。
+    dist = Path(web_dist) if web_dist is not None else Path(__file__).resolve().parents[2] / "web" / "dist"
+    index_html = dist / "index.html"
+    if index_html.exists():
+        if (dist / "assets").is_dir():
+            app.mount("/assets", StaticFiles(directory=dist / "assets"), name="assets")
+
+        @app.get("/")
+        def _index() -> FileResponse:
+            return FileResponse(index_html)
+
+        @app.get("/{full_path:path}")
+        def _spa(full_path: str) -> FileResponse:
+            # 单页应用：前端路由直接刷新时回 index.html，交给前端路由器。
+            # /api 开头的交给上面的真路由；走到这儿说明那个 API 不存在，照常 404。
+            if full_path.startswith("api/"):
+                raise HTTPException(404, "没有这个接口")
+            candidate = dist / full_path
+            if candidate.is_file() and _within(dist, candidate):
+                return FileResponse(candidate)
+            return FileResponse(index_html)
 
     return app
