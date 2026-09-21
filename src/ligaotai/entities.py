@@ -572,7 +572,17 @@ def load_entities(book: Book) -> dict:
 
 
 def _cmap(data: dict) -> dict[tuple[str, str], str]:
-    return {(e["type"], n): e["canonical"] for e in data["entities"] for n in e["names"]}
+    out: dict[tuple[str, str], str] = {}
+    for e in data["entities"]:
+        try:
+            for n in e["names"]:
+                out[(e["type"], n)] = e["canonical"]
+        except KeyError as exc:
+            # 条目缺字段（比如手改坏了 实体.json，少了 canonical/type/names）：带上是
+            # 哪个实体 id，好让 API 层报出来的 500 里能看出具体哪一条坏了，不是笼统的
+            # 一个字段名。id 本身也可能没有，退到 "?"。
+            raise KeyError(f"{e.get('id', '?')} 缺字段 {exc}") from exc
+    return out
 
 
 def _save(book: Book, data: dict, before: dict[tuple[str, str], str]) -> None:
@@ -584,11 +594,21 @@ def _save(book: Book, data: dict, before: dict[tuple[str, str], str]) -> None:
         book.mark_downstream_outdated("entities")
 
 
+class NoSuchEntity(KeyError):
+    """给的实体编号在文件里找不到。
+
+    继承 KeyError 是为了兼容既有调用方（比如 tests/test_entities.py 里
+    `pytest.raises(KeyError)` 那种写法）——不用改，照样能接住；API 层想把
+    「真的没有这个实体」（该 404）和「条目本身缺字段」（该 500，见 _cmap）分开时，
+    再单独 except 这个更具体的类型。
+    """
+
+
 def _get(data: dict, eid: str) -> dict:
     for e in data["entities"]:
         if e["id"] == eid:
             return e
-    raise KeyError(eid)
+    raise NoSuchEntity(eid)
 
 
 # 下面四个操作：读 实体.json → 改 → 写回 整段在 FILE_LOCK 里，跟步骤 5 的写回、跟彼此都串行，

@@ -190,10 +190,17 @@ def create_app(
     def entity_op(fn: Callable[[], object]):
         try:
             return fn()
-        except KeyError:
+        except ent.NoSuchEntity:
             raise HTTPException(404, "没有这个实体")
         except FileNotFoundError as e:
             raise HTTPException(404, str(e))
+        except json.JSONDecodeError as e:
+            raise _读坏了("实体.json", f"不是合法 JSON，第 {e.lineno} 行")
+        except KeyError as e:
+            # ent.NoSuchEntity（上面已经接住）是「给的 id 找不到」，这里剩下的是别的
+            # KeyError——条目本身缺字段（比如少了 canonical/type/names），文件多半被手动
+            # 改过，不是「没有这个实体」，不能报 404。
+            raise HTTPException(500, f"实体条目缺字段 {e}，文件多半被手动改过。")
         except ValueError as e:
             raise HTTPException(400, str(e))
 
@@ -308,23 +315,35 @@ def create_app(
         b = get_book(name)
         records = load_cards(b)
         out = []
-        for s in load_scenes(b):
+        try:
+            all_scenes = load_scenes(b)
+        except BrokenSceneFile as e:
+            raise HTTPException(500, str(e))
+        for s in all_scenes:
             if s.removed:
                 continue
             r = records.get(s.id)
-            card = (r.get("card") if r else None) or {}
-            problems = (r.get("problems") if r else None) or []
-            dropped = (r.get("dropped") if r else None) or {}
+            try:
+                card = (r.get("card") if r else None) or {}
+                problems = (r.get("problems") if r else None) or []
+                dropped = (r.get("dropped") if r else None) or {}
+                n_dropped = len(dropped.get("facts") or []) + len(dropped.get("names") or [])
+                summary = card.get("summary") or ""
+                kind = card.get("kind")
+            except AttributeError as e:
+                # 卡文件结构被手改坏了（比如 card/dropped 本该是对象却是字符串），
+                # .get() 在非 dict 上会炸——带上是哪张卡，别让作者对着裸 500 猜。
+                raise _读坏了(f"场景卡 {s.id}", str(e))
             out.append({
                 "id": s.id,
                 "fresh": is_fresh(r, s),
-                "kind": card.get("kind"),
-                "summary": card.get("summary") or "",
+                "kind": kind,
+                "summary": summary,
                 "problems": len(problems),
                 # 2c task04：dropped 里加了 attrs / long_values 两个 int 计数键，不是列表；
                 # attrs 只是归一不算丢弃，long_values 已经并进了 facts 列表，这里只数
                 # facts / names 两项真正被丢掉的东西，跟原来的语义一致。
-                "dropped": len(dropped.get("facts") or []) + len(dropped.get("names") or []),
+                "dropped": n_dropped,
             })
         return out
 
@@ -352,7 +371,10 @@ def create_app(
     @app.get("/api/books/{name}/entities")
     def entities(name: str) -> dict:
         b = get_book(name)
-        return read_json(b.entities_path, {"entities": []})
+        try:
+            return read_json(b.entities_path, {"entities": []})
+        except json.JSONDecodeError as e:
+            raise _读坏了("实体.json", f"不是合法 JSON，第 {e.lineno} 行")
 
     @app.post("/api/books/{name}/entities/confirm")
     def confirm_entities(name: str, req: IdsReq) -> list:

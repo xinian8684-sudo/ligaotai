@@ -7,6 +7,7 @@ import json
 
 import pytest
 from fastapi.testclient import TestClient
+from helpers import seed_book
 
 from ligaotai.api import create_app
 from ligaotai.book import create_book
@@ -43,3 +44,53 @@ def test_场景目录正常时照常返回(客户端和书):
     r = c.get("/api/books/测试书/scenes")
     assert r.status_code == 200
     assert r.json() == []
+
+
+# --- Task 7：卡片列表与实体接口的坏文件处理 ---
+
+
+def test_卡文件被改坏时报出是哪张卡(客户端和书):
+    c, b = 客户端和书
+    # 先造一个正常的场景，卡片接口才会去读卡：用 tests/helpers.py 里 seed_book 这个现成的
+    # helper（不走真的导入/切场景，直接按 scenes.py 的真实落盘格式写场景文件），no_card=True
+    # 让它不写卡，卡文件由下面手动造一份「结构被改坏」的。
+    seed_book(b, [{"id": "S-0001", "no_card": True}])
+
+    b.cards_dir.mkdir(parents=True, exist_ok=True)
+    # 任务书模板里原样写的是 {"card": "本该是个对象"}，没有 "id" 字段——但
+    # cards.load_cards() 要求 data.get("id") == 文件名（p.stem）才会收进结果，
+    # 缺了 "id" 这张卡会被 load_cards 直接当成「没有这张卡」跳过，根本走不到
+    # 卡片接口里 card.get(...) 那一步，测不出裸 500。补上 "id": "S-0001" 让它
+    # 先能被 load_cards 收进来，再在 card.get("kind") 那一步因为 card 是字符串炸开。
+    (b.cards_dir / "S-0001.json").write_text(
+        json.dumps({"id": "S-0001", "card": "本该是个对象"}), encoding="utf-8"
+    )
+
+    r = c.get("/api/books/测试书/cards")
+    assert r.status_code == 500
+    assert "S-0001" in r.json()["detail"]
+
+
+def test_实体文件不是合法JSON时给得出人话(客户端和书):
+    c, b = 客户端和书
+    b.entities_path.parent.mkdir(parents=True, exist_ok=True)
+    b.entities_path.write_text("{坏掉的", encoding="utf-8")
+
+    r = c.get("/api/books/测试书/entities")
+    assert r.status_code == 500
+    detail = r.json()["detail"]
+    assert "实体" in detail
+    assert "JSONDecodeError" not in detail, "别把 Python 异常类名甩给界面"
+
+
+def test_实体条目缺字段不能报成404(客户端和书):
+    c, b = 客户端和书
+    b.entities_path.parent.mkdir(parents=True, exist_ok=True)
+    b.entities_path.write_text(
+        json.dumps({"next_id": 2, "entities": [{"id": "E-0001"}]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    r = c.put("/api/books/测试书/entities/E-0001", json={"canonical": "张三"})
+    assert r.status_code != 404, "缺字段是文件坏了，不是『没有这个实体』"
+    assert r.status_code == 500
+    assert "E-0001" in r.json()["detail"]
