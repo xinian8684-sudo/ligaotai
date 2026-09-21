@@ -200,3 +200,24 @@ def test_index字段类型不对当空壳处理不抛异常(tmp_path, caplog):
     with caplog.at_level("WARNING"):
         assert load_index(book) == {"threads": {}, "worlds": {}, "map": {}}
     assert any("index" in r.message or "档案" in r.message for r in caplog.records)
+
+
+def test_对账标过期但不删文件(tmp_path):
+    """计划自查清单那条「找不到对应线的档案标了过期，**文件没被删**」的后半句。
+    不删是有意的：这条线可能是作者临时合并/改名弄没的，旧档案留着给他看、给他捞回来。
+    reconcile 只动 index、不碰文件，这里钉住它别哪天顺手加上删除。"""
+    from ligaotai.book import Book
+
+    book = Book(tmp_path)
+    book.thread_archive_dir.mkdir(parents=True, exist_ok=True)
+    gone = book.thread_archive_dir / "L-009.md"
+    gone.write_text("这条线的档案，作者还想看", encoding="utf-8")
+
+    index = {"threads": {"L-001": {"outdated": False, "file": "L-001.md"},
+                         "L-009": {"outdated": False, "file": "L-009.md"}},
+             "worlds": {}, "map": {"outdated": False}}
+    assert reconcile(index, thread_ids={"L-001"}, world_ids=set()) == ["L-009"]
+    assert index["threads"]["L-009"]["outdated"] is True
+    assert gone.exists(), "标过期不等于删文件"
+    assert gone.read_text(encoding="utf-8") == "这条线的档案，作者还想看"
+    assert index["threads"]["L-009"].get("file") == "L-009.md", "文件名也要留着，不然作者找不回来"

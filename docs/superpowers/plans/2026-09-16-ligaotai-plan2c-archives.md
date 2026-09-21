@@ -3215,7 +3215,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 这一步**要花钱**（估 $0.3 上下），跑之前先 `--estimate`，并跟作者确认。
 
-- [ ] **Step 1: 估价**
+- [x] **Step 1: 估价**
 
 ```bash
 uv run python tools/eval_threads.py --folder data/乱稿-西游记 --key data/乱稿-西游记-答案.json \
@@ -3224,21 +3224,21 @@ uv run python tools/eval_threads.py --folder data/乱稿-西游记 --key data/�
 
 把两本书重跑场景卡的估价报给作者，等他点头再跑。
 
-- [ ] **Step 2: 重跑两本书的场景卡**
+- [x] **Step 2: 重跑两本书的场景卡**
 
 用现有的验收书库副本（`data/验收书库/验收-实体-乱稿-西游记-s7`、`…-雪月梅-s7`），把步骤 `cards` 标过期后重跑。
 
-- [ ] **Step 3: 出对照表**
+- [x] **Step 3: 出对照表**
 
 写一个一次性脚本（放 scratchpad，不进仓库）统计改造前后的：facts 条数、不同属性名数、(主语,属性) 分组数、值不一致的组数、`attrs_normalized` / `long_values_dropped` 计数。
 
 **中文输出别信终端**：结果写文件再用 Read 看。
 
-- [ ] **Step 4: 写验收记录**
+- [x] **Step 4: 写验收记录**
 
 `docs/验收记录/2026-09-16-计划2c-facts改造.md`，表格对照 spec 2.1 那张表，并写明：模型对受控表的听话程度（`attrs_normalized` 占比）、候选组数是否落在「几十到几百」的预期区间（spec 6.2）、实花费用与估价的倍数。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docs/验收记录/2026-09-16-计划2c-facts改造.md
@@ -3257,27 +3257,27 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 这一步**要花钱**，跑之前先 `--estimate` 并跟作者确认。
 
-- [ ] **Step 1: 造带人造矛盾的乱稿**
+- [x] **Step 1: 造带人造矛盾的乱稿**
 
 ```bash
 uv run python tools/scramble.py --src data/xiyouji-pg23962.txt --out data/乱稿-西游记-矛盾 --contradictions 10
 uv run python tools/scramble.py --src data/pg26739.txt --out data/乱稿-雪月梅-矛盾 --contradictions 10 --aliases data/别名-雪月梅.json
 ```
 
-- [ ] **Step 2: 估价，报给作者，等点头**
+- [x] **Step 2: 估价，报给作者，等点头**
 
 ```bash
 uv run python tools/eval_archives.py --book <书库>/<书名> --estimate
 ```
 
-- [ ] **Step 3: 两本书跑完步骤 1→7，再跑验收**
+- [x] **Step 3: 两本书跑完步骤 1→7，再跑验收**
 
 ```bash
 uv run python tools/eval_archives.py --book <书库>/<书名> --key data/乱稿-西游记-矛盾-答案.json --report data/验收-档案-西游记.json
 uv run python tools/eval_archives.py --book <书库>/<书名> --sample 10 --out data/抽查-西游记.md
 ```
 
-- [ ] **Step 4: 写验收记录**
+- [x] **Step 4: 写验收记录**
 
 `docs/验收记录/2026-09-16-计划2c-档案矛盾地图.md`，照 ②b 那份的格式写，必须包含：
 
@@ -3287,12 +3287,12 @@ uv run python tools/eval_archives.py --book <书库>/<书名> --sample 10 --out 
 - 估价 vs 实花，倍数；
 - **真跑才发现的毛病**，一条不落地写进 `docs/已知问题与待办.md`。
 
-- [ ] **Step 5: 更新 README 和待办**
+- [x] **Step 5: 更新 README 和待办**
 
 - `README.md`：步骤 7 的说明、新增的四个提示词、`tools/eval_archives.py` 的用法。
 - `docs/已知问题与待办.md`：删掉「计划②c 要处理的」那一节（两条都在本计划里处理了：按编号对账在 Task 7，缺口不引用 `Q-` 编号在 Task 12），新增「计划③ 要处理的」——至少记上「故事时间线冲突检查等时间估准了再做」。
 
-- [ ] **Step 6: 全量测试 + Commit**
+- [x] **Step 6: 全量测试 + Commit**
 
 Run: `uv run pytest -q`
 Expected: PASS
@@ -3308,13 +3308,13 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ## 自查清单（执行完整个计划后）
 
-- [ ] `uv run pytest -q` 全绿，原有 595 个测试一个没挂
-- [ ] 四件产出都在：`档案/支线/*.md`、`档案/世界/*.md`、`矛盾.json`、`全书地图.md`
-- [ ] `档案/index.json` 里每份档案有 `sig`，改一条线只重跑那一份
-- [ ] 找不到对应线的档案标了过期，文件没被删
-- [ ] 缺口在档案里按内容写，没有 `Q-` 编号
-- [ ] 世界设定集里的「（多个说法）」都补上了 `C-` 编号
-- [ ] `prompts/` 下四个新提示词齐了，受控属性表跟 `facts.ATTRS` 一致
-- [ ] `tools/eval_archives.py` 能 `uv run python` 直接跑
-- [ ] 三个门槛的实测值写进了验收记录
+- [x] `uv run pytest -q` 全绿，原有 595 个测试一个没挂 —— 9-21：860 个全绿
+- [x] 四件产出都在：`档案/支线/*.md`、`档案/世界/*.md`、`矛盾.json`、`全书地图.md`
+- [x] `档案/index.json` 里每份档案有 `sig`，改一条线只重跑那一份
+- [x] 找不到对应线的档案标了过期，文件没被删
+- [x] 缺口在档案里按内容写，没有 `Q-` 编号
+- [ ] 世界设定集里的「（多个说法）」都补上了 `C-` 编号 —— **9-21 真跑没过**：已回填 146 处、未回填 5 处。不影响三条门槛，已记进 `docs/已知问题与待办.md`
+- [x] `prompts/` 下四个新提示词齐了，受控属性表跟 `facts.ATTRS` 一致
+- [x] `tools/eval_archives.py` 能 `uv run python` 直接跑
+- [x] 三个门槛的实测值写进了验收记录
 
