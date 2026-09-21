@@ -445,5 +445,12 @@ async def _run_cards(book: Book, client: LLMClient, progress: Progress, only: li
         "cost_usd": round(client.usage.cost(client.cfg), 4),
     }
     status = keep_status if only is not None else "done"
-    book.set_step("cards", status, summary, changed=counts["written"] > 0)
+    # only 模式（单卡重做）：如果步骤本来不是 done（比如刚被暂停，summary.error 里记着
+    # 「已暂停：做完 N 张，还剩 M 张」），这次单卡重做只是补一张卡，不该让这一次的统计
+    # 把原来的 summary/error 盖掉——不然作者看到的是一个 failed 的步骤配一张看起来全部
+    # 成功的 summary，「已暂停」这条信息就没了。status 该保留还是保留（keep_status 已经
+    # 处理了），这里只是不让 summary 跟着被换掉；返回值仍然是这一次单卡重做的真实统计，
+    # 调用方（比如 API 的任务结果）看到的是这一次到底做了什么。
+    write_summary = None if (only is not None and keep_status != "done") else summary
+    book.set_step("cards", status, write_summary, changed=counts["written"] > 0)
     return summary

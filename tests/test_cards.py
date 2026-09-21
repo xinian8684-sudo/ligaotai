@@ -502,6 +502,28 @@ def test_only_mode_keeps_status_on_cancel(story_book):
     assert story_book.step("cards")["status"] == "done"
 
 
+def test_暂停后单卡重做不覆盖已暂停的summary(story_book):
+    """only 模式下，如果步骤本来不是 done，保留原来的 summary 和 error。
+
+    否则作者看到的是「失败」的步骤配一张全部成功的 summary，
+    「已暂停」这条信息就没了。
+    """
+    story_book.set_step("cards", "failed", {"error": "已暂停：做完 12 张，还剩 88 张"})
+    before = story_book.load()["steps"]["cards"]
+    assert before["status"] == "failed"
+
+    # 单卡重做（only 模式）：跟本文件里其它 only 测试（test_only_regenerates_given_scene
+    # 等）一样，用 story_book + client_for 这套现成的假 client，不用任务书模板里
+    # create_book(tmp_path, ...) 那套——story_book 已经切好了 S-0001/S-0002/S-0003
+    # 三个真场景，run_cards 的 only=[...] 才有场景可读。
+    run_cards(story_book, client_for(story_book), only=["S-0002"])
+
+    after = story_book.load()["steps"]["cards"]
+    assert after["status"] == "failed", "only 模式不该改步骤状态"
+    assert "已暂停" in str(after["summary"].get("error", "")), \
+        f"「已暂停」的信息被单卡统计盖掉了：{after['summary']}"
+
+
 # --- 2c task04: 场景卡校验接入受控属性表 ---
 
 
