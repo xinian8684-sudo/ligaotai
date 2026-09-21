@@ -549,6 +549,10 @@ class _Run:
     async def map(self, contra: dict) -> str:
         inp, book = self.inp, self.book
         blockers = self.map_blockers()
+        if not inp.thread_text and not inp.world_text:
+            # m8：一条线一个世界都没有，渲染出的输入里一个场景编号都没有，allowed 是空集，
+            # check_archive 必然报「一个场景编号都没有」→ 模型重试到底才失败。别发这笔请求。
+            blockers.append("一条线一个世界都没有，地图没有可引的场景")
         mid = _try_prepare(book)
         if mid is None or mid.fingerprint() != inp.fingerprint():
             blockers.append("跑的途中上游变了")

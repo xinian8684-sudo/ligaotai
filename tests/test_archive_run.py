@@ -844,3 +844,37 @@ def test_只改提示词开头给人看的说明_不重跑(book_with_threads, ow
     c2 = make_client(b)
     run_archive(b, c2)
     assert c2.calls == []
+
+
+def test_一条线一个世界都没有时地图不跑也不花钱(book):
+    """m8（F+DE 合并审查）：thread_text 和 world_text 都空时，map_input() 渲染出的文本里
+    一个场景编号都没有，allowed 是空集，check_archive 必然报「一个场景编号都没有」，
+    模型会重试到底才失败——白花几次重试的钱。应该在发请求之前就直接 blocked。"""
+    import asyncio
+
+    from ligaotai.archive import Inputs, _Run
+
+    inp = Inputs(unit="年", threads=[], worlds=[], gaps=[], times={})
+    inp.thread_text = {}
+    inp.world_text = {}
+    inp.contra = {"sig": "c-sig"}
+    index = {
+        "threads": {}, "worlds": {},
+        "map": {"outdated": False},
+        "contradictions": {"sig": "c-sig", "outdated": False},
+    }
+
+    class _Boom:
+        def plan(self, n):
+            raise AssertionError("不该规划调用")
+
+        async def call(self, *a, **k):
+            raise AssertionError("不该真调模型")
+
+        def keep(self, *a, **k):
+            raise AssertionError("不该走复用分支")
+
+    run = _Run(book, _Boom(), inp, index)
+    assert asyncio.run(run.map({})) == "blocked"
+    assert index["map"]["outdated"] is True
+    assert any("一条线一个世界都没有" in b for b in index["map"]["blocked_by"])
