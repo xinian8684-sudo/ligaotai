@@ -5,3 +5,6 @@ __pycache__/
 config.json
 书库/
 data/
+
+# brainstorming visual companion
+.superpowers/
