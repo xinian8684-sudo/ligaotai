@@ -94,3 +94,38 @@ def test_实体条目缺字段不能报成404(客户端和书):
     assert r.status_code != 404, "缺字段是文件坏了，不是『没有这个实体』"
     assert r.status_code == 500
     assert "E-0001" in r.json()["detail"]
+
+
+# --- Task 8：safe_name 的边界输入不能裸 500 ---
+
+
+@pytest.mark.parametrize(
+    "坏名字,url段",
+    [
+        # 任务书模板直接把 ".." 拼进 URL 路径——但 URL 路径里裸的 ".." 是个
+        # dot-segment，httpx/RFC 3986 在发请求前就会把它连同前一段（"thread"）
+        # 一起折叠掉（"…/archive/thread/.." -> "…/archive"），请求根本走不到
+        # archive_body 这个路由，测的是另一个接口（archive_index，200）。
+        # 把两个点分别 percent-encode 成 %2e，绕开客户端自己的路径折叠，
+        # 让服务端收到的 oid 真的是 ".."。
+        ("..", "%2e%2e"),
+        (".", "."),
+        ("   ", "   "),
+    ],
+)
+def test_档案接口遇到边界名字返回404(客户端和书, 坏名字, url段):
+    c, _ = 客户端和书
+    r = c.get(f"/api/books/测试书/archive/thread/{url段}")
+    assert r.status_code == 404, f"{坏名字!r} 应该是 404 不是 {r.status_code}"
+
+
+@pytest.mark.parametrize("坏名字", ["..", ".", "   "])
+def test_建书遇到边界名字返回400(坏名字, tmp_path):
+    lib = tmp_path / "书库"
+    lib.mkdir()
+    (tmp_path / "config.json").write_text(json.dumps({"library_dir": str(lib)}), encoding="utf-8")
+    c = TestClient(
+        create_app(app_dir=tmp_path, allowed_hosts=("testserver",), web_dist=tmp_path / "不存在")
+    )
+    r = c.post("/api/books", json={"title": 坏名字})
+    assert r.status_code == 400

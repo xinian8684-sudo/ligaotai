@@ -482,7 +482,12 @@ def create_app(
         if kind not in ("thread", "world"):
             raise HTTPException(400, "kind 只能是 thread 或 world")
         base = b.thread_archive_dir if kind == "thread" else b.world_archive_dir
-        path = ensure_within(base, base / f"{safe_name(oid)}.md")
+        try:
+            path = ensure_within(base, base / f"{safe_name(oid)}.md")
+        except ValueError:
+            # safe_name("..")/"."/"   " 之类的边界输入会抛 ValueError("名字不能为空")——
+            # 这就是「没有这份档案」，不该是裸 500。
+            raise HTTPException(404, "没有这份档案")
         if not path.exists():
             raise HTTPException(404, "没有这份档案")
         return {"id": oid, "body": path.read_text(encoding="utf-8")}
