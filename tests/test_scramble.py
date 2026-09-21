@@ -392,3 +392,53 @@ def test_新值原文已存在时跳过这个候选():
     planted = plant_contradictions(chapters, random.Random(1), n=5)
     assert planted == []
     assert chapters[0].body == "行者取出金箍棒，一旁还有降妖宝杖。"
+
+
+
+def _read_piece(path, encoding: str) -> str:
+    """按答案里记的编码读一个乱稿文件。docx 也要读——跳过它会让「新值搜不到」的断言出现
+    盲区：植入落在一个恰好被写成 docx 的章节时，跳过等于默认它没问题（9-21 扫 30 个种子
+    时先被这个盲区骗出过 4 个假缺失）。"""
+    if encoding == "docx":
+        from docx import Document
+        return "\n".join(x.text for x in Document(path).paragraphs)
+    return path.read_text(encoding=encoding)
+
+
+def test_植入不落在会被截断的章节(tmp_path):
+    """9-21：植入在 cut_at_ratio 之前跑，锚点落在被切掉的后半段（保留前 40%-70%）就会被
+    吃掉——答案里记着这处矛盾，乱稿正文里新值旧值都搜不到，召回必然 miss 一处。
+    真跑雪月梅 seed 默认那一份实际撞上了：ch7 的「十五→十九」新旧值都是 0 次。
+    修法（已知问题里写的正解）：plant_contradictions 跳过会被截断的章节。"""
+    chapters = make_chapters(20)
+    for c in chapters:
+        # 锚点放在正文末尾，保证落在被切掉的那 30%-60% 里
+        c.body += "，行者取出金箍棒。"
+    out = tmp_path / "乱稿"
+    key = scramble(chapters, out, seed=1, n_delete=2, n_truncate=8, n_full=0, n_excerpt=0,
+                    alias_chapters=3, n_contradictions=8)
+    truncated = {t["chapter"] for t in key["truncated"]}
+    assert truncated, "这个用例要真截断了才有意义"
+    assert key["contradictions"]
+    planted = {p["chapter"] for p in key["contradictions"]}
+    assert not (planted & truncated), f"植入落进了被截断的章节：{sorted(planted & truncated)}"
+
+
+def test_答案里每处矛盾的新值在乱稿正文里真的搜得到(tmp_path):
+    """上一条的端到端版：不看章节号，直接打开输出文件核字。这是「花了钱才发现召回上限
+    不是 10/10」的最后一道闸。"""
+    chapters = make_chapters(20)
+    for c in chapters:
+        c.body += "，行者取出金箍棒。"
+    out = tmp_path / "乱稿"
+    key = scramble(chapters, out, seed=1, n_delete=2, n_truncate=8, n_full=0, n_excerpt=0,
+                    alias_chapters=3, n_contradictions=8)
+    by_ch: dict[int, list] = {}
+    for f in key["files"]:
+        by_ch.setdefault(f["chapter"], []).append(f)
+    for p in key["contradictions"]:
+        body = "".join(
+            _read_piece(out / f["path"], f["encoding"])
+            for f in sorted(by_ch[p["chapter"]], key=lambda x: x["piece"])
+        )
+        assert p["new"] in body, f"第 {p['chapter']} 章植入的 {p['old']}→{p['new']} 在乱稿正文里搜不到"

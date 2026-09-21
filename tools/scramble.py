@@ -291,12 +291,16 @@ def _extract_subject(body: str, pos: int, lookback: int = 200) -> str:
 
 
 def plant_contradictions(chapters: list[Chapter], rng: random.Random, n: int,
-                          max_per_pair: int = 2) -> list[dict]:
+                          max_per_pair: int = 2, skip: set[int] | None = None) -> list[dict]:
     """在章节正文里植入 n 处人造矛盾，一个章节最多一处，就地改 chapters 的 body。
 
     只改**原文里真出现的词**，换成同类但不同的值，答案记 (章节, 主语, 属性, 原值, 新值)。
     找不到锚点就少植入几处，不硬来（spec 9.1）。同一个 (old,new) 有向对最多用
     `max_per_pair` 次，避免像旧版那样 10 处里 8 处都是同一条替换（C1）。
+
+    `skip` 里的章节不植入。调用方拿它排掉会被截断的章节：截断保留前 40%-70%，锚点落在
+    被切掉的后半段就会被吃掉，答案里记着这处矛盾、乱稿正文里新旧值都搜不到，召回上限
+    白白掉一处（9-21：雪月梅真语料上实测 10 处里 ch7 被吃掉了一处）。
 
     注：任务书给的实现里 n=0 时会误植入 1 处——「先 setdefault 进去、再判断
     len(by_chapter) >= n」在 n=0 时第一条就已经 1 >= 0，立刻当「够了」保留下来。
@@ -305,6 +309,7 @@ def plant_contradictions(chapters: list[Chapter], rng: random.Random, n: int,
     """
     if n <= 0:
         return []
+    skipped = skip or set()
     script = _script_of("".join(c.body for c in chapters))
     spots = []
     for c in chapters:
@@ -320,7 +325,7 @@ def plant_contradictions(chapters: list[Chapter], rng: random.Random, n: int,
     by_chapter: dict[int, dict] = {}
     pair_count: dict[tuple[str, str], int] = {}
     for s in spots:
-        if s["chapter"] in by_chapter:
+        if s["chapter"] in by_chapter or s["chapter"] in skipped:
             continue
         key = (s["old"], s["new"])
         if pair_count.get(key, 0) >= max_per_pair:
@@ -404,15 +409,14 @@ def scramble(
     excerpt = take(n_excerpt)
     kept = [c for c in chapters if c.num not in deleted]
 
-    # 矛盾要在截断、别名替换之前植入，且只挑 kept（会被删掉的章节植了也白植，答案里
-    # 记的东西压根不会出现在任何输出文件里）。
-    # 注意（9-20 GHIJ 审查订正）：这里的顺序——先植入、后截断——其实是有风险的一侧。
-    # 截断保留的是前 40%-70%（cut_at_ratio），锚点词正好落在被切掉的后半段就会被吃掉，
-    # 答案里记了但输出文件里根本没有；不是旧注释说的「先植入才安全」，那句理由写反了。
-    # 目前 20 个种子 × 10 处实测 0 处被截断吃掉（见 GHIJ-审查.md），这是运气不是设计。
-    # 真要保证安全应该把植入挪到 after_truncate 之后，或者 plant_contradictions 里跳过
-    # truncated 章节——这一轮不改行为（只改这条注释），风险记在 docs/已知问题与待办.md。
-    contradictions = plant_contradictions(kept, rng, n_contradictions)
+    # 矛盾在截断、别名替换之前植入，只挑 kept（会被删掉的章节植了也白植，答案里记的东西
+    # 压根不会出现在任何输出文件里），并且跳过 truncated（9-21 修）。
+    # 先植入、后截断这个顺序本身是有风险的一侧：截断保留前 40%-70%（cut_at_ratio），锚点词
+    # 落在被切掉的后半段就会被吃掉，答案里记了但输出文件里根本没有，召回上限白掉一处。
+    # GHIJ 审查当时报「20 个种子 × 10 处 0 处被吃」，那是运气：9-21 真跑雪月梅生成乱稿时
+    # ch7 的「十五→十九」就被吃掉了（新旧值在乱稿里都是 0 次），合成语料上 20 个种子有 12 个
+    # 出现植入/截断重叠。这里传 truncated 进去从源头排掉。
+    contradictions = plant_contradictions(kept, rng, n_contradictions, skip=set(truncated))
 
     # 先把截断做完：别名要挑「截断之后的正文里真的还有这个词」的章节，不然会挑到
     # 词恰好被切掉了的章节，答案里写着有别名、实际打开文件搜不到（空跑）。
