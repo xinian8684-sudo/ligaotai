@@ -1,3 +1,3 @@
 <template>
-  <RouterView />
+  <div>待做</div>
 </template>

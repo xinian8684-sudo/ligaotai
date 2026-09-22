@@ -251,7 +251,8 @@ def create_app(
     @app.get("/api/books/{name}")
     def book_meta(name: str) -> dict:
         b = get_book(name)
-        return {"name": b.name, **b.load()}
+        manifest = read_json(b.manifest_path, {"files": {}})
+        return {"name": b.name, **b.load(), "roots": manifest.get("roots", {})}
 
     @app.post("/api/books/{name}/import", status_code=202)
     def do_import(name: str, req: ImportReq) -> dict:

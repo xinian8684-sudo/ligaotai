@@ -49,6 +49,14 @@ def test_books_crud(client):
     assert client.get("/api/books/没有").status_code == 404
 
 
+def test_book_meta_有来源路径(client, src):
+    client.post("/api/books", json={"title": "我的书"})
+    r = client.post("/api/books/我的书/import", json={"folder": str(src)})
+    wait(client, r.json())
+    roots = client.get("/api/books/我的书").json()["roots"]
+    assert roots["稿"] == str(src.resolve())
+
+
 def test_full_flow(client, src):
     client.post("/api/books", json={"title": "我的书"})
 

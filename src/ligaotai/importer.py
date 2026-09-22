@@ -76,6 +76,7 @@ def run_import(book: Book, folder: Path, progress: Progress = _noop) -> dict:
     folder = check_import_folder(book, folder)
     root_name = safe_name(folder.name)
     manifest = read_json(book.manifest_path, {"files": {}})
+    manifest.setdefault("roots", {})[root_name] = str(folder)
     files = sorted(
         (p for p in folder.rglob("*") if p.is_file()),
         key=lambda p: natural_key(p.relative_to(folder).as_posix()),

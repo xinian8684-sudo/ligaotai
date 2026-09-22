@@ -26,6 +26,8 @@ export interface BookMeta {
   created: string
   settings: Record<string, unknown>
   steps: Record<StepName, StepState>
+  /** 原稿根目录名 → 上次导入时的来源文件夹完整路径 */
+  roots: Record<string, string>
 }
 
 // ---------- 任务 ----------
