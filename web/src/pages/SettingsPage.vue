@@ -21,6 +21,8 @@ function 连上了(r: unknown): boolean {
 
 <template>
   <div class="page">
+    <!-- 设置页不在 BookLayout 里，没有导航栏；不给这条链接作者只能改地址栏回去（G2） -->
+    <RouterLink to="/" class="back" data-test="回书架">← 书架</RouterLink>
     <h1>设置</h1>
     <ErrorBox :message="store.error" />
 
@@ -101,6 +103,8 @@ function 连上了(r: unknown): boolean {
 
 <style scoped>
 .page{padding:24px;max-width:560px}
+.back{font-size:13px;color:var(--ink-2);text-decoration:none}
+.back:hover{text-decoration:underline}
 h1{font-family:var(--serif);font-size:20px;margin:16px 0}
 .form{display:flex;flex-wrap:wrap;gap:14px}
 .form label{display:block;font-size:13px;color:var(--ink-2);flex:1 1 100%}

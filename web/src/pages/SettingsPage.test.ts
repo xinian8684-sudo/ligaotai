@@ -90,4 +90,15 @@ describe('SettingsPage', () => {
     await flushPromises()
     expect(put.mock.calls[0][0]).toMatchObject({ concurrency: 16 })
   })
+
+  it('有一条回书架的链接（设置页不在书内布局里，没有导航栏，G2）', async () => {
+    vi.spyOn(api, 'getConfig').mockResolvedValue(配置 as never)
+    const 记to = { template: '<a :data-to="to"><slot /></a>', props: ['to'] }
+    const w = mount(SettingsPage, { global: { stubs: { RouterLink: 记to } } })
+    await flushPromises()
+    const a = w.find('[data-test="回书架"]')
+    expect(a.exists()).toBe(true)
+    expect(a.attributes('data-to')).toBe('/')
+    expect(a.text()).toContain('书架')
+  })
 })
