@@ -3,7 +3,20 @@ body{
   background:var(--ground); color:var(--ink);
   font-family:var(--sans); font-size:14px; line-height:1.6; margin:0;
 }
-button{font:inherit;color:inherit}
+/* 原生表单控件不吃主题变量：不兜底的话深色下按钮是浏览器默认浅灰底配继承来的浅色字，
+   输入框是白底，截图验收才看出来。按钮照原型 .btn 的样子走。 */
+button{
+  font:inherit; font-size:13px; color:var(--ink); background:var(--panel);
+  border:1px solid var(--line); border-radius:6px; padding:3px 10px; cursor:pointer;
+}
+button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+button:disabled{opacity:.5;cursor:default}
+input,select,textarea{
+  font:inherit; color:var(--ink); background:var(--panel);
+  border:1px solid var(--line); border-radius:4px;
+}
+input::placeholder,textarea::placeholder{color:var(--ink-3)}
+input[type="checkbox"],input[type="radio"]{accent-color:var(--accent)}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
 .num{font-variant-numeric:tabular-nums}

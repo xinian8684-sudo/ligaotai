@@ -80,6 +80,11 @@ const 同名提醒 = computed(() => {
   return null
 })
 
+/** 后端给的是带时区的 ISO 串（本机时间写的），截到分钟就够，不做时区换算。 */
+function 时间(iso: string): string {
+  return iso.slice(0, 16).replace('T', ' ')
+}
+
 async function 导入(): Promise<void> {
   const b = 当前书.value
   const folder = 来源文件夹.value.trim()
@@ -99,7 +104,10 @@ async function 导入(): Promise<void> {
 
 <template>
   <div class="page">
-    <h1>书架</h1>
+    <header class="head">
+      <h1>书架</h1>
+      <RouterLink to="/settings" data-test="去设置">设置</RouterLink>
+    </header>
     <ErrorBox :message="error" />
 
     <section class="new">
@@ -116,7 +124,7 @@ async function 导入(): Promise<void> {
     <ul v-else class="books">
       <li v-for="b in books" :key="b.name">
         <RouterLink :to="`/b/${b.name}/pipeline`">{{ b.title }}</RouterLink>
-        <span class="created">{{ b.created }}</span>
+        <span class="created">{{ 时间(b.created) }}</span>
         <button data-test="选书" @click="选书(b)">导入原稿</button>
       </li>
     </ul>
@@ -145,6 +153,8 @@ async function 导入(): Promise<void> {
 <style scoped>
 .page{padding:24px;max-width:720px}
 h1{font-family:var(--serif);font-size:22px;margin:0 0 16px}
+.head{display:flex;align-items:baseline;justify-content:space-between}
+.head a{font-size:13px}
 .new{display:flex;gap:8px;margin-bottom:20px}
 .empty{color:var(--ink-3);padding:24px 0}
 .books{list-style:none;padding:0;margin:0}

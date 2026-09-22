@@ -88,4 +88,21 @@ describe('BooksPage', () => {
     const 按钮 = w.find('[data-test="导入"]')
     if (按钮.exists()) expect(按钮.attributes('disabled')).toBeDefined()
   })
+
+  it('书架页有去设置的入口（新用户第一件事是配 key）', async () => {
+    vi.spyOn(api, 'listBooks').mockResolvedValue([])
+    const w = mount(BooksPage, { global: { stubs } })
+    await flushPromises()
+    expect(w.find('[data-test="去设置"]').text()).toContain('设置')
+  })
+
+  it('建书时间显示成「年-月-日 时:分」，不显示原始 ISO 串', async () => {
+    vi.spyOn(api, 'listBooks').mockResolvedValue([
+      { name: 'guixu', title: '归墟', created: '2026-09-12T20:11:21+08:00' },
+    ])
+    const w = mount(BooksPage, { global: { stubs } })
+    await flushPromises()
+    expect(w.text()).toContain('2026-09-12 20:11')
+    expect(w.text()).not.toContain('T20:11')
+  })
 })
