@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from . import __version__
 from . import entities as ent
 from . import threads_ops as tops
+from . import verdicts as vd
 from .archive import load_index, run_archive, write_index
 from .book import STEP_LABELS, STEPS, Book, create_book, list_books, open_book, recover_interrupted
 from .cards import is_fresh, load_card, load_cards, run_cards
@@ -95,6 +96,12 @@ class RerunReq(BaseModel):
     threads: list[str] = []
     worlds: list[str] = []
     map: bool = False
+
+
+class VerdictReq(BaseModel):
+    kind: str | None
+    value: str | None = None
+    note: str = ""
 
 
 def _读坏了(what: str, detail: str) -> HTTPException:
@@ -215,6 +222,24 @@ def create_app(
             raise HTTPException(404, str(e))
         except tops.BrokenThreadsFile as e:
             raise HTTPException(409, str(e))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    def require_idle() -> None:
+        """二期所有写接口：有任务在跑（不分哪本书）就 409，不做读-改-写（照 archive_rerun 的做法）。"""
+        cur = runner.current()
+        if cur is not None and cur.status in ("queued", "running"):
+            raise HTTPException(409, f"已有任务在跑：{cur.name}（{cur.book}）")
+
+    def verdict_op(fn: Callable[[], object]):
+        try:
+            return fn()
+        except vd.NoSuchGroup:
+            raise HTTPException(404, "没有这组矛盾")
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e))
+        except vd.BrokenContradictions as e:
+            raise _读坏了("矛盾.json", str(e))
         except ValueError as e:
             raise HTTPException(400, str(e))
 
@@ -495,6 +520,22 @@ def create_app(
     def contradictions(name: str) -> dict:
         b = get_book(name)
         return read_json(b.contradictions_path, {"groups": [], "stats": {}})
+
+    @app.put("/api/books/{name}/contradictions/{cid}/verdict")
+    def put_verdict(name: str, cid: str, req: VerdictReq) -> dict:
+        require_idle()
+        b = get_book(name)
+        return verdict_op(lambda: vd.set_verdict(b, cid, req.kind, req.value, req.note))
+
+    @app.get("/api/books/{name}/canon")
+    def canon(name: str) -> dict:
+        b = get_book(name)
+        return verdict_op(lambda: vd.current_canon(b))
+
+    @app.get("/api/books/{name}/contradictions/{cid}/followups")
+    def verdict_followups(name: str, cid: str) -> dict:
+        b = get_book(name)
+        return verdict_op(lambda: vd.followups(b, cid))
 
     @app.get("/api/books/{name}/archive/{kind}/{oid}")
     def archive_body(name: str, kind: str, oid: str) -> dict:
