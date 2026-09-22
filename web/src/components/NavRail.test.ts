@@ -17,10 +17,11 @@ describe('NavRail', () => {
     }
   })
 
-  it('没有待确认项时两条子路由都不显示', () => {
+  it('没有待确认项时实体确认收起；归线确认常驻（改名/设主线平时要用）但不带角标', () => {
     const w = mount(NavRail, { props: 基本, global: { stubs: { RouterLink: routerLinkStub } } })
     expect(w.text()).not.toContain('实体确认')
-    expect(w.text()).not.toContain('归线确认')
+    expect(w.text()).toContain('归线确认')
+    expect(w.find('[data-test="归线角标"]').exists()).toBe(false)
   })
 
   it('有待确认项时子路由出现并带数字', () => {

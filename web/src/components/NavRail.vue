@@ -30,12 +30,12 @@ defineProps<{
       >
         <span>↳ 实体确认</span><span class="n" data-test="实体角标">{{ pendingEntities }}</span>
       </RouterLink>
+      <!-- 归线页常驻（9-22 作者定）：除了处理待办，线改名 / 设为主线平时也要用，收起就没入口了 -->
       <RouterLink
-        v-if="pendingThreads > 0"
         class="tab sub"
         :to="`/b/${bookName}/pipeline/threads`"
       >
-        <span>↳ 归线确认</span><span class="n" data-test="归线角标">{{ pendingThreads }}</span>
+        <span>↳ 归线确认</span><span v-if="pendingThreads > 0" class="n" data-test="归线角标">{{ pendingThreads }}</span>
       </RouterLink>
 
       <RouterLink class="tab" :to="`/b/${bookName}/panorama`"><span>全景</span></RouterLink>
