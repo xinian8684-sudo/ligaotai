@@ -60,3 +60,22 @@ def test_不带斜杠的api也是404不回index(tmp_path, 假dist):
     assert r.status_code == 404
     assert "text/html" not in r.headers.get("content-type", "")
 
+
+
+def test_仓库里真的构建过就能直接服务(tmp_path):
+    """构建过之后，默认的 web/dist 要被找到，资源和子路由刷新都得通。没构建过就跳过。"""
+    import re
+    from pathlib import Path
+
+    import ligaotai.api as api_mod
+
+    dist = Path(api_mod.__file__).resolve().parents[2] / "web" / "dist"
+    if not (dist / "index.html").exists():
+        pytest.skip("web/dist 还没构建，跳过")
+    c = TestClient(create_app(app_dir=tmp_path, allowed_hosts=("testserver",)))
+    r = c.get("/")
+    assert r.status_code == 200
+    js = re.search(r'src="(/assets/[^"]+\.js)"', r.text)
+    assert js, "index.html 里没找到入口脚本"
+    assert c.get(js.group(1)).status_code == 200
+    assert c.get("/b/某本书/panorama").text == r.text
