@@ -1,9 +1,16 @@
+import json
+
 import pytest
 
+from helpers import FakeBackend
+
 from ligaotai.cards import card_path
+from ligaotai.config import AppConfig
 from ligaotai.fsutil import read_json, write_json
-from ligaotai.impact import program_impact
+from ligaotai.impact import check_impact, impact_input, model_impact_status, program_impact, run_impact
+from ligaotai.llm import LLMClient
 from ligaotai.threads_ops import load_threads
+from ligaotai.triage import set_card
 
 
 def _set_card(book, sid, **changes):
@@ -60,3 +67,77 @@ def test_代词不算人物(ib):
 def test_线不存在(ib):
     with pytest.raises(KeyError):
         program_impact(ib, load_threads(ib), "L-009")
+
+
+def _hooks(b):
+    # S-0002（L-001）埋「紧箍咒的来历」（fixture 自带）；S-0004（L-002）回收它；S-0005 埋一个没人收的
+    _set_card(b, "S-0004", hooks_resolved=["紧箍咒原来是观音所赐"])
+    _set_card(b, "S-0005", hooks_planted=["定海神针的去向"])
+
+
+def test_输入_这条线和其他线分开列_带动作(ib):
+    _hooks(ib)
+    th = load_threads(ib)
+    set_card(ib, th, "L-002", "cut")
+    values, own, others = impact_input(ib, th, "L-002")
+    assert "砍掉 L-002" in values["action"]
+    assert "S-0004｜收｜紧箍咒原来是观音所赐" in values["own"]
+    assert "S-0005｜埋｜定海神针的去向" in values["own"]
+    assert "L-001｜S-0002｜埋｜紧箍咒的来历" in values["others"]
+    assert own == {"S-0004", "S-0005"} and others == {"S-0002"}
+
+
+def test_合并时动作写明并入哪条线(ib):
+    th = load_threads(ib)
+    set_card(ib, th, "L-002", "merge", merge_into="L-001")
+    values, _, _ = impact_input(ib, load_threads(ib), "L-002")
+    assert "把 L-002 并入 L-001" in values["action"]
+
+
+def test_被砍的线不算其他线(ib):
+    _hooks(ib)
+    th = load_threads(ib)
+    set_card(ib, th, "L-001", "cut")
+    set_card(ib, th, "L-002", "cut")
+    _, _, others = impact_input(ib, th, "L-002")
+    assert others == set()
+
+
+def test_核对_两端要一端在这条线一端在别的线(ib):
+    own, others = {"S-0004", "S-0005"}, {"S-0002"}
+    ok = {"pairs": [{"planted": "S-0002", "resolved": "S-0004", "hook": "紧箍咒"}], "remedy": "改到主线收 [S-0002]"}
+    assert check_impact(ok, own, others) == []
+    bad = {"pairs": [{"planted": "S-0004", "resolved": "S-0005", "hook": "x"},
+                     {"planted": "S-0002", "resolved": "S-0099", "hook": "y"}],
+           "remedy": "没编号"}
+    text = "\n".join(check_impact(bad, own, others))
+    assert "S-0004" in text and "S-0099" in text and "补救建议" in text
+
+
+def test_跑一次_结果存影响文件_看板动作变了就过期(ib):
+    _hooks(ib)
+    th = load_threads(ib)
+    set_card(ib, th, "L-002", "cut")
+    reply = {"pairs": [{"planted": "S-0002", "resolved": "S-0004", "hook": "紧箍咒"}], "remedy": "改到主线收 [S-0002]"}
+    backend = FakeBackend(handler=lambda tier, messages: json.dumps(reply, ensure_ascii=False))
+    r = run_impact(ib, LLMClient(AppConfig(), backend, log_dir=ib.logs_dir), "L-002")
+    assert r["ok"] is True
+    st = model_impact_status(ib, load_threads(ib), "L-002")
+    assert st["stale"] is False and st["pairs"][0]["resolved"] == "S-0004"
+    set_card(ib, th, "L-002", "merge", merge_into="L-001")
+    assert model_impact_status(ib, load_threads(ib), "L-002")["stale"] is True
+
+
+def test_这条线一个伏笔都没有_不调模型(ib):
+    th = load_threads(ib)
+    set_card(ib, th, "L-002", "cut")
+    backend = FakeBackend(handler=lambda tier, messages: "{}")
+    r = run_impact(ib, LLMClient(AppConfig(), backend, log_dir=ib.logs_dir), "L-002")
+    assert r["ok"] is True and backend.calls == []
+    assert model_impact_status(ib, load_threads(ib), "L-002")["pairs"] == []
+
+
+def test_卡不在砍掉或合并列_不许跑(ib):
+    backend = FakeBackend(handler=lambda tier, messages: "{}")
+    with pytest.raises(ValueError):
+        run_impact(ib, LLMClient(AppConfig(), backend, log_dir=ib.logs_dir), "L-002")
