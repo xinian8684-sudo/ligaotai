@@ -128,6 +128,19 @@ def test_读不存在的档案给404(client_with_book):
     assert client_with_book.get(f"{BOOK}/archive/thread/L-999").status_code == 404
 
 
+def test_读全书地图正文(client_with_book_run):
+    """D4（Task 22）核对真实返回时发现的洞：原计划没有给全书地图正文开接口，
+    GET /archive/map 原来直接 404（没有匹配的路由）。补了一条独立路由，这里钉住。"""
+    r = client_with_book_run.get(f"{BOOK}/archive/map")
+    assert r.status_code == 200
+    assert r.json()["id"] == "map"
+    assert "全书概况" in r.json()["body"]
+
+
+def test_步骤7没跑过时地图给404(client_with_book):
+    assert client_with_book.get(f"{BOOK}/archive/map").status_code == 404
+
+
 def test_archive_body路径穿越拿不到书根目录文件(client_with_book_run, tmp_path):
     """G（9-20 GHIJ 审查补测，M1）：ensure_within + safe_name 是 archive_body 唯一的
     路径穿越防护，原来没有回归测试钉住——把它们拿掉也不会有任何测试挂。

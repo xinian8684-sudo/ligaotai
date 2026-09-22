@@ -512,6 +512,19 @@ def create_app(
             raise HTTPException(404, "没有这份档案")
         return {"id": oid, "body": path.read_text(encoding="utf-8")}
 
+    @app.get("/api/books/{name}/archive/map")
+    def archive_map(name: str) -> dict:
+        """全书地图正文。计划③设计里设定库页要能读支线档案、世界设定集**和全书地图**
+        三种正文（spec 5「设定库」），但原计划只给了 archive_body（kind=thread/world）
+        一条路由，没给地图开接口——D4 Task 22 核对真实返回时发现 GET /archive/map
+        直接 404（没有匹配的路由）。地图只有一份，不需要 oid，复用 kind/oid 那条路由
+        反而要塞一个假 oid，不如单独给一条固定路径的路由（跟 /archive/{kind}/{oid}
+        的两段路径不冲突）。"""
+        b = get_book(name)
+        if not b.map_path.exists():
+            raise HTTPException(404, "还没有生成全书地图")
+        return {"id": "map", "body": b.map_path.read_text(encoding="utf-8")}
+
     @app.post("/api/books/{name}/archive/rerun")
     def archive_rerun(name: str, req: RerunReq) -> dict:
         """把指定的档案标过期，下次跑步骤 7 只重跑它们。
