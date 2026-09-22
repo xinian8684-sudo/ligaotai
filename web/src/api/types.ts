@@ -81,7 +81,27 @@ export interface PublicConfig {
 }
 
 // ---------- 场景与卡 ----------
-export interface SceneMeta { id: string; [k: string]: unknown }
+/**
+ * 核对过 src/ligaotai/scenes.py 的 Scene.meta()（asdict 去掉 text）+ 实测
+ * GET /scenes、GET /scenes/{sid} 的真实返回。列表接口只给 meta，详情接口
+ * 在 meta 基础上加一个 text 字段（见 SceneDetail）。
+ */
+export interface SceneMeta {
+  id: string          // S-0001
+  source: string       // 来自哪个原稿文件
+  index: number        // 在该文件里第几块
+  start: number
+  end: number
+  chars: number
+  hash: string
+  heading: string
+  part: number
+  kind_hint: string
+  stale: boolean        // 场景卡该重做了（原文变了、卡还没跟上）
+  removed: boolean       // 这次没切出来，编号不回收，界面一般应该过滤掉
+}
+
+export interface SceneDetail extends SceneMeta { text: string }
 
 export interface CardRow {
   id: string
@@ -90,6 +110,46 @@ export interface CardRow {
   summary: string
   problems: number
   dropped: number
+}
+
+/** 场景卡里一条人物 / 一条事实。核对过 src/ligaotai/cards.py 的 Character / Fact。 */
+export interface CardCharacter { name: string; role: '主要' | '次要' | '提及' }
+export interface CardFact { subject: string; attribute: string; value: string; quote: string }
+
+/**
+ * 场景卡正文（src/ligaotai/cards.py 的 Card，model_dump() 之后的形状）。
+ * `GET /cards/{sid}` 整份返回的 `card` 字段就是这个。
+ */
+export interface Card {
+  summary: string
+  pov: string
+  characters: CardCharacter[]
+  locations: string[]
+  organizations: string[]
+  world_hint: string
+  time_hints: string[]
+  events: string[]
+  facts: CardFact[]
+  hooks_planted: string[]
+  hooks_resolved: string[]
+  refs_elsewhere: string[]
+  incomplete: boolean
+  incomplete_note: string
+  kind: '正文' | '提纲' | '设定笔记' | '碎片'
+}
+
+/**
+ * `GET /cards/{sid}` 的整份返回（load_card 直接读盘）。跟列表接口 CardRow 不是一回事：
+ * 这里是完整卡片，CardRow 是给列表用的摘要投影。手改坏的文件字段可能缺，界面要能扛。
+ */
+export interface CardRecord {
+  id: string
+  scene_hash: string
+  model?: string
+  created?: string
+  problems?: string[]
+  dropped?: { facts?: unknown[]; names?: unknown[]; attrs?: number; long_values?: number }
+  card: Card
 }
 
 // ---------- 实体 ----------
@@ -198,23 +258,93 @@ export interface ThreadsFile {
 }
 
 // ---------- 版本组 ----------
-export interface VersionGroup { id: string; [k: string]: unknown }
+/** 核对过 src/ligaotai/dedup.py 的 run()：groups.append({...}) 那段。 */
+export interface VersionPair { a: string; b: string; jaccard: number; containment: number }
+export interface VersionGroup {
+  id: string            // G-001
+  members: string[]      // 场景 id，含主版本自己
+  main: string           // 当前主版本的场景 id
+  main_by: 'auto' | 'author'
+  pairs: VersionPair[]
+}
 export interface VersionsFile { params: Record<string, unknown>; groups: VersionGroup[] }
 
 // ---------- 档案与矛盾 ----------
+/**
+ * 核对过 src/ligaotai/archive.py 的 load_index()：threads/worlds 下每条、
+ * 以及 map 本身，形状一致。`scenes`/`world` 只有支线档案条目有；世界条目和 map 没有。
+ * 老档案可能没有 `model`（这个字段是后补的），界面要能扛（Task 22 测试钉着这条）。
+ */
 export interface ArchiveEntry {
+  file: string
+  sig: string
+  outdated: boolean
+  generated: string
   /** 生成这份档案用的模型名。跟 current_model 不一致时提示作者（spec 第 5 章）。 */
   model?: string
-  outdated?: boolean
-  [k: string]: unknown
+  /** 只有支线档案条目有：这条线包含哪些场景。 */
+  scenes?: string[]
+  /** 只有支线档案条目有：这条线所属的世界。 */
+  world?: string
 }
 
 export interface ArchiveIndex {
+  threads: Record<string, ArchiveEntry>
+  worlds: Record<string, ArchiveEntry>
+  /** 全书地图只有一份，不是按 id 存的字典。 */
+  map: ArchiveEntry
+  /** 当前配置里的模型名，跟每份档案的 model 比对用（GET /archive 拼进去的，I2）。 */
   current_model: string
   [k: string]: unknown
 }
 
+export type ContradictionStatus = '真矛盾' | '合理变化' | '无法判断'
+export type ContradictionLevel = '严重' | '中等' | '轻微' | ''
+export type ContradictionCategory = '人物' | '设定' | '时间' | '称谓'
+
+export interface ContradictionSceneRef {
+  id: string
+  quote: string
+  thread: string
+  /** 全局故事时间，线没对齐 / 没估出来时是 null（跟 lib/segments.ts 同一个 null 语义）。 */
+  t: number | null
+  conf: string
+}
+
+export interface ContradictionValue {
+  value: string
+  scenes: ContradictionSceneRef[]
+}
+
+/**
+ * 核对过 src/ligaotai/contradictions.py 的 build_result()。`verdict_sig` /
+ * `verdict_stale` 是 ②c 之后新加的字段，7.2 节文档还没写进去——以代码为准（任务书原话）。
+ * 一期界面只展示，`verdict` 永远是 null，不做裁决。
+ */
+export interface ContradictionGroup {
+  id: string             // C-001
+  subject: string
+  attribute: string
+  status: ContradictionStatus
+  level: ContradictionLevel
+  category: ContradictionCategory
+  reason: string
+  values: ContradictionValue[]
+  values_sig: string
+  /** 二期才会写。一期永远是 null，界面不提供任何写它的入口。 */
+  verdict: unknown | null
+  verdict_sig: string | null
+  /** 上一次判定依据的值集合跟现在不一样了（多了新值 / 原来的值消失了），要标出来重看。 */
+  verdict_stale: boolean
+}
+
 export interface ContradictionsFile {
-  groups: unknown[]
+  generated?: string
+  next_id?: number
+  groups: ContradictionGroup[]
+  skipped?: { subject: string; attribute: string; reason: string }[]
+  orphan_verdicts?: unknown[]
+  id_registry?: unknown[]
+  /** 里头有计数统计，没有任何费用字段——contradictions.py 的 stats 只统计条数。 */
   stats: Record<string, unknown>
 }

@@ -1,7 +1,7 @@
 import { get, post, put } from './client'
 import type {
-  ArchiveIndex, BookMeta, BookSummary, CardRow, ContradictionsFile,
-  EntitiesFile, Job, PublicConfig, SceneMeta, StepName, ThreadsFile, VersionsFile,
+  ArchiveIndex, BookMeta, BookSummary, CardRecord, CardRow, ContradictionsFile,
+  EntitiesFile, Job, PublicConfig, SceneDetail, SceneMeta, StepName, ThreadsFile, VersionsFile,
 } from './types'
 
 const b = (name: string) => `/books/${encodeURIComponent(name)}`
@@ -27,9 +27,9 @@ export const cancelJob = (id: string) => post<Job>(`/jobs/${id}/cancel`)
 // 场景与卡
 export const listScenes = (name: string, includeRemoved = false) =>
   get<SceneMeta[]>(`${b(name)}/scenes?include_removed=${includeRemoved}`)
-export const getScene = (name: string, sid: string) => get<unknown>(`${b(name)}/scenes/${sid}`)
+export const getScene = (name: string, sid: string) => get<SceneDetail>(`${b(name)}/scenes/${sid}`)
 export const listCards = (name: string) => get<CardRow[]>(`${b(name)}/cards`)
-export const getCard = (name: string, sid: string) => get<unknown>(`${b(name)}/cards/${sid}`)
+export const getCard = (name: string, sid: string) => get<CardRecord>(`${b(name)}/cards/${sid}`)
 export const regenerateCard = (name: string, sid: string) => post<Job>(`${b(name)}/cards/${sid}/regenerate`)
 
 // 实体
@@ -62,5 +62,11 @@ export const getSource = (name: string, path: string) =>
 export const getArchiveIndex = (name: string) => get<ArchiveIndex>(`${b(name)}/archive`)
 export const getArchiveBody = (name: string, kind: 'thread' | 'world', oid: string) =>
   get<{ id: string; body: string }>(`${b(name)}/archive/${kind}/${encodeURIComponent(oid)}`)
+/**
+ * 全书地图正文。计划原稿的 getArchiveBody 只支持 kind=thread/world，没有给地图开路。
+ * D4（Task 22）核对真实返回时发现 GET /archive/map 直接 404（没有匹配的后端路由），
+ * 已在 src/ligaotai/api.py 补了这条独立路由（地图只有一份，不需要 oid）。
+ */
+export const getArchiveMap = (name: string) => get<{ id: string; body: string }>(`${b(name)}/archive/map`)
 export const getContradictions = (name: string) => get<ContradictionsFile>(`${b(name)}/contradictions`)
 export const rerunArchive = (name: string, body: unknown) => post<unknown>(`${b(name)}/archive/rerun`, body)
