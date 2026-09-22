@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { getArchiveIndex, getArchiveBody, getArchiveMap, rerunArchive } from '@/api/endpoints'
+import { getArchiveIndex, getArchiveBody, getArchiveMap, getThreads, rerunArchive } from '@/api/endpoints'
 import type { ArchiveIndex, ArchiveEntry } from '@/api/types'
 import { ApiError } from '@/api/client'
 import { useJobStore } from '@/stores/job'
@@ -12,6 +12,8 @@ const jobStore = useJobStore()
 
 const index = ref<ArchiveIndex | null>(null)
 const error = ref('')
+/** 编号 → 名字。档案索引里只有编号；线名读不到（还没跑步骤 6）就退回只显示编号，不当错误。 */
+const 名字 = ref<Record<string, string>>({})
 
 type Kind = 'thread' | 'world' | 'map'
 interface Row { kind: Kind; id: string; label: string; entry: ArchiveEntry }
@@ -27,15 +29,29 @@ async function 加载(): Promise<void> {
   } catch (e) {
     await 报错(e)
   }
+  try {
+    const t = await getThreads(props.name)
+    const m: Record<string, string> = {}
+    for (const w of t.worlds) m[w.id] = w.name
+    for (const th of t.threads) m[th.id] = th.name
+    名字.value = m
+  } catch {
+    名字.value = {}
+  }
+}
+
+function 标签(id: string): string {
+  const n = 名字.value[id]
+  return n ? `${id} · ${n}` : id
 }
 
 const 支线行 = computed<Row[]>(() => {
   const t = index.value?.threads ?? {}
-  return Object.keys(t).sort().map((id) => ({ kind: 'thread' as const, id, label: id, entry: t[id] }))
+  return Object.keys(t).sort().map((id) => ({ kind: 'thread' as const, id, label: 标签(id), entry: t[id] }))
 })
 const 世界行 = computed<Row[]>(() => {
   const w = index.value?.worlds ?? {}
-  return Object.keys(w).sort().map((id) => ({ kind: 'world' as const, id, label: id, entry: w[id] }))
+  return Object.keys(w).sort().map((id) => ({ kind: 'world' as const, id, label: 标签(id), entry: w[id] }))
 })
 const 地图行 = computed<Row | null>(() => {
   const m = index.value?.map

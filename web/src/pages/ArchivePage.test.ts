@@ -120,4 +120,33 @@ describe('ArchivePage', () => {
     await flushPromises()
     expect(w.text()).toContain('下次跑步骤 7 时才会真跑')
   })
+
+  it('支线/世界显示名字，不只显示编号', async () => {
+    vi.spyOn(api, 'getArchiveIndex').mockResolvedValue(造index({
+      threads: { 'L-001': { file: 'x', sig: 's', outdated: false, generated: '' } },
+      worlds: { 'W-01': { file: 'y', sig: 's', outdated: false, generated: '' } },
+    }))
+    vi.spyOn(api, 'getThreads').mockResolvedValue({
+      next_world: 2, next_thread: 2, time_unit: '年', main_thread: 'L-001', main_by: 'auto',
+      worlds: [{ id: 'W-01', name: '东土大唐', reason: '', status: 'draft', notes: [], outlines: [] }],
+      threads: [{ id: 'L-001', world: 'W-01', name: '取经主线', about: '', status: 'draft', scenes: [],
+        times: {}, outlines: [], offset: 0 }],
+    } as never)
+    const w = mount(ArchivePage, { props: { name: 'guixu' }, global: { stubs } })
+    await flushPromises()
+    expect(w.find('[data-test="条目-L-001"]').text()).toContain('L-001')
+    expect(w.find('[data-test="条目-L-001"]').text()).toContain('取经主线')
+    expect(w.find('[data-test="条目-W-01"]').text()).toContain('东土大唐')
+  })
+
+  it('读不到线名（没跑步骤 6）时退回只显示编号，不报错', async () => {
+    vi.spyOn(api, 'getArchiveIndex').mockResolvedValue(造index({
+      threads: { 'L-001': { file: 'x', sig: 's', outdated: false, generated: '' } },
+    }))
+    vi.spyOn(api, 'getThreads').mockRejectedValue(new Error('boom'))
+    const w = mount(ArchivePage, { props: { name: 'guixu' }, global: { stubs } })
+    await flushPromises()
+    expect(w.find('[data-test="条目-L-001"]').text()).toContain('L-001')
+    expect(w.text()).not.toContain('boom')
+  })
 })
