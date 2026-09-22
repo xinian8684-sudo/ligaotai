@@ -7,7 +7,15 @@ from helpers import FakeBackend
 from ligaotai.config import AppConfig
 from ligaotai.fsutil import read_json, write_json
 from ligaotai.llm import LLMClient
-from ligaotai.skeleton import check_holes, fallback_task, generate
+from ligaotai.skeleton import (
+    BrokenSkeletonFile,
+    annotate,
+    check_holes,
+    fallback_task,
+    generate,
+    load_skeleton,
+    save_skeleton,
+)
 from ligaotai.threads_ops import load_threads
 from ligaotai.triage import set_card
 
@@ -138,3 +146,66 @@ def test_空洞说明核对():
 def test_兜底说明_没有锚点和出处也能写():
     assert fallback_task({"after": None, "before": None, "event": "某事", "mentioned_in": []}) == \
         "在 （开头） 与 （结尾） 之间补写：某事"
+
+
+def _sk(items, unplaced=None):
+    return {"generated": "x", "by": "program", "volumes": [{"title": "卷一", "chapters": [
+        {"title": "章一", "items": items, "notes": []}]}],
+            "unplaced": unplaced or {"scenes": [], "holes": []}}
+
+
+def test_保存编辑_标成作者改过(book_with_threads):
+    b = book_with_threads
+    sk = save_skeleton(b, _sk([{"type": "scene", "id": "S-0001", "thread": "L-001"},
+                               {"type": "hole", "id": "H-009", "task": "作者自己加的空洞"}]))
+    assert sk["by"] == "author" and read_json(b.skeleton_path)["by"] == "author"
+
+
+def test_保存编辑_校验(book_with_threads):
+    b = book_with_threads
+    cases = [
+        (_sk([{"type": "scene", "id": "S-0099"}]), "S-0099"),
+        (_sk([{"type": "scene", "id": "S-0001"}, {"type": "scene", "id": "S-0001"}]), "不止一次"),
+        (_sk([{"type": "scene", "id": "S-0001"}], {"scenes": [{"id": "S-0001", "why": "no_time"}], "holes": []}), "不止一次"),
+        (_sk([{"type": "hole", "id": "H-001"}]), "任务说明"),
+        (_sk([{"type": "hole", "id": "H-001", "task": "a"}, {"type": "hole", "id": "H-001", "task": "b"}]), "H-001"),
+        (_sk([{"type": "note", "id": "x"}]), "scene 或 hole"),
+        ({"volumes": [{"title": "", "chapters": []}]}, "标题"),
+        ({"volumes": "x"}, "volumes"),
+    ]
+    for sk, word in cases:
+        with pytest.raises(ValueError) as e:
+            save_skeleton(b, sk)
+        assert word in str(e.value), (sk, str(e.value))
+
+
+def test_保存时去掉界面标注(book_with_threads):
+    b = book_with_threads
+    save_skeleton(b, _sk([{"type": "scene", "id": "S-0001", "thread": "L-001", "flag": "cut"}]))
+    item = read_json(b.skeleton_path)["volumes"][0]["chapters"][0]["items"][0]
+    assert "flag" not in item
+
+
+def test_读骨架_没有和坏了(book_with_threads):
+    b = book_with_threads
+    with pytest.raises(FileNotFoundError):
+        load_skeleton(b)
+    b.triage_dir.mkdir(parents=True, exist_ok=True)
+    b.skeleton_path.write_text("{坏", encoding="utf-8")
+    with pytest.raises(BrokenSkeletonFile):
+        load_skeleton(b)
+
+
+def test_对账标注_场景没了或线被砍(book_with_threads):
+    b = book_with_threads
+    th = load_threads(b)
+    set_card(b, th, "L-002", "cut")
+    sk = _sk([{"type": "scene", "id": "S-0001", "thread": "L-001"},
+              {"type": "scene", "id": "S-0004", "thread": "L-002"},
+              {"type": "scene", "id": "S-0099", "thread": "L-001"}],
+             {"scenes": [{"id": "S-0005", "thread": "L-002", "why": "no_time"}], "holes": []})
+    out = annotate(b, sk, th)
+    flags = [i.get("flag") for i in out["volumes"][0]["chapters"][0]["items"]]
+    assert flags == [None, "cut", "missing"]
+    assert out["unplaced"]["scenes"][0]["flag"] == "cut"
+    assert "flag" not in sk["volumes"][0]["chapters"][0]["items"][1]   # 不改原对象

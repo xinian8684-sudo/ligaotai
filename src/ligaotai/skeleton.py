@@ -7,13 +7,14 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import shutil
 
 from .archive import _digest, refs_in
 from .book import FILE_LOCK, Book, now_iso
 from .cards import load_cards
 from .chapters import assemble, check_chapters, fallback_chapters, merge_windows, render_rows, windows
-from .fsutil import write_json
+from .fsutil import read_json, write_json
 from .llm import LLMClient
 from .llm_caller import Caller, Progress, _noop
 from .scenes import load_scenes
@@ -167,3 +168,130 @@ async def _generate(book: Book, client: LLMClient, progress: Progress) -> dict:
             "chapters": sum(len(v["chapters"]) for v in vols), "holes": len(holes),
             "unplaced_scenes": len(unplaced_scenes), "fallback_chapters": used_fallback,
             "failed": caller.failed}
+
+
+# ---------------------------------------------------------------------------
+# 读、保存编辑、校验、对账标注
+# ---------------------------------------------------------------------------
+
+
+class BrokenSkeletonFile(ValueError):
+    """骨架.json 坏了。作者改过的骨架不能当空处理。"""
+
+
+def load_skeleton(book: Book) -> dict:
+    try:
+        data = read_json(book.skeleton_path)
+    except ValueError as e:
+        raise BrokenSkeletonFile(f"取舍/骨架.json 不是合法 JSON：{e}") from e
+    if data is None:
+        raise FileNotFoundError("还没有骨架，先生成一次")
+    if not isinstance(data, dict) or not isinstance(data.get("volumes"), list):
+        raise BrokenSkeletonFile("取舍/骨架.json 没有 volumes 列表")
+    return data
+
+
+def validate_skeleton(sk, known: set[str]) -> list[str]:
+    if not isinstance(sk, dict) or not isinstance(sk.get("volumes"), list):
+        return ["骨架要有 volumes 列表"]
+    problems: list[str] = []
+    seen_s: set[str] = set()
+    seen_h: set[str] = set()
+
+    def item(it, where: str) -> None:
+        if not isinstance(it, dict):
+            problems.append(f"{where}：条目要是对象")
+            return
+        if it.get("type") == "scene":
+            sid = it.get("id")
+            if sid not in known:
+                problems.append(f"{where}：没有这个场景 {sid}")
+            elif sid in seen_s:
+                problems.append(f"{where}：场景 {sid} 出现了不止一次")
+            seen_s.add(sid)
+        elif it.get("type") == "hole":
+            hid = it.get("id")
+            if not isinstance(hid, str) or not hid:
+                problems.append(f"{where}：空洞要有编号")
+            elif hid in seen_h:
+                problems.append(f"{where}：空洞编号 {hid} 重复了")
+            seen_h.add(hid)
+            if not isinstance(it.get("task"), str):
+                problems.append(f"{where}：空洞 {hid} 要有任务说明")
+        else:
+            problems.append(f"{where}：条目类型只能是 scene 或 hole")
+
+    for vi, v in enumerate(sk["volumes"], 1):
+        if not isinstance(v, dict) or not str(v.get("title") or "").strip() or not isinstance(v.get("chapters"), list):
+            problems.append(f"第 {vi} 卷要有标题和 chapters")
+            continue
+        for ci, ch in enumerate(v["chapters"], 1):
+            where = f"第 {vi} 卷第 {ci} 章"
+            if not isinstance(ch, dict) or not str(ch.get("title") or "").strip() or not isinstance(ch.get("items"), list):
+                problems.append(f"{where}要有标题和 items")
+                continue
+            for it in ch["items"]:
+                item(it, where)
+    up = sk.get("unplaced") or {}
+    if not isinstance(up, dict):
+        problems.append("unplaced 要是对象")
+    else:
+        for x in up.get("scenes") or []:
+            item({"type": "scene", "id": x.get("id") if isinstance(x, dict) else None}, "未定位")
+        for x in up.get("holes") or []:
+            item({**x, "type": "hole"} if isinstance(x, dict) else x, "未定位")
+    return problems
+
+
+def _strip_flags(sk: dict) -> dict:
+    sk = copy.deepcopy(sk)
+    for v in sk.get("volumes") or []:
+        for ch in v.get("chapters") or []:
+            for it in ch.get("items") or []:
+                if isinstance(it, dict):
+                    it.pop("flag", None)
+    for x in (sk.get("unplaced") or {}).get("scenes") or []:
+        if isinstance(x, dict):
+            x.pop("flag", None)
+    return sk
+
+
+def save_skeleton(book: Book, sk) -> dict:
+    """保存作者编辑后的整份骨架。场景编号认所有场景（含已移除的），已移除的由 annotate 标出来。"""
+    known = {s.id for s in load_scenes(book)}
+    problems = validate_skeleton(sk, known)
+    if problems:
+        raise ValueError("；".join(problems[:10]))
+    sk = _strip_flags(sk)
+    sk.setdefault("unplaced", {"scenes": [], "holes": []})
+    sk["by"] = "author"
+    sk["edited"] = now_iso()
+    with FILE_LOCK:
+        write_json(book.skeleton_path, sk)
+    return sk
+
+
+def annotate(book: Book, sk: dict, threads: dict) -> dict:
+    """给界面看的副本：场景已经没了标 missing，所属线后来被砍标 cut。不落盘。"""
+    out = copy.deepcopy(sk)
+    live = {s.id for s in load_scenes(book) if not s.removed}
+    cols = columns(book, threads)
+    thread_of = {sid: t["id"] for t in threads.get("threads") or [] if isinstance(t, dict)
+                 for sid in t.get("scenes") or []}
+
+    def mark(it: dict) -> None:
+        sid = it.get("id")
+        if sid not in live:
+            it["flag"] = "missing"
+        elif cols.get(thread_of.get(sid), {}).get("col") == "cut":
+            it["flag"] = "cut"
+
+    for v in out.get("volumes") or []:
+        for ch in v.get("chapters") or []:
+            for it in ch.get("items") or []:
+                if isinstance(it, dict) and it.get("type") == "scene":
+                    mark(it)
+    for x in (out.get("unplaced") or {}).get("scenes") or []:
+        if isinstance(x, dict):
+            mark(x)
+    return out
