@@ -423,6 +423,12 @@ def create_app(
         b = get_book(name)
         return thread_op(lambda: tops.confirm(b, req.ids))
 
+    @app.post("/api/books/{name}/threads/reject")
+    def reject_pending(name: str, req: IdsReq) -> list:
+        # 拒绝模型的归入建议：pending → unassigned，落盘（归线页「拒绝」按钮用）
+        b = get_book(name)
+        return thread_op(lambda: tops.reject_pending(b, req.ids))
+
     @app.put("/api/books/{name}/threads/main")
     def set_main_thread(name: str, req: MainThreadReq) -> dict:
         b = get_book(name)

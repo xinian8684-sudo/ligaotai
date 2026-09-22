@@ -46,17 +46,47 @@ describe('ThreadsPage', () => {
     expect(move).toHaveBeenCalledWith('guixu', 'L-002', { ids: ['S-0099'] })
   })
 
-  it('拒绝不直接打后端，而是换成选线归入的控件', async () => {
+  // F1 G1 改了这条：原先断言「拒绝不打后端、换成选线控件」——那是后端没有拒绝接口时的权宜做法，
+  // 刷新后 pending 又回来，是假确认。现在拒绝调 POST /threads/reject 落盘（pending → unassigned），
+  // 成功后重拉；被拒的块出现在「未分配的块」里，由那里的选线控件归入。
+  it('拒绝调后端落盘（pending → unassigned），成功后重拉，块出现在未分配里', async () => {
+    const d = structuredClone(雪月梅) as unknown as ThreadsFile
+    d.pending = [{ scene: 'S-0099', thread: 'L-002', reason: '模型建议' }]
+    d.unassigned = []
+    const 拒后 = structuredClone(d)
+    拒后.pending = []
+    拒后.unassigned = [{ scene: 'S-0099', reason: '作者拒绝了模型的建议' }]
+    const get = vi.spyOn(api, 'getThreads').mockResolvedValueOnce(d).mockResolvedValue(拒后)
+    const reject = vi.spyOn(api, 'rejectPending').mockResolvedValue([])
+    const move = vi.spyOn(api, 'moveScenes').mockResolvedValue({})
+    const 刷新书 = vi.fn().mockResolvedValue(undefined)
+    const w = mount(ThreadsPage, {
+      props: { name: 'guixu' },
+      global: { stubs, provide: { 刷新书 } },
+    })
+    await flushPromises()
+    await w.find('[data-test="拒绝-S-0099"]').trigger('click')
+    await flushPromises()
+    expect(reject).toHaveBeenCalledWith('guixu', ['S-0099'])
+    expect(move).not.toHaveBeenCalled()
+    expect(get).toHaveBeenCalledTimes(2)
+    expect(刷新书).toHaveBeenCalledTimes(1)
+    expect(w.find('[data-test="拒绝-S-0099"]').exists()).toBe(false)
+    expect(w.find('[data-test="归入-S-0099"]').exists()).toBe(true)
+    expect(w.text()).toContain('作者拒绝了模型的建议')
+  })
+
+  it('拒绝失败时把后端的话显示出来，pending 那行还在', async () => {
     const d = structuredClone(雪月梅) as unknown as ThreadsFile
     d.pending = [{ scene: 'S-0099', thread: 'L-002', reason: '模型建议' }]
     vi.spyOn(api, 'getThreads').mockResolvedValue(d)
-    const move = vi.spyOn(api, 'moveScenes').mockResolvedValue({})
+    vi.spyOn(api, 'rejectPending').mockRejectedValue(new ApiError(400, '这些块不在待确认的建议里：S-0099'))
     const w = mount(ThreadsPage, { props: { name: 'guixu' }, global: { stubs } })
     await flushPromises()
     await w.find('[data-test="拒绝-S-0099"]').trigger('click')
     await flushPromises()
-    expect(move).not.toHaveBeenCalled()
-    expect(w.find('[data-test="归入-S-0099"]').exists()).toBe(true)
+    expect(w.text()).toContain('这些块不在待确认的建议里')
+    expect(w.find('[data-test="拒绝-S-0099"]').exists()).toBe(true)
   })
 
   it('unassigned 列出来并能选线归入', async () => {

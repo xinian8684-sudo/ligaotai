@@ -266,3 +266,37 @@ def test_set_main_on_already_main_thread_does_not_outdate(tbook):
     assert archive(tbook) == "done"
     d = data_of(tbook)
     assert (d["main_thread"], d["main_by"]) == ("L-001", "author")
+
+
+# --- F1 G1：拒绝模型的归入建议要落盘 ---
+
+
+def test_reject_pending_moves_block_to_unassigned(tbook):
+    moved = ops.reject_pending(tbook, ["S-0007"])
+    assert moved == [{"scene": "S-0007", "reason": ops.REJECTED_PENDING}]
+    d = data_of(tbook)
+    assert d["pending"] == []
+    assert {"scene": "S-0007", "reason": ops.REJECTED_PENDING} in d["unassigned"]
+    assert {"scene": "S-0006", "reason": "模型没分配"} in d["unassigned"]  # 原有的不动
+    # 块没有进任何一条线
+    assert all("S-0007" not in t["scenes"] for t in d["threads"])
+    # 被建议的线不因为「拒绝」就算作者确认过
+    assert next(t for t in d["threads"] if t["id"] == "L-002")["status"] == "draft"
+
+
+def test_reject_pending_then_move_scenes_assigns_it(tbook):
+    ops.reject_pending(tbook, ["S-0007"])
+    ops.move_scenes(tbook, ["S-0007"], "L-001")
+    d = data_of(tbook)
+    assert "S-0007" in next(t for t in d["threads"] if t["id"] == "L-001")["scenes"]
+    assert all(u["scene"] != "S-0007" for u in d["unassigned"])
+
+
+def test_reject_pending_unknown_id_changes_nothing(tbook):
+    before = tbook.threads_path.read_text(encoding="utf-8")
+    with pytest.raises(ValueError):
+        ops.reject_pending(tbook, ["S-0007", "S-0006"])  # S-0006 在 unassigned，不在 pending
+    with pytest.raises(ValueError):
+        ops.reject_pending(tbook, [])
+    assert tbook.threads_path.read_text(encoding="utf-8") == before
+

@@ -1,4 +1,4 @@
-"""步骤 6 的作者调整：确认、改名、挪块、合并线、拆线、设主线、挪线。
+"""步骤 6 的作者调整：确认、改名、挪块、拒绝建议、合并线、拆线、设主线、挪线。
 
 每个操作「读 → 改 → 写」整段在 FILE_LOCK 里，跟 run_threads 的写回、跟彼此都串行。
 作者动过的线（和它所在的世界）都算已确认，重跑时原样保留；设主线也算动过这条线。
@@ -11,6 +11,7 @@ from .fsutil import read_json, write_json
 from .threads import CONFIRMED, content_signature, next_number, normalize, thread_id
 
 GONE_PENDING = "建议归入的线已被删除"
+REJECTED_PENDING = "作者拒绝了模型的建议"
 
 
 class BrokenThreadsFile(Exception):
@@ -183,6 +184,29 @@ def move_scenes(book: Book, ids: list[str], tid: str, position: int | None = Non
         _touch(data, t)
         _save(book, data, before)
     return t
+
+
+def reject_pending(book: Book, scene_ids: list[str]) -> list[dict]:
+    """作者拒绝模型「归入某条已确认线」的建议：把这些块从 pending 挪进 unassigned，
+    reason 记成 REJECTED_PENDING。之后作者在 unassigned 里自己选线归入（move_scenes）。
+
+    不 _touch 被建议的那条线：拒绝建议不等于作者确认过那条线的划分。
+    有不在 pending 里的块就在改动前报错，一个都不动。"""
+    ids = list(dict.fromkeys(scene_ids))
+    if not ids:
+        raise ValueError("要拒绝的块不能为空")
+    with FILE_LOCK:
+        data, before = _load_tidy(book)
+        pending_ids = {p["scene"] for p in data.get("pending", [])}
+        unknown = [s for s in ids if s not in pending_ids]
+        if unknown:
+            raise ValueError("这些块不在待确认的建议里：" + "、".join(unknown[:10]))
+        wanted = set(ids)
+        data["pending"] = [p for p in data.get("pending", []) if p["scene"] not in wanted]
+        moved = [{"scene": s, "reason": REJECTED_PENDING} for s in ids]
+        data["unassigned"] = data.get("unassigned", []) + moved
+        _save(book, data, before)
+    return moved
 
 
 def merge_threads(book: Book, ids: list[str]) -> dict:

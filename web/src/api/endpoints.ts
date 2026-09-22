@@ -42,6 +42,8 @@ export const splitEntity = (name: string, eid: string, body: unknown) => post<un
 // 归线
 export const getThreads = (name: string) => get<ThreadsFile>(`${b(name)}/threads`)
 export const confirmThreads = (name: string, ids: string[]) => post<unknown[]>(`${b(name)}/threads/confirm`, { ids })
+/** 拒绝模型的归入建议：这些块从 pending 挪进 unassigned，落盘。 */
+export const rejectPending = (name: string, ids: string[]) => post<unknown[]>(`${b(name)}/threads/reject`, { ids })
 export const setMainThread = (name: string, body: unknown) => put<unknown>(`${b(name)}/threads/main`, body)
 export const mergeThreads = (name: string, body: unknown) => post<unknown>(`${b(name)}/threads/merge`, body)
 export const renameThread = (name: string, oid: string, body: unknown) => put<unknown>(`${b(name)}/threads/${oid}/name`, body)

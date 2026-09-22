@@ -108,3 +108,40 @@ def test_threads_get_before_run_has_full_shape(ready):
     assert d["threads"] == [] and d["worlds"] == []
     assert d["pending"] == [] and d["unassigned"] == [] and d["gaps"] == [] and d["intersections"] == []
     assert d["main_thread"] is None and d["main_by"] == "auto"
+
+
+# --- F1 G1：POST /threads/reject ---
+
+
+def test_reject_pending_落盘_刷新后不再回来(tmp_path):
+    import json
+
+    from ligaotai.book import create_book
+    from ligaotai.fsutil import write_json
+
+    lib = tmp_path / "书库"
+    lib.mkdir()
+    (tmp_path / "config.json").write_text(json.dumps({"library_dir": str(lib)}), encoding="utf-8")
+    b = create_book(lib, "拒绝书")
+    write_json(b.threads_path, {
+        "next_world": 2, "next_thread": 2, "time_unit": "年", "main_thread": "L-001", "main_by": "auto",
+        "worlds": [{"id": "W-01", "name": "人间", "reason": "", "status": "draft", "notes": [], "outlines": []}],
+        "threads": [{"id": "L-001", "world": "W-01", "name": "甲", "about": "", "status": "confirmed",
+                     "scenes": ["S-0001"], "times": {"S-0001": {"t": 0, "conf": "高"}}, "outlines": [],
+                     "offset": 0, "end": {"state": "待定", "note": "", "last": "S-0001"}, "order_failed": False}],
+        "intersections": [], "gaps": [], "unassigned": [],
+        "pending": [{"scene": "S-0002", "thread": "L-001", "reason": "模型建议"}],
+    })
+    c = TestClient(create_app(app_dir=tmp_path, allowed_hosts=("testserver",)))
+
+    r = c.post("/api/books/拒绝书/threads/reject", json={"ids": ["S-0002"]})
+    assert r.status_code == 200, r.text
+    d = c.get("/api/books/拒绝书/threads").json()
+    assert d["pending"] == []
+    assert d["unassigned"] == [{"scene": "S-0002", "reason": "作者拒绝了模型的建议"}]
+
+    # 已经不在 pending 里了，再拒绝一次是 400，不是假装成功
+    r = c.post("/api/books/拒绝书/threads/reject", json={"ids": ["S-0002"]})
+    assert r.status_code == 400
+    assert "S-0002" in r.json()["detail"]
+
