@@ -33,6 +33,7 @@ DEFAULT_SETTINGS = {
     "dedup_min_shingles": 100,   # 太短的块（约 100 字以下）不参与查重
     "dedup_common_df": 200,      # 出现在超过这么多块里的字串当套话，不计数（真实文本 21~200 块之间几乎没有套话，调大避免误伤 21+ 份重复场景）
     "threads_max_input_tokens": 600000,  # 归线一次调用的输入上限（按 1 个字符 1 个 token 估，偏保守），超过就分段
+    "skeleton_max_input_tokens": 600000,  # 骨架分章一次调用的输入上限（跟归线同一估法），超过就按窗口分批
     "contradictions_batch_tokens": 30000,  # 矛盾扫描一批的输入上限（按 1 字符 1 token 估）
     "contradictions_max_groups": 2000,     # 候选组超过这个数就按权重截断，其余记进 skipped
     "contradictions_max_batch_groups": 80,  # 矛盾扫描一批最多这么多组（独立于字符预算）：
@@ -130,6 +131,44 @@ class Book:
     def archive_cache_path(self) -> Path:
         """步骤 7 每次模型调用的缓存。"""
         return self.root / "档案缓存.json"
+
+    @property
+    def canon_path(self) -> Path:
+        """定稿设定：从 矛盾.json 里作者的裁决派生，三期补写要遵守。"""
+        return self.root / "定稿设定.json"
+
+    @property
+    def triage_dir(self) -> Path:
+        return self.root / "取舍"
+
+    @property
+    def board_path(self) -> Path:
+        return self.triage_dir / "看板.json"
+
+    @property
+    def advice_path(self) -> Path:
+        return self.triage_dir / "建议.json"
+
+    @property
+    def impact_path(self) -> Path:
+        return self.triage_dir / "影响.json"
+
+    @property
+    def skeleton_path(self) -> Path:
+        return self.triage_dir / "骨架.json"
+
+    @property
+    def skeleton_bak_path(self) -> Path:
+        return self.triage_dir / "骨架.bak.json"
+
+    @property
+    def triage_cache_path(self) -> Path:
+        """二期所有模型调用（AI 建议、影响检查、分章、空洞说明）共用的缓存。"""
+        return self.triage_dir / "缓存.json"
+
+    @property
+    def export_dir(self) -> Path:
+        return self.root / "导出"
 
     @property
     def logs_dir(self) -> Path:

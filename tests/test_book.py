@@ -117,3 +117,20 @@ def test_默认设置有矛盾扫描的每批组数上限():
     """审查建议修6：小组多时按字符预算一批能塞进几百组，加一个独立的组数上限。"""
     from ligaotai.book import DEFAULT_SETTINGS
     assert DEFAULT_SETTINGS["contradictions_max_batch_groups"] == 80
+
+
+def test_二期的文件路径(book):
+    r = book.root
+    assert book.canon_path == r / "定稿设定.json"
+    assert book.triage_dir == r / "取舍"
+    assert book.board_path == r / "取舍" / "看板.json"
+    assert book.advice_path == r / "取舍" / "建议.json"
+    assert book.impact_path == r / "取舍" / "影响.json"
+    assert book.skeleton_path == r / "取舍" / "骨架.json"
+    assert book.skeleton_bak_path == r / "取舍" / "骨架.bak.json"
+    assert book.triage_cache_path == r / "取舍" / "缓存.json"
+    assert book.export_dir == r / "导出"
+
+
+def test_骨架分章的输入上限有默认值(book):
+    assert book.settings()["skeleton_max_input_tokens"] == 600000
