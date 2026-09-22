@@ -16,9 +16,17 @@ export const useJobStore = defineStore('job', () => {
 
   const busy = computed(() => !!current.value && 未结束.has(current.value.status))
 
+  /**
+   * 每次 track() 加一。track 之前发出、之后才回来的那次轮询带的是旧任务，
+   * 丢掉它，免得把刚塞进来的 queued 任务又盖回旧的、错过 queued→done 的跳变。
+   */
+  let 代 = 0
+
   async function refresh(): Promise<void> {
+    const 发出时 = 代
     try {
       const job = await currentJob()
+      if (发出时 !== 代) return
       pollError.value = ''
       const 前一个 = current.value
       current.value = job
@@ -33,6 +41,16 @@ export const useJobStore = defineStore('job', () => {
       // 连不上后端时保持上次的 busy 状态（不知道到底忙不忙，保守），把错误露出来
       pollError.value = e instanceof Error ? e.message : String(e)
     }
+  }
+
+  /**
+   * 页面 POST 拿到刚提交的任务（queued）后调它，塞进 current。
+   * 不然两次轮询之间就跑完的快任务（小书上切场景/查重 <1 秒很常见）下一次轮询直接看到
+   * done，跟上一次看到的旧任务 id 对不上，onFinish 一次都不触发、页面不刷新（审查 S3）。
+   */
+  function track(job: Job): void {
+    代 += 1
+    current.value = job
   }
 
   /** 返回退订函数；组件卸载时要调，否则每进一次页面就多挂一个回调。 */
@@ -61,5 +79,5 @@ export const useJobStore = defineStore('job', () => {
     timer = null
   }
 
-  return { current, pollError, busy, refresh, onFinish, start, stop }
+  return { current, pollError, busy, refresh, track, onFinish, start, stop }
 })

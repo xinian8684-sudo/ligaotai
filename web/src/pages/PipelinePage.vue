@@ -73,7 +73,7 @@ function 待确认数(step: StepName): number {
 async function 跑(step: StepName): Promise<void> {
   error.value = ''
   try {
-    await runStep(props.name, step)
+    jobStore.track(await runStep(props.name, step))
     await jobStore.refresh()
   } catch (e) {
     error.value = e instanceof ApiError ? e.detail : String(e)

@@ -116,4 +116,24 @@ describe('PipelinePage', () => {
     await flushPromises()
     expect(spy.mock.calls.length).toBeGreaterThan(次数)
   })
+
+  it('点「跑」后把 POST 返回的任务交给 job store 跟踪（审查 S3）', async () => {
+    vi.spyOn(api, 'getBook').mockResolvedValue(造书({ import: { status: 'done' } }))
+    const 任务 = {
+      id: 'j2', name: 'split', book: 'guixu', status: 'queued' as const,
+      done: 0, total: 0, message: '', error: '', result: null,
+      started: '', finished: '', cancel_requested: false,
+    }
+    vi.spyOn(api, 'runStep').mockResolvedValue(任务)
+    vi.spyOn(api, 'currentJob').mockResolvedValue({ ...任务, status: 'done' })
+    const w = mount(PipelinePage, { props: { name: 'guixu' }, global: { stubs } })
+    await flushPromises()
+    const { useJobStore } = await import('@/stores/job')
+    const 跟踪 = vi.spyOn(useJobStore(), 'track')
+    await w.find('[data-test="跑-split"]').trigger('click')
+    await flushPromises()
+    expect(跟踪).toHaveBeenCalledTimes(1)
+    expect(跟踪.mock.calls[0][0].id).toBe('j2')
+    w.unmount()
+  })
 })

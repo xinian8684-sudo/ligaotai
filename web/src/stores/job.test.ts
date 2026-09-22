@@ -135,4 +135,58 @@ describe('job store', () => {
     await s.refresh()
     expect(fn).not.toHaveBeenCalled()
   })
+
+  it('两次轮询之间就跑完的快任务：track 了刚提交的任务，下一次轮询看到 done 触发 1 次（审查 S3）', async () => {
+    // 上一次轮询看到的是旧任务 old/done
+    const spy = vi.spyOn(api, 'currentJob').mockResolvedValue(造任务({ id: 'old', status: 'done' }))
+    const s = useJobStore()
+    const 回调 = vi.fn()
+    s.onFinish(回调)
+    await s.refresh()
+    expect(回调).not.toHaveBeenCalled()
+
+    // 用户点运行：POST 返回 j2/queued，页面 track 它
+    s.track(造任务({ id: 'j2', status: 'queued', done: 0 }))
+    expect(s.busy).toBe(true)
+
+    // 不到一秒就跑完了，下一次轮询直接看到 j2/done
+    spy.mockResolvedValue(造任务({ id: 'j2', status: 'done', done: 10 }))
+    await s.refresh()
+    expect(回调).toHaveBeenCalledTimes(1)
+    expect(回调.mock.calls[0][0].id).toBe('j2')
+
+    // 再轮询不重复触发
+    await s.refresh()
+    expect(回调).toHaveBeenCalledTimes(1)
+  })
+
+  it('不 track 时同样的时序一次都不触发（这就是 S3 的病，留作对照）', async () => {
+    const spy = vi.spyOn(api, 'currentJob').mockResolvedValue(造任务({ id: 'old', status: 'done' }))
+    const s = useJobStore()
+    const 回调 = vi.fn()
+    s.onFinish(回调)
+    await s.refresh()
+    spy.mockResolvedValue(造任务({ id: 'j2', status: 'done', done: 10 }))
+    await s.refresh()
+    expect(回调).not.toHaveBeenCalled()
+  })
+
+  it('track 之前发出、之后才回来的旧轮询结果要丢掉，不能把刚塞进来的任务盖回旧的', async () => {
+    let 放行!: (j: Job) => void
+    const spy = vi.spyOn(api, 'currentJob').mockImplementationOnce(
+      () => new Promise<Job>((res) => { 放行 = res }),
+    )
+    const s = useJobStore()
+    const 回调 = vi.fn()
+    s.onFinish(回调)
+    const 旧轮询 = s.refresh() // 在途
+    s.track(造任务({ id: 'j2', status: 'queued', done: 0 }))
+    放行(造任务({ id: 'old', status: 'done' }))
+    await 旧轮询
+    expect(s.current?.id).toBe('j2')
+
+    spy.mockResolvedValue(造任务({ id: 'j2', status: 'done', done: 10 }))
+    await s.refresh()
+    expect(回调).toHaveBeenCalledTimes(1)
+  })
 })
