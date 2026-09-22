@@ -107,4 +107,32 @@ describe('job store', () => {
     await vi.advanceTimersByTimeAsync(3000)
     expect(spy.mock.calls.length).toBe(次数)
   })
+
+  it('两处都 start 时，一处 stop 不能把另一处的轮询掐掉', async () => {
+    // 书内布局和流水线页各自 start；离开流水线页时轮询必须继续
+    const spy = vi.spyOn(api, 'currentJob').mockResolvedValue(null)
+    const s = useJobStore()
+    s.start()
+    s.start()
+    s.stop()
+    const 次数 = spy.mock.calls.length
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(spy.mock.calls.length).toBe(次数 + 3)
+    s.stop()
+    const 次数2 = spy.mock.calls.length
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(spy.mock.calls.length).toBe(次数2)
+  })
+
+  it('onFinish 返回的退订函数调用后不再收到回调', async () => {
+    const spy = vi.spyOn(api, 'currentJob').mockResolvedValue(造任务())
+    const s = useJobStore()
+    const fn = vi.fn()
+    const 退订 = s.onFinish(fn)
+    await s.refresh()
+    退订()
+    spy.mockResolvedValue(造任务({ status: 'done' }))
+    await s.refresh()
+    expect(fn).not.toHaveBeenCalled()
+  })
 })

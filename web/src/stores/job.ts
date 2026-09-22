@@ -35,18 +35,28 @@ export const useJobStore = defineStore('job', () => {
     }
   }
 
-  function onFinish(fn: (job: Job) => void): void {
+  /** 返回退订函数；组件卸载时要调，否则每进一次页面就多挂一个回调。 */
+  function onFinish(fn: (job: Job) => void): () => void {
     回调组.push(fn)
+    return () => {
+      const i = 回调组.indexOf(fn)
+      if (i >= 0) 回调组.splice(i, 1)
+    }
   }
 
+  /** 引用计数：书内布局和页面可能同时 start，最后一个 stop 才真停。 */
+  let 使用者 = 0
+
   function start(): void {
+    使用者 += 1
     if (timer !== null) return
     void refresh()
     timer = setInterval(() => { void refresh() }, 轮询间隔)
   }
 
   function stop(): void {
-    if (timer === null) return
+    if (使用者 > 0) 使用者 -= 1
+    if (使用者 > 0 || timer === null) return
     clearInterval(timer)
     timer = null
   }

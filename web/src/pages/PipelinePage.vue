@@ -80,13 +80,14 @@ async function 跑(step: StepName): Promise<void> {
   }
 }
 
-jobStore.onFinish(() => { void 加载() })
+const 退订 = jobStore.onFinish(() => { void 加载() })
 
 onMounted(() => {
   jobStore.start()
   void 加载()
 })
 onUnmounted(() => {
+  退订()
   jobStore.stop()
 })
 </script>
