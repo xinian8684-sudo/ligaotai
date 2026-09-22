@@ -135,7 +135,8 @@ export interface ThreadEnd {
   /** 真值是「完结」/「待定」。注意不是 thread.status。 */
   state: string
   note: string
-  last: string
+  /** 这条线最后一个场景。线里一个场景都没有时后端给 null（`_thread_dict`：`t.scenes[-1] if t.scenes else None`）。 */
+  last: string | null
 }
 
 export interface Thread {
@@ -183,8 +184,10 @@ export interface UnassignedScene { scene: string; reason: string }
 export interface ThreadsFile {
   next_world: number
   next_thread: number
-  time_unit: string     // 实测是「年」
-  main_thread: string
+  /** 时间单位。两本验收书是「年」，但还没跑步骤 6 / normalize 兜底时是空串 `""`，界面拼单位要兜底。 */
+  time_unit: string
+  /** 主线 id。还没跑步骤 6 时 GET /threads 返回的就是 null（`threads.py` EMPTY / normalize）。 */
+  main_thread: string | null
   main_by: string       // 核对过 threads.py：真实取值是 "auto" / "author"，不是 "manual"
   worlds: World[]
   threads: Thread[]

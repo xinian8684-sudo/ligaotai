@@ -246,13 +246,16 @@ def create_app(
             raise HTTPException(409, "这本书已经有了")
         except ValueError as e:
             raise HTTPException(400, str(e))
-        return {"name": b.name, **b.load()}
+        return book_payload(b)
+
+    def book_payload(b) -> dict:
+        # 建书和取书返回同一个形状（前端都标成 BookMeta，roots 必填）；新书还没导入，roots 是 {}
+        manifest = read_json(b.manifest_path, {"files": {}})
+        return {"name": b.name, **b.load(), "roots": manifest.get("roots", {})}
 
     @app.get("/api/books/{name}")
     def book_meta(name: str) -> dict:
-        b = get_book(name)
-        manifest = read_json(b.manifest_path, {"files": {}})
-        return {"name": b.name, **b.load(), "roots": manifest.get("roots", {})}
+        return book_payload(get_book(name))
 
     @app.post("/api/books/{name}/import", status_code=202)
     def do_import(name: str, req: ImportReq) -> dict:

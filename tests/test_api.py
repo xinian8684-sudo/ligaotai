@@ -49,6 +49,14 @@ def test_books_crud(client):
     assert client.get("/api/books/没有").status_code == 404
 
 
+def test_建书返回的形状跟取书一致_带roots(client):
+    # 审查 S1：前端 createBook 标的是 BookMeta（roots 必填），POST 以前没带 roots
+    r = client.post("/api/books", json={"title": "新书"})
+    assert r.status_code == 201
+    assert r.json()["roots"] == {}
+    assert r.json() == client.get("/api/books/新书").json()
+
+
 def test_book_meta_有来源路径(client, src):
     client.post("/api/books", json={"title": "我的书"})
     r = client.post("/api/books/我的书/import", json={"folder": str(src)})
