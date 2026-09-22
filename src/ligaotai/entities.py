@@ -564,11 +564,38 @@ async def _run_entities(book: Book, client: LLMClient, progress: Progress) -> di
 # --- 作者的确认 / 改名 / 合并 / 拆分 ---
 
 
+class BrokenEntitiesFile(Exception):
+    """实体.json 的顶层形状不对（多半是手改的）。不继承 ValueError：API 层把 ValueError
+    当成「请求不对」报 400，这里是文件坏了，要报 500 并说清哪里不对。"""
+
+
+_类型名 = {list: "列表", dict: "对象", str: "字符串", int: "数字", float: "数字", bool: "true/false", type(None): "null"}
+
+
+def _叫法(v: object) -> str:
+    return _类型名.get(type(v), type(v).__name__)
+
+
+def check_entities_shape(data: object) -> dict:
+    """顶层必须是 {"entities": [ {...}, ... ]}。不对就抛 BrokenEntitiesFile，带上具体原因。"""
+    if not isinstance(data, dict):
+        raise BrokenEntitiesFile(f'顶层应该是一个对象（{{"entities": [...]}}），现在是{_叫法(data)}')
+    if "entities" not in data:
+        raise BrokenEntitiesFile('缺 "entities" 这一项')
+    ents = data["entities"]
+    if not isinstance(ents, list):
+        raise BrokenEntitiesFile(f'"entities" 应该是列表，现在是{_叫法(ents)}')
+    for i, e in enumerate(ents, 1):
+        if not isinstance(e, dict):
+            raise BrokenEntitiesFile(f'"entities" 第 {i} 条应该是对象，现在是{_叫法(e)}')
+    return data
+
+
 def load_entities(book: Book) -> dict:
     data = read_json(book.entities_path)
     if data is None:
         raise FileNotFoundError("还没有实体合并的结果，先跑步骤 5")
-    return data
+    return check_entities_shape(data)
 
 
 def _cmap(data: dict) -> dict[tuple[str, str], str]:

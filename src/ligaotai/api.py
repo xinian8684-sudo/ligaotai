@@ -194,6 +194,8 @@ def create_app(
             raise HTTPException(404, "没有这个实体")
         except FileNotFoundError as e:
             raise HTTPException(404, str(e))
+        except ent.BrokenEntitiesFile as e:
+            raise _读坏了("实体.json", str(e))
         except json.JSONDecodeError as e:
             raise _读坏了("实体.json", f"不是合法 JSON，第 {e.lineno} 行")
         except KeyError as e:
@@ -310,6 +312,9 @@ def create_app(
         b = get_book(name)
         try:
             sc = get_scene(b, sid)
+        except BrokenSceneFile as e:
+            # BrokenSceneFile 继承 ValueError，必须排在下面那条前面，不然被吃成「没有这个场景」
+            raise HTTPException(500, str(e))
         except (ValueError, FileNotFoundError):
             raise HTTPException(404, "没有这个场景")
         return {**sc.meta(), "text": sc.text}
@@ -329,21 +334,22 @@ def create_app(
             r = records.get(s.id)
             try:
                 card = (r.get("card") if r else None) or {}
-                problems = (r.get("problems") if r else None) or []
+                n_problems = len((r.get("problems") if r else None) or [])
                 dropped = (r.get("dropped") if r else None) or {}
                 n_dropped = len(dropped.get("facts") or []) + len(dropped.get("names") or [])
                 summary = card.get("summary") or ""
                 kind = card.get("kind")
-            except AttributeError as e:
+            except (AttributeError, TypeError) as e:
                 # 卡文件结构被手改坏了（比如 card/dropped 本该是对象却是字符串），
                 # .get() 在非 dict 上会炸——带上是哪张卡，别让作者对着裸 500 猜。
+                # "problems": 5 / "dropped": {"facts": 5} 这类在 len() 上炸的是 TypeError。
                 raise _读坏了(f"场景卡 {s.id}", str(e))
             out.append({
                 "id": s.id,
                 "fresh": is_fresh(r, s),
                 "kind": kind,
                 "summary": summary,
-                "problems": len(problems),
+                "problems": n_problems,
                 # 2c task04：dropped 里加了 attrs / long_values 两个 int 计数键，不是列表；
                 # attrs 只是归一不算丢弃，long_values 已经并进了 facts 列表，这里只数
                 # facts / names 两项真正被丢掉的东西，跟原来的语义一致。
@@ -364,6 +370,8 @@ def create_app(
         b = get_book(name)
         try:
             get_scene(b, sid)
+        except BrokenSceneFile as e:
+            raise HTTPException(500, str(e))
         except (ValueError, FileNotFoundError):
             raise HTTPException(404, "没有这个场景")
         require_upstream(b, "cards")
@@ -376,9 +384,11 @@ def create_app(
     def entities(name: str) -> dict:
         b = get_book(name)
         try:
-            return read_json(b.entities_path, {"entities": []})
+            return ent.check_entities_shape(read_json(b.entities_path, {"entities": []}))
         except json.JSONDecodeError as e:
             raise _读坏了("实体.json", f"不是合法 JSON，第 {e.lineno} 行")
+        except ent.BrokenEntitiesFile as e:
+            raise _读坏了("实体.json", str(e))
 
     @app.post("/api/books/{name}/entities/confirm")
     def confirm_entities(name: str, req: IdsReq) -> list:
@@ -550,7 +560,7 @@ def create_app(
         def _spa(full_path: str) -> FileResponse:
             # 单页应用：前端路由直接刷新时回 index.html，交给前端路由器。
             # /api 开头的交给上面的真路由；走到这儿说明那个 API 不存在，照常 404。
-            if full_path.startswith("api/"):
+            if full_path == "api" or full_path.startswith("api/"):
                 raise HTTPException(404, "没有这个接口")
             candidate = dist / full_path
             if candidate.is_file() and _within(dist, candidate):

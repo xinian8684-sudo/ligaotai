@@ -51,3 +51,12 @@ def test_不存在的api路径仍然404(tmp_path, 假dist):
     r = c.get("/api/没有这个接口")
     assert r.status_code == 404
     assert "text/html" not in r.headers.get("content-type", "")
+
+
+def test_不带斜杠的api也是404不回index(tmp_path, 假dist):
+    """审查 S9：/api 本身不满足 startswith("api/")，以前会回 index.html 200。"""
+    c = TestClient(create_app(app_dir=tmp_path, allowed_hosts=("testserver",), web_dist=假dist))
+    r = c.get("/api")
+    assert r.status_code == 404
+    assert "text/html" not in r.headers.get("content-type", "")
+

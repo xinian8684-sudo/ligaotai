@@ -129,3 +129,76 @@ def test_建书遇到边界名字返回400(坏名字, tmp_path):
     )
     r = c.post("/api/books", json={"title": 坏名字})
     assert r.status_code == 400
+
+
+# --- F1（审查 S4 / S5）---
+
+
+def test_单个场景文件坏了报500带文件名_不能说没有这个场景(客户端和书):
+    c, b = 客户端和书
+    b.scenes_dir.mkdir(parents=True, exist_ok=True)
+    (b.scenes_dir / "S-0012.md").write_text("这不是合法的场景文件头", encoding="utf-8")
+
+    r = c.get("/api/books/测试书/scenes/S-0012")
+    assert r.status_code == 500, f"坏文件被吃成了 {r.status_code}：{r.text}"
+    assert "S-0012" in r.json()["detail"]
+
+    r = c.post("/api/books/测试书/cards/S-0012/regenerate")
+    assert r.status_code == 500
+    assert "S-0012" in r.json()["detail"]
+
+
+def test_真没有的场景照常404(客户端和书):
+    c, _ = 客户端和书
+    assert c.get("/api/books/测试书/scenes/S-0099").status_code == 404
+
+
+@pytest.mark.parametrize(
+    "卡",
+    [
+        {"id": "S-0001", "card": {}, "problems": 5},
+        {"id": "S-0001", "card": {}, "dropped": {"facts": 5}},
+    ],
+)
+def test_卡文件字段类型被改坏时也报出是哪张卡(客户端和书, 卡):
+    c, b = 客户端和书
+    seed_book(b, [{"id": "S-0001", "no_card": True}])
+    b.cards_dir.mkdir(parents=True, exist_ok=True)
+    (b.cards_dir / "S-0001.json").write_text(json.dumps(卡), encoding="utf-8")
+
+    r = c.get("/api/books/测试书/cards")
+    assert r.status_code == 500
+    assert "S-0001" in r.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "内容,原因里要有",
+    [
+        ([], "顶层"),
+        ({"entities": 3}, '"entities" 应该是列表'),
+        ([None], "顶层"),
+        ({"entities": [None]}, "第 1 条"),
+        ({"next_id": 1}, '"entities"'),
+    ],
+)
+def test_实体文件顶层形状不对时给具体原因(客户端和书, 内容, 原因里要有):
+    c, b = 客户端和书
+    b.entities_path.parent.mkdir(parents=True, exist_ok=True)
+    b.entities_path.write_text(json.dumps(内容), encoding="utf-8")
+
+    for r in (
+        c.get("/api/books/测试书/entities"),
+        c.post("/api/books/测试书/entities/confirm", json={"ids": ["E-0001"]}),
+    ):
+        assert r.status_code == 500, f"{内容!r} -> {r.status_code} {r.text}"
+        detail = r.json()["detail"]
+        assert "实体.json" in detail
+        assert 原因里要有 in detail, detail
+
+
+def test_还没有实体文件时GET照常给空列表(客户端和书):
+    c, _ = 客户端和书
+    r = c.get("/api/books/测试书/entities")
+    assert r.status_code == 200
+    assert r.json() == {"entities": []}
+
