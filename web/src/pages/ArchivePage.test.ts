@@ -149,4 +149,11 @@ describe('ArchivePage', () => {
     expect(w.find('[data-test="条目-L-001"]').text()).toContain('L-001')
     expect(w.text()).not.toContain('boom')
   })
+
+  it('还没生成全书地图时（后端给空对象 {}）不列地图条目', async () => {
+    vi.spyOn(api, 'getArchiveIndex').mockResolvedValue(造index({ map: {} as never }))
+    const w = mount(ArchivePage, { props: { name: 'guixu' }, global: { stubs } })
+    await flushPromises()
+    expect(w.find('[data-test="条目-map"]').exists()).toBe(false)
+  })
 })

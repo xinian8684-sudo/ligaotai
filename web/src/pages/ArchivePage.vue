@@ -55,7 +55,8 @@ const 世界行 = computed<Row[]>(() => {
 })
 const 地图行 = computed<Row | null>(() => {
   const m = index.value?.map
-  return m ? { kind: 'map' as const, id: 'map', label: '全书地图', entry: m } : null
+  // 没生成过时后端给的是空对象 {}（archive.load_index 兜底），不是 null，要看 file
+  return m?.file ? { kind: 'map' as const, id: 'map', label: '全书地图', entry: m } : null
 })
 
 function 换模型(row: Row): boolean {
