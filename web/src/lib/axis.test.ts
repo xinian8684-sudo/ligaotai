@@ -8,7 +8,8 @@ import type { ThreadsFile } from '@/api/types'
 function 全局点(d: ThreadsFile): number[] {
   const out: number[] = []
   for (const t of d.threads) {
-    const off = t.offset ?? 0
+    if (t.offset === null) continue // 没对齐到主线的线不进全局轴（审查 M2）；两本 fixture 里没有
+    const off = t.offset
     for (const v of Object.values(t.times ?? {})) {
       if (v?.t !== null && v?.t !== undefined) out.push(off + v.t)
     }
@@ -21,11 +22,24 @@ describe('buildAxis 边界', () => {
     expect(buildAxis([])).toBeNull()
   })
 
-  it('全部点相同时给一个满宽的区块', () => {
+  it('全部点相同时给一个满宽的区块，点画在正中间', () => {
     const a = buildAxis([5, 5, 5])!
     expect(a.blocks).toHaveLength(1)
     expect(a.breaks).toHaveLength(0)
-    expect(a.x(5)).toBeCloseTo(0, 5)
+    // 计划原先钉的是 0；spec 4.2 写「全部时间点相同 → 单区块居中」，spec 与计划冲突、以 spec 为准
+    // （审查 S7，fix_A1toC.md 点名可改的断言）。段画满 [0,100]，标记在 0 会全挤到最左边。
+    expect(a.x(5)).toBeCloseTo(50, 5)
+  })
+
+  it('中间的单点区块，标记落在区块中点（不贴左沿）', () => {
+    // 手算（默认 breakRatio 0.05）：跨度 100，阈值 5；间隙 1/49/49/1 → 区块 [0,1] [50,50] [99,100]、2 个断口。
+    // 余 = 100 - 2×3 - 3×1 = 91，总跨度 2 → 宽度 1+45.5 / 1+0 / 1+45.5
+    // → [0,46.5]、断口、[49.5,50.5]、断口、[53.5,100]。t=50 落在中间单点块，中点 50（原先给左沿 49.5）。
+    const a = buildAxis([0, 1, 50, 99, 100])!
+    expect(a.blocks).toHaveLength(3)
+    expect(a.blocks[1].x0).toBeCloseTo(49.5, 6)
+    expect(a.blocks[1].x1).toBeCloseTo(50.5, 6)
+    expect(a.x(50)).toBeCloseTo(50, 6)
   })
 
   it('单个点', () => {

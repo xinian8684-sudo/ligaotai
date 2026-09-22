@@ -153,8 +153,13 @@ export interface Thread {
   scenes: string[]
   times: Record<string, SceneTime>
   outlines: unknown[]   // 两本真书里都是空数组（spec 4.3）
-  /** 该线相对全局时间轴的偏移。全局时间 = offset + times[sid].t。 */
-  offset: number
+  /**
+   * 该线相对全局时间轴的偏移。全局时间 = offset + times[sid].t。
+   * **可能是 null**：对齐失败 / 输入超预算跳过 / 模型没给这条线的偏移（`threads_check.py` 默认全 None，
+   * 只有主线强制 0；`threads_ops.py` 改主线后非数字的也置 None）。null 的线**不能当 0**，
+   * 不进全局轴、不画段、不定位缺口，见 `lib/segments.ts` 的 `isAligned`（审查 M2）。
+   */
+  offset: number | null
   end: ThreadEnd | null
   order_failed: boolean
 }

@@ -1,6 +1,7 @@
 /** 缺口的落点与两层聚合。spec 4.4。 */
 
 import type { Axis } from './axis'
+import { isAligned } from './segments'
 import type { Gap, ThreadsFile } from '@/api/types'
 
 export interface GapCluster {
@@ -20,16 +21,29 @@ export interface GapOptions {
   clusterRatio?: number
 }
 
-/** 建一张「场景编号 → 全局时间」的表。t 为 null 的场景查出来是 null。 */
+/**
+ * 建一张「场景编号 → 全局时间」的表。t 为 null 的场景查出来是 null。
+ * 没对齐到主线的线（`offset` 为 null）的场景也查不到——它们的全局位置未知，
+ * 挂在这些场景上的缺口会进 orphans，**不能拿 0 当偏移去定位**（审查 M2）。
+ */
 export function sceneTimeLookup(data: ThreadsFile): (sid: string) => number | null {
   const table = new Map<string, number>()
   for (const t of data.threads) {
-    const off = t.offset ?? 0
+    if (!isAligned(t)) continue
+    const off = t.offset as number
     for (const [sid, v] of Object.entries(t.times ?? {})) {
       if (v && v.t !== null && v.t !== undefined) table.set(sid, off + v.t)
     }
   }
   return (sid: string) => (table.has(sid) ? table.get(sid)! : null)
+}
+
+/**
+ * `thread` 为 null 的缺口（`clean_gaps` 发现线号不合格时把 thread/after/before 全置 null）。
+ * 按线过滤时它们哪条线都不挂，全景页要把它们挂到世界级的「N 处没归到线」，**不能静默丢掉**（审查 S2）。
+ */
+export function gapsWithoutThread(data: ThreadsFile): Gap[] {
+  return data.gaps.filter((g) => g.thread === null || g.thread === undefined || g.thread === '')
 }
 
 export function layoutGaps(
@@ -59,27 +73,29 @@ export function layoutGaps(
   }
   if (clusterRatio <= 0) return { clusters: 第一层, orphans }
 
-  // 第二层：挨得太近的连成一串（单链）——跟「前一个成员」比，不是跟串首比，
-  // 所以并完还挨着的会继续并下去，一遍就收敛，不用反复扫。
-  // 落点取串首和串尾的中点（不是加权平均：位置要落在这串缺口的正中间）。
+  // 第二层（9-22 作者拍板改规则，见 review_A1toC.md M3）：按 x 升序扫，
+  // **当前簇的中心**跟下一个第一层落点的距离 < clusterRatio 才并进来，不连锁。
+  // 原先的单链（跟「前一个成员」比）链长没上限，西游记主线 @1200px 会把散布在 71%–93% 的
+  // 30 个缺口压成一个三角。
+  // 簇中心 = 簇内首尾两个第一层落点的中点（不是加权平均：位置要落在这串缺口的正中间；
+  // 跟审查者 indep.py 的 cluster_center 同一个定义）。
+  // 一遍扫完就是稳定的：某个点没并进当前簇时，当前簇的中心从此不再变，而下一簇的中心 ≥ 它的首点，
+  // 所以相邻落点的距离 ≥ clusterRatio，不会出现「并完又跟邻簇靠近」。
   const clusters: GapCluster[] = []
-  let 串: GapCluster[] = []
-  const 收串 = () => {
-    if (串.length === 0) return
-    const 首 = 串[0]
-    const 尾 = 串[串.length - 1]
-    clusters.push({
-      x: (首.x + 尾.x) / 2,
-      gaps: 串.flatMap((c) => c.gaps),
-    })
-    串 = []
-  }
+  let 首x = 0
+  let 尾x = 0
   for (const c of 第一层) {
-    const 上一个 = 串[串.length - 1]
-    if (上一个 && c.x - 上一个.x >= clusterRatio) 收串()
-    串.push(c)
+    const cur = clusters[clusters.length - 1]
+    if (cur && c.x - cur.x < clusterRatio) {
+      尾x = c.x
+      cur.gaps.push(...c.gaps)
+      cur.x = (首x + 尾x) / 2
+    } else {
+      首x = c.x
+      尾x = c.x
+      clusters.push({ x: c.x, gaps: [...c.gaps] })
+    }
   }
-  收串()
 
   return { clusters, orphans }
 }

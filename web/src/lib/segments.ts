@@ -17,11 +17,32 @@ export interface Segment {
 const 单点宽 = 0.6
 
 /**
+ * 这条线对齐到主线了没有。`offset` 为 null（对齐失败 / 超预算跳过 / 模型没给）时
+ * 它的线内时间跟全局轴没有换算关系——**不能当成 0**，当成 0 会把它画进主线的时间里，
+ * 还会把全局轴撑歪（审查 M2：西游记 L-002 置 null 后轴从 -871.8~14 变成 -19~372.1）。
+ * 调用方据此在线尾标「这条线没对齐到主线，时间位置未知」。
+ */
+export function isAligned(thread: Thread): boolean {
+  return typeof thread.offset === 'number' && Number.isFinite(thread.offset)
+}
+
+/**
+ * 一条线里「没有时间」的场景编号：`times` 里 t 为 null 的，**加上 `times` 里干脆缺键的**
+ * （`thread_from_dict` 对脏时间值直接丢键）。线尾标签「N 个场景没有时间」用它数（审查 S2）。
+ */
+export function scenesWithoutTime(thread: Thread): string[] {
+  const times = thread.times ?? {}
+  return (thread.scenes ?? []).filter((sid) => times[sid]?.t == null)
+}
+
+/**
  * 一条线的全局时间点，升序。
  * `t` 为 null 的场景直接排除——**不插值**，插值等于编造位置（spec 4.5）。
+ * 没对齐到主线的线（`offset` 为 null）一个点都不给：不进全局点集、不画段。
  */
 export function threadPoints(thread: Thread): number[] {
-  const off = thread.offset ?? 0
+  if (!isAligned(thread)) return []
+  const off = thread.offset as number
   const out: number[] = []
   for (const v of Object.values(thread.times ?? {})) {
     if (v && v.t !== null && v.t !== undefined) out.push(off + v.t)
@@ -59,9 +80,11 @@ function 段范围(t0: number, t1: number, blk: AxisBlock, axis: Axis): { x0: nu
   let x1 = axis.x(t1)
   if (x1 - x0 < 单点宽) {
     // 单个点或几乎重合：给一点宽度，不然画出来什么都看不见
+    // 先把 x0 夹进区块、给右边留出 单点宽，再推 x1——只夹 x1 的话贴在右沿的点只剩一半宽
+    // （审查 S6：单块 [0..10] 里的 10 原先是 [99.7,100]）。区块宽 ≥ minBlock(1) > 单点宽，放得下。
     const 中 = (x0 + x1) / 2
-    x0 = Math.max(blk.x0, 中 - 单点宽 / 2)
-    x1 = Math.min(blk.x1, x0 + 单点宽)
+    x0 = Math.min(Math.max(blk.x0, 中 - 单点宽 / 2), blk.x1 - 单点宽)
+    x1 = x0 + 单点宽
   }
   return { x0, x1 }
 }

@@ -48,10 +48,11 @@ export function buildAxis(points: number[], opts: AxisOptions = {}): Axis | null
   const hi = pts[pts.length - 1]
   const span = hi - lo
 
-  // 全部点重合：一个区块占满
+  // 全部点重合：一个区块占满，点画在正中间（spec 4.2「单区块居中」）。
+  // 计划原先的测试钉的是 0——那样段画满 [0,100]、标记却全挤在最左边；spec 与计划冲突，以 spec 为准（审查 S7）。
   if (span === 0) {
     const blocks: AxisBlock[] = [{ t0: lo, t1: hi, x0: 0, x1: 100 }]
-    return { lo, hi, blocks, breaks: [], x: () => 0, degraded: false }
+    return { lo, hi, blocks, breaks: [], x: () => 50, degraded: false }
   }
 
   // 切区块：间隙「严格大于」阈值才断
@@ -113,7 +114,9 @@ export function buildAxis(points: number[], opts: AxisOptions = {}): Axis | null
     if (t >= hi) return 100
     for (const blk of blocks) {
       if (t >= blk.t0 && t <= blk.t1) {
-        if (blk.t1 === blk.t0) return blk.x0
+        // 单点区块：段画满整块，这个时刻的标记落在块的中点，不贴左沿（审查 S7）。
+        // 两端的 lo/hi 在上面已经钉成 0/100，这一支只管中间的单点区块。
+        if (blk.t1 === blk.t0) return (blk.x0 + blk.x1) / 2
         return clamp(blk.x0 + ((t - blk.t0) / (blk.t1 - blk.t0)) * (blk.x1 - blk.x0))
       }
     }
