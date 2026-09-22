@@ -1,10 +1,11 @@
 """二期接口：裁决、看板、影响、骨架、导出。"""
 
+import json
 from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
-from helpers import FakeBackend
+from helpers import FakeBackend, seed_book
 
 from ligaotai.api import create_app
 from ligaotai.book import create_book, open_book
@@ -80,3 +81,92 @@ def test_有任务在跑时写裁决返回409(tmp_path, monkeypatch):
 
     monkeypatch.setattr(c.app.state.runner, "current", lambda: _Job())
     assert c.put(f"{BOOK}/contradictions/C-001/verdict", json={"kind": "later"}).status_code == 409
+
+
+def _seed_threads(tmp_path):
+    b = _book(tmp_path)
+    seed_book(b, [{"id": f"S-000{i}", "persons": ["敖广"] if i >= 4 else ["悟空"]} for i in range(1, 6)])
+    write_json(b.threads_path, {
+        "next_world": 2, "next_thread": 3, "time_unit": "年", "main_thread": "L-001", "main_by": "auto",
+        "worlds": [{"id": "W-01", "name": "西游", "reason": "", "status": "draft", "notes": [], "outlines": []}],
+        "threads": [
+            {"id": "L-001", "world": "W-01", "name": "取经", "about": "主线", "status": "draft",
+             "scenes": ["S-0001", "S-0002", "S-0003"],
+             "times": {"S-0001": {"t": 0, "conf": "高"}, "S-0002": {"t": 1, "conf": "高"}, "S-0003": {"t": 2, "conf": "高"}},
+             "outlines": [], "offset": 0, "end": {"state": "待定", "note": "", "last": "S-0003"}, "order_failed": False},
+            {"id": "L-002", "world": "W-01", "name": "龙宫", "about": "支线", "status": "draft",
+             "scenes": ["S-0004", "S-0005"],
+             "times": {"S-0004": {"t": 0, "conf": "高"}, "S-0005": {"t": 1, "conf": "高"}},
+             "outlines": [], "offset": 3, "end": {"state": "完结", "note": "", "last": "S-0005"}, "order_failed": False}],
+        "intersections": [{"thread": "L-002", "scene": "S-0004", "main_scene": "S-0002", "reason": "借宝"}],
+        "gaps": [], "unassigned": [], "pending": []})
+    return b
+
+
+def _wait(c, r):
+    assert r.status_code == 202, r.text
+    job = c.app.state.runner.wait(r.json()["id"]).to_dict()
+    assert job["status"] == "done", job["error"]
+    return job
+
+
+def test_读看板_带统计和空建议(tmp_path):
+    c = _client(tmp_path)
+    _seed_threads(tmp_path)
+    r = c.get(f"{BOOK}/triage/board").json()
+    assert r["cards"]["L-001"]["col"] == "undecided"
+    assert r["stats"]["L-001"]["is_main"] is True
+    assert r["advice"] is None
+
+
+def test_改卡_错误映射(tmp_path):
+    c = _client(tmp_path)
+    _seed_threads(tmp_path)
+    r = c.put(f"{BOOK}/triage/board/L-002", json={"col": "merge", "merge_into": "L-001"})
+    assert r.status_code == 200 and r.json()["cards"]["L-002"]["merge_into"] == "L-001"
+    assert c.put(f"{BOOK}/triage/board/L-009", json={"col": "keep"}).status_code == 404
+    assert c.put(f"{BOOK}/triage/board/L-002", json={"col": "maybe"}).status_code == 400
+    assert c.delete(f"{BOOK}/triage/board/L-001").status_code == 400
+
+
+def test_看板文件坏了报500带文件名(tmp_path):
+    c = _client(tmp_path)
+    b = _seed_threads(tmp_path)
+    b.triage_dir.mkdir(parents=True, exist_ok=True)
+    b.board_path.write_text("{坏", encoding="utf-8")
+    r = c.get(f"{BOOK}/triage/board")
+    assert r.status_code == 500 and "看板.json" in r.json()["detail"]
+
+
+def test_没跑归线时看板404(tmp_path):
+    c = _client(tmp_path)
+    _book(tmp_path)
+    assert c.get(f"{BOOK}/triage/board").status_code == 404
+
+
+def test_生成建议是任务_跑完看板里带建议(tmp_path):
+    reply = {"advice": [{"thread": "L-001", "advice": "keep", "merge_into": None, "reason": "主线 [S-0001]"},
+                        {"thread": "L-002", "advice": "cut", "merge_into": None, "reason": "可删 [S-0004]"}]}
+    c = _client(tmp_path, handler=lambda tier, messages: json.dumps(reply, ensure_ascii=False))
+    _seed_threads(tmp_path)
+    _wait(c, c.post(f"{BOOK}/triage/advice"))
+    adv = c.get(f"{BOOK}/triage/board").json()["advice"]
+    assert [i["advice"] for i in adv["items"]] == ["keep", "cut"] and adv["stale"] is False
+
+
+def test_影响检查_程序部分即时_模型部分是任务(tmp_path):
+    reply = {"pairs": [], "remedy": "无须补救 [S-0004]"}
+    c = _client(tmp_path, handler=lambda tier, messages: json.dumps(reply, ensure_ascii=False))
+    b = _seed_threads(tmp_path)
+    r = c.get(f"{BOOK}/triage/impact/L-002").json()
+    assert r["program"]["crossings"][0]["main_scene"] == "S-0002"
+    assert r["model"] is None
+    assert c.post(f"{BOOK}/triage/impact/L-002").status_code == 400  # 还在「还没想好」列
+    c.put(f"{BOOK}/triage/board/L-002", json={"col": "cut"})
+    from ligaotai.cards import card_path
+    rec = read_json(card_path(b, "S-0004"))
+    rec["card"]["hooks_planted"] = ["龙宫宝物的下落"]
+    write_json(card_path(b, "S-0004"), rec)
+    _wait(c, c.post(f"{BOOK}/triage/impact/L-002"))
+    m = c.get(f"{BOOK}/triage/impact/L-002").json()["model"]
+    assert m["remedy"] == "无须补救 [S-0004]" and m["stale"] is False

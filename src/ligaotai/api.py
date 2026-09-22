@@ -13,8 +13,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import __version__
+from . import advice as adv
 from . import entities as ent
+from . import impact as imp
 from . import threads_ops as tops
+from . import triage as tri
 from . import verdicts as vd
 from .archive import load_index, run_archive, write_index
 from .book import STEP_LABELS, STEPS, Book, create_book, list_books, open_book, recover_interrupted
@@ -102,6 +105,12 @@ class VerdictReq(BaseModel):
     kind: str | None
     value: str | None = None
     note: str = ""
+
+
+class CardReq(BaseModel):
+    col: str
+    merge_into: str | None = None
+    note: str | None = None
 
 
 def _读坏了(what: str, detail: str) -> HTTPException:
@@ -240,6 +249,20 @@ def create_app(
             raise HTTPException(404, str(e))
         except vd.BrokenContradictions as e:
             raise _读坏了("矛盾.json", str(e))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    def triage_op(fn: Callable[[], object]):
+        try:
+            return fn()
+        except KeyError:
+            raise HTTPException(404, "没有这条线")
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e))
+        except tops.BrokenThreadsFile as e:
+            raise HTTPException(409, str(e))
+        except tri.BrokenBoardFile as e:
+            raise _读坏了("取舍/看板.json", str(e))
         except ValueError as e:
             raise HTTPException(400, str(e))
 
@@ -536,6 +559,61 @@ def create_app(
     def verdict_followups(name: str, cid: str) -> dict:
         b = get_book(name)
         return verdict_op(lambda: vd.followups(b, cid))
+
+    @app.get("/api/books/{name}/triage/board")
+    def triage_board(name: str) -> dict:
+        b = get_book(name)
+
+        def read():
+            th = tops.load_threads(b)
+            return {**tri.reconcile(tri.load_board(b), th), "stats": tri.thread_stats(b, th),
+                    "advice": adv.advice_status(b, th)}
+
+        return triage_op(read)
+
+    @app.put("/api/books/{name}/triage/board/{tid}")
+    def triage_card(name: str, tid: str, req: CardReq) -> dict:
+        require_idle()
+        b = get_book(name)
+        return triage_op(lambda: tri.set_card(b, tops.load_threads(b), tid, req.col, req.merge_into, req.note))
+
+    @app.delete("/api/books/{name}/triage/board/{tid}")
+    def triage_delete_card(name: str, tid: str) -> dict:
+        require_idle()
+        b = get_book(name)
+        return triage_op(lambda: tri.delete_orphan(b, tops.load_threads(b), tid))
+
+    @app.post("/api/books/{name}/triage/advice", status_code=202)
+    def triage_advice(name: str) -> dict:
+        b = get_book(name)
+        triage_op(lambda: tops.load_threads(b))  # 没跑归线先报 404，别等任务里再炸
+        client = make_client(b)
+        return submit(b, "triage_advice", lambda p: adv.run_advice(b, client, p), track_step=False)
+
+    @app.get("/api/books/{name}/triage/impact/{tid}")
+    def triage_impact(name: str, tid: str) -> dict:
+        b = get_book(name)
+
+        def read():
+            th = tops.load_threads(b)
+            return {"program": imp.program_impact(b, th, tid), "model": imp.model_impact_status(b, th, tid)}
+
+        return triage_op(read)
+
+    @app.post("/api/books/{name}/triage/impact/{tid}", status_code=202)
+    def triage_impact_run(name: str, tid: str) -> dict:
+        b = get_book(name)
+
+        def precheck():
+            th = tops.load_threads(b)
+            if tid not in tri.thread_ids(th):
+                raise KeyError(tid)
+            if tri.columns(b, th).get(tid, {}).get("col") not in ("cut", "merge"):
+                raise ValueError("只有放进「砍掉」或「合并」的线才做影响检查")
+
+        triage_op(precheck)
+        client = make_client(b)
+        return submit(b, "triage_impact", lambda p: imp.run_impact(b, client, tid, p), track_step=False)
 
     @app.get("/api/books/{name}/archive/{kind}/{oid}")
     def archive_body(name: str, kind: str, oid: str) -> dict:
