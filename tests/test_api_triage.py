@@ -170,3 +170,41 @@ def test_影响检查_程序部分即时_模型部分是任务(tmp_path):
     _wait(c, c.post(f"{BOOK}/triage/impact/L-002"))
     m = c.get(f"{BOOK}/triage/impact/L-002").json()["model"]
     assert m["remedy"] == "无须补救 [S-0004]" and m["stale"] is False
+
+
+def _sk_handler(tier, messages):
+    system, user = messages[0]["content"], messages[1]["content"]
+    if "分卷分章" in system:
+        return json.dumps({"volumes": [{"title": "卷一", "start": 0}], "chapters": [{"title": "全", "start": 0}]},
+                          ensure_ascii=False)
+    return json.dumps({"holes": []})
+
+
+def test_生成骨架_读_改_导出_下载(tmp_path):
+    c = _client(tmp_path, handler=_sk_handler)
+    _seed_threads(tmp_path)
+    _wait(c, c.post(f"{BOOK}/skeleton/generate"))
+    sk = c.get(f"{BOOK}/skeleton").json()
+    assert [i["id"] for i in sk["volumes"][0]["chapters"][0]["items"]] == ["S-0001", "S-0002", "S-0003", "S-0004", "S-0005"]
+    sk["volumes"][0]["chapters"][0]["title"] = "改过的章名"
+    r = c.put(f"{BOOK}/skeleton", json=sk)
+    assert r.status_code == 200 and r.json()["by"] == "author"
+    bad = {**sk, "volumes": [{"title": "卷", "chapters": [{"title": "章", "items": [{"type": "scene", "id": "S-0099"}]}]}]}
+    assert c.put(f"{BOOK}/skeleton", json=bad).status_code == 400
+    r = c.post(f"{BOOK}/export")
+    assert r.status_code == 200 and r.json()["scenes"] == 5
+    d = c.get(f"{BOOK}/export/md")
+    assert d.status_code == 200 and "## 改过的章名" in d.content.decode("utf-8")
+    assert c.get(f"{BOOK}/export/docx").status_code == 400
+
+
+def test_骨架的错误映射(tmp_path):
+    c = _client(tmp_path)
+    b = _seed_threads(tmp_path)
+    assert c.get(f"{BOOK}/skeleton").status_code == 404
+    assert c.post(f"{BOOK}/export").status_code == 404
+    assert c.get(f"{BOOK}/export/md").status_code == 404
+    b.triage_dir.mkdir(parents=True, exist_ok=True)
+    b.skeleton_path.write_text("{坏", encoding="utf-8")
+    r = c.get(f"{BOOK}/skeleton")
+    assert r.status_code == 500 and "骨架.json" in r.json()["detail"]

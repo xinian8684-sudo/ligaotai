@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Callable
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -15,7 +15,9 @@ from pydantic import BaseModel
 from . import __version__
 from . import advice as adv
 from . import entities as ent
+from . import export as exp
 from . import impact as imp
+from . import skeleton as skl
 from . import threads_ops as tops
 from . import triage as tri
 from . import verdicts as vd
@@ -263,6 +265,8 @@ def create_app(
             raise HTTPException(409, str(e))
         except tri.BrokenBoardFile as e:
             raise _读坏了("取舍/看板.json", str(e))
+        except skl.BrokenSkeletonFile as e:
+            raise _读坏了("取舍/骨架.json", str(e))
         except ValueError as e:
             raise HTTPException(400, str(e))
 
@@ -614,6 +618,41 @@ def create_app(
         triage_op(precheck)
         client = make_client(b)
         return submit(b, "triage_impact", lambda p: imp.run_impact(b, client, tid, p), track_step=False)
+
+    @app.get("/api/books/{name}/skeleton")
+    def skeleton_get(name: str) -> dict:
+        b = get_book(name)
+        return triage_op(lambda: skl.annotate(b, skl.load_skeleton(b), tops.load_threads(b)))
+
+    @app.put("/api/books/{name}/skeleton")
+    def skeleton_put(name: str, sk: dict = Body(...)) -> dict:
+        require_idle()
+        b = get_book(name)
+        return triage_op(lambda: skl.save_skeleton(b, sk))
+
+    @app.post("/api/books/{name}/skeleton/generate", status_code=202)
+    def skeleton_generate(name: str) -> dict:
+        b = get_book(name)
+        triage_op(lambda: tri.columns(b, tops.load_threads(b)))  # 没归线 / 看板坏了先报错
+        client = make_client(b)
+        return submit(b, "skeleton", lambda p: skl.generate(b, client, p), track_step=False)
+
+    @app.post("/api/books/{name}/export")
+    def export_run(name: str) -> dict:
+        require_idle()
+        b = get_book(name)
+        return triage_op(lambda: exp.export_book(b))
+
+    @app.get("/api/books/{name}/export/{fmt}")
+    def export_download(name: str, fmt: str) -> FileResponse:
+        b = get_book(name)
+        try:
+            path = exp.export_path(b, fmt)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if not path.exists():
+            raise HTTPException(404, "还没有导出过")
+        return FileResponse(path, filename=path.name)
 
     @app.get("/api/books/{name}/archive/{kind}/{oid}")
     def archive_body(name: str, kind: str, oid: str) -> dict:
