@@ -12,6 +12,27 @@ const stubs = { RouterLink: routerLinkStub }
 afterEach(() => vi.restoreAllMocks())
 
 describe('PanoramaPage', () => {
+  it('数据异步到了、图才出来时，也要量到图的真实宽度并传给 LaneChart', async () => {
+    // 图框在 v-if="data" 里，onMounted 时还不存在；只在 onMounted 挂观察器就永远量不到，
+    // 宽度卡在默认 1200，窄屏上缺口该并的都不并（9-22 真机截图抓到）
+    let 回调: ((e: Array<{ contentRect: { width: number } }>) => void) | null = null
+    const observe = vi.fn()
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: typeof 回调) { 回调 = cb }
+      observe = observe
+      disconnect() {}
+    })
+    vi.spyOn(api, 'getThreads').mockResolvedValue(雪 as never)
+    vi.spyOn(api, 'getVersions').mockResolvedValue({ params: {}, groups: [] })
+    const w = mount(PanoramaPage, { props: { name: 'guixu' }, global: { stubs } })
+    await flushPromises()
+    expect(observe).toHaveBeenCalledTimes(1)
+    回调!([{ contentRect: { width: 640 } }])
+    await flushPromises()
+    expect(w.findComponent(LaneChart).props('width')).toBe(640)
+    vi.unstubAllGlobals()
+  })
+
   it('拉归线和版本组两份数据', async () => {
     const t = vi.spyOn(api, 'getThreads').mockResolvedValue(雪 as never)
     const v = vi.spyOn(api, 'getVersions').mockResolvedValue({ params: {}, groups: [] })

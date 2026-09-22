@@ -4,7 +4,7 @@
  * 断轴/段/缺口两层聚合全包了，这里只管拉数据、量容器宽度、维护右侧详情面板的选中状态。
  * 不显示任何费用数字（spec 7.3）。
  */
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { getThreads, getVersions } from '@/api/endpoints'
 import type { Gap, Thread, ThreadsFile, VersionsFile } from '@/api/types'
 import { ApiError } from '@/api/client'
@@ -48,6 +48,13 @@ function 选缺口(payload: { threadId: string; gaps: Gap[] }): void {
   detail.value = { kind: 'gaps', threadId: payload.threadId, gaps: payload.gaps }
 }
 
+function 世界名(wid: string): string {
+  return data.value?.worlds.find((w) => w.id === wid)?.name ?? wid
+}
+function 线名(tid: string): string {
+  return data.value?.threads.find((t) => t.id === tid)?.name ?? tid
+}
+
 function 该线缺口数(threadId: string): number {
   return data.value?.gaps.filter((g) => g.thread === threadId).length ?? 0
 }
@@ -74,14 +81,19 @@ let ro: ResizeObserver | null = null
 
 onMounted(() => {
   void 加载()
-  // jsdom 测试环境没有 ResizeObserver，量不了就用默认宽度，不是错误。
-  if (chartBox.value && typeof ResizeObserver !== 'undefined') {
-    ro = new ResizeObserver((entries) => {
-      const w = entries[0]?.contentRect.width
-      if (w && w > 0) chartWidth.value = w
-    })
-    ro.observe(chartBox.value)
-  }
+})
+// 图框在 v-if="data" 里，数据到了才出现——onMounted 时它还是 null，所以盯着 ref 挂观察器，
+// 不然宽度永远卡在默认 1200，窄屏上缺口该并的都不并。
+// jsdom 测试环境没有 ResizeObserver，量不了就用默认宽度，不是错误。
+watch(chartBox, (el) => {
+  ro?.disconnect()
+  ro = null
+  if (!el || typeof ResizeObserver === 'undefined') return
+  ro = new ResizeObserver((entries) => {
+    const w = entries[0]?.contentRect.width
+    if (w && w > 0) chartWidth.value = w
+  })
+  ro.observe(el)
 })
 onUnmounted(() => {
   ro?.disconnect()
@@ -118,7 +130,7 @@ onUnmounted(() => {
 
       <aside class="detail" data-test="详情">
         <template v-if="detail?.kind === 'thread'">
-          <p class="w">{{ detail.thread.world }}</p>
+          <p class="w">{{ 世界名(detail.thread.world) }}</p>
           <h3>{{ detail.thread.name }}</h3>
           <dl class="kv">
             <dt>状态</dt><dd>{{ detail.thread.end?.state ?? '待定' }}</dd>
@@ -131,7 +143,7 @@ onUnmounted(() => {
         </template>
 
         <template v-else-if="detail?.kind === 'gaps'">
-          <h3>{{ detail.threadId }} 的缺口</h3>
+          <h3>{{ 线名(detail.threadId) }} 的缺口（{{ detail.gaps.length }}）</h3>
           <ul class="gap-list">
             <li v-for="g in detail.gaps" :key="g.id">
               <p class="event">{{ g.event }}</p>
@@ -162,8 +174,10 @@ h1{font-family:var(--serif);font-size:20px;margin:16px 0}
 .about{color:var(--ink-2);margin-bottom:10px}
 .note{margin-bottom:10px}
 .note b{display:block;color:var(--ink-3);font-size:11px;margin-bottom:2px}
-.fail{color:var(--red)}
+.fail{color:var(--amber)} /* 朱红只给断口/缺口/严重矛盾（spec 7.2），排序失败用琥珀 */
 .gap-list{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:10px}
 .gap-list .event{margin:0}
 .gap-list .mentioned{margin:2px 0 0;color:var(--ink-3);font-size:11px}
+/* 窄窗口：详情面板挪到图下面，别把泳道挤成要横着滚 */
+@media (max-width: 1200px){.pano{grid-template-columns:minmax(0,1fr)}}
 </style>

@@ -44,7 +44,18 @@ function worldColor(idx: number): string {
 
 const axis = computed<Axis | null>(() => buildAxis(props.data.threads.flatMap((t) => threadPoints(t))))
 const 查时间 = computed(() => sceneTimeLookup(props.data))
-const clusterRatio = computed(() => (28 / (props.width || 1200)) * 100)
+
+/** 版式（px）。改这里要同步 <style> 里的 grid-template-columns 和 .inner 的右边距。 */
+const 标签栏 = 200
+const 线尾栏 = 120
+const 终点留白 = 44
+/**
+ * 百分比坐标是相对「轨道内层」的，不是整个组件——props.width 里含标签栏和线尾栏，
+ * 直接拿它算会把 28px 折成偏小的百分比，缺口该并的没并。
+ */
+const 轨道宽 = computed(() => Math.max((props.width || 1200) - 标签栏 - 线尾栏 - 终点留白, 200))
+const pxToPct = (px: number) => (px / 轨道宽.value) * 100
+const clusterRatio = computed(() => pxToPct(28))
 
 const worldIndexOf = computed(() => {
   const m = new Map<string, number>()
@@ -65,7 +76,30 @@ function endMarkKind(t: Thread): '完' | '待定' | '断' {
   return '断'
 }
 
-interface VersionBadge { id: string; x: number; count: number }
+interface VersionBadge { id: string; x: number; count: number; groups?: number }
+
+/**
+ * 挨得太近的版本角标并成一个（跟缺口一样按簇中心距离、不连锁），不然「2版」一个压一个读不出来。
+ * 并了的显示「N组」，悬停看每组几版。
+ */
+function 并版本角标(badges: VersionBadge[], gapPct: number): VersionBadge[] {
+  const sorted = [...badges].sort((a, b) => a.x - b.x)
+  const out: Array<VersionBadge & { members: VersionBadge[] }> = []
+  for (const b of sorted) {
+    const last = out[out.length - 1]
+    if (last && b.x - last.x < gapPct) {
+      last.members.push(b)
+      last.x = (last.members[0].x + b.x) / 2
+    } else {
+      out.push({ ...b, members: [b] })
+    }
+  }
+  return out.map((c) =>
+    c.members.length === 1
+      ? c.members[0]
+      : { id: c.members.map((m) => m.id).join('+'), x: c.x, count: c.members.reduce((s, m) => s + m.count, 0), groups: c.members.length },
+  )
+}
 
 /** 把一个版本组映射到它在这条线上的位置：取 main（没有就取第一个成员），按那个场景的全局时间定位。 */
 function versionBadgeFor(g: VersionGroup, t: Thread, ax: Axis): VersionBadge | null {
@@ -108,9 +142,12 @@ const laneVMs = computed<LaneVM[]>(() => {
         return time === null ? null : { key: `${ix.scene}-${i}`, x: ax.x(time), reason: ix.reason }
       })
       .filter((v): v is { key: string; x: number; reason: string } => v !== null)
-    const versionBadges = props.versions
-      .map((g) => versionBadgeFor(g, t, ax))
-      .filter((v): v is VersionBadge => v !== null)
+    const versionBadges = 并版本角标(
+      props.versions
+        .map((g) => versionBadgeFor(g, t, ax))
+        .filter((v): v is VersionBadge => v !== null),
+      pxToPct(34),
+    )
     const segLast = segments[segments.length - 1]
     return {
       thread: t,
@@ -166,7 +203,18 @@ const axisTicks = computed<AxisTick[]>(() => {
       guard += 1
     }
   })
-  return out
+  // 标签会撞：跟上一个留下的刻度太近、或者压在断口斜纹上的，丢掉
+  const 最小间距 = pxToPct(56)
+  const 半宽 = pxToPct(24)
+  const 压断口 = (x: number) => ax.breaks.some((b) => x > b.x0 - 半宽 && x < b.x1 + 半宽)
+  const kept: AxisTick[] = []
+  for (const tk of out.sort((a, b) => a.x - b.x)) {
+    if (压断口(tk.x)) continue
+    const last = kept[kept.length - 1]
+    if (last && tk.x - last.x < 最小间距) continue
+    kept.push(tk)
+  }
+  return kept
 })
 
 function 点缺口簇(threadId: string, gaps: Gap[]): void {
@@ -187,7 +235,7 @@ function 点orphan(threadId: string, gaps: Gap[]): void {
 
       <div class="row axis-row" data-test="轴">
         <div class="lab"></div>
-        <div class="track">
+        <div class="track"><div class="inner">
           <span
             v-for="tick in axisTicks"
             :key="tick.key"
@@ -201,8 +249,9 @@ function 点orphan(threadId: string, gaps: Gap[]): void {
             data-test="断口"
             :style="{ left: brk.x0 + '%', width: Math.max(brk.x1 - brk.x0, 0) + '%' }"
             :title="`这里跨了 ${brk.years.toFixed(1)} 年`"
-          >跨了 {{ brk.years.toFixed(1) }} 年</span>
-        </div>
+          ><span class="brk-t">跨 {{ brk.years.toFixed(1) }} 年</span></span>
+        </div></div>
+        <div class="tail"></div>
       </div>
 
       <template v-for="wg in worldGroups" :key="wg.world.id">
@@ -222,11 +271,11 @@ function 点orphan(threadId: string, gaps: Gap[]): void {
           role="button"
           @click="emit('select-thread', vm.thread.id)"
         >
-          <div class="lab">
-            {{ vm.thread.name }}<small>{{ vm.thread.scenes.length }} 场景</small>
-            <span v-if="vm.thread.order_failed" class="fail-note">排序失败，顺序不可信</span>
+          <div class="lab" :title="vm.thread.name">
+            <span class="nm">{{ vm.thread.name }}</span>
+            <small>{{ vm.thread.scenes.length }} 场景<span v-if="vm.thread.order_failed" class="fail-note">排序失败，顺序不可信</span></small>
           </div>
-          <div class="track">
+          <div class="track"><div class="inner">
             <span
               v-for="(seg, i) in vm.segments"
               :key="`seg-${i}`"
@@ -250,7 +299,8 @@ function 点orphan(threadId: string, gaps: Gap[]): void {
               class="ver"
               data-test="版本角标"
               :style="{ left: vb.x + '%' }"
-            >{{ vb.count }}版</span>
+              :title="vb.groups ? `这里挨着 ${vb.groups} 组多版本场景，共 ${vb.count} 个版本` : `这个场景有 ${vb.count} 个版本`"
+            >{{ vb.groups ? `${vb.groups}组` : `${vb.count}版` }}</span>
 
             <span
               v-if="vm.aligned && vm.endMarkX !== null"
@@ -269,8 +319,10 @@ function 点orphan(threadId: string, gaps: Gap[]): void {
               :style="{ left: c.x + '%' }"
               :title="c.gaps.map((g) => g.event).join('；')"
               @click.stop="点缺口簇(vm.thread.id, c.gaps)"
-            >{{ c.gaps.length > 1 ? c.gaps.length : '' }}</span>
+            ><b>{{ c.gaps.length > 1 ? c.gaps.length : '' }}</b></span>
+          </div></div>
 
+          <div class="tail">
             <span
               v-if="vm.gapLayout.orphans.length > 0"
               class="orph"
@@ -295,54 +347,69 @@ function 点orphan(threadId: string, gaps: Gap[]): void {
 </template>
 
 <style scoped>
-.lanes{min-width:640px}
+/* 三栏：标签 200 | 轨道 | 线尾 120。改宽度要同步 script 里的「标签栏 / 线尾栏 / 终点留白」 */
+.lanes{min-width:600px}
 .empty{color:var(--ink-3);padding:24px 0;font-size:13px}
 .degraded{color:var(--amber);font-size:12px;margin-bottom:6px}
-.row{display:grid;grid-template-columns:160px minmax(0,1fr);align-items:center}
-.axis-row{height:28px;border-bottom:1px solid var(--line);margin-bottom:4px}
-.axis-row .track{height:100%}
-.tick{position:absolute;bottom:4px;transform:translateX(-50%);font-family:var(--mono);font-size:11px;color:var(--ink-3)}
+.row{display:grid;grid-template-columns:200px minmax(0,1fr) 120px;align-items:center}
+.track{position:relative;height:100%}
+/* 百分比坐标都相对 .inner；右边留 44px 给终点标记，免得 100% 处的「完/待定」压到线尾栏 */
+.inner{position:absolute;inset:0 44px 0 0}
+
+.axis-row{height:40px;border-bottom:1px solid var(--line);margin-bottom:4px}
+.tick{position:absolute;bottom:4px;transform:translateX(-50%);font-family:var(--mono);font-size:11px;color:var(--ink-3);white-space:nowrap}
 .brk{
-  position:absolute;top:0;bottom:4px;
+  position:absolute;top:16px;bottom:0;
   background:repeating-linear-gradient(45deg,var(--red) 0 2px,transparent 2px 6px);
-  opacity:.45;font-size:10px;color:var(--red);display:flex;align-items:flex-end;justify-content:center;
+  opacity:.5;
 }
+.brk-t{
+  position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:2px;
+  font-size:10px;color:var(--red);white-space:nowrap;font-family:var(--sans);
+}
+
 .world{font-size:12px;color:var(--ink-3);letter-spacing:.06em;padding:10px 0 2px;display:flex;align-items:center;gap:6px}
 .world .dot{width:8px;height:8px;border-radius:2px;display:inline-block}
 .world-orphan{color:var(--red);margin-left:8px}
-.lane{height:38px;border-radius:6px;cursor:pointer}
-.lane:hover .lab{color:var(--accent)}
+
+.lane{height:48px;border-radius:6px;cursor:pointer}
+.lane:hover .nm{color:var(--accent)}
 .lane.sel{background:var(--accent-soft)}
 .lane.排序失败{background:var(--amber-soft)}
-.lab{padding-left:10px;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.lab small{color:var(--ink-3);font-family:var(--mono);font-size:11px;margin-left:4px}
-.fail-note{color:var(--amber);font-size:11px;margin-left:8px}
-.track{position:relative;height:38px}
-.seg{position:absolute;top:12px;height:14px;border-radius:3px}
+.lab{padding:0 10px;display:flex;flex-direction:column;justify-content:center;min-width:0;line-height:1.3}
+.lab .nm{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lab small{color:var(--ink-3);font-family:var(--sans);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fail-note{color:var(--amber);margin-left:6px}
+
+/* 轨道里上下两层：上层 2–16px 放「N版」，下层 24–38px 放段、缺口、交汇、终点 */
+.seg{position:absolute;top:24px;height:14px;border-radius:3px}
+.ver{
+  position:absolute;top:2px;transform:translateX(-50%);font-family:var(--sans);font-size:10px;color:var(--ink-2);
+  background:var(--panel);border:1px solid var(--line);border-radius:3px;padding:0 3px;line-height:13px;white-space:nowrap;
+}
+.gap{
+  position:absolute;top:24px;width:14px;height:14px;transform:translateX(-50%) rotate(45deg);
+  background:var(--red);border-radius:2px;cursor:pointer;box-shadow:0 0 0 1.5px var(--panel);
+  display:flex;align-items:center;justify-content:center;color:var(--panel);font-size:9px;
+}
+.gap > b{transform:rotate(-45deg);font-weight:700}
+.meet{
+  position:absolute;top:25px;width:12px;height:12px;border-radius:50%;
+  border:2px solid var(--ink);background:var(--panel);transform:translateX(-50%);
+}
+/* 终点标记贴在最后一段末端的右边，不盖住末端的缺口 */
 .mark{
-  position:absolute;top:8px;width:22px;height:22px;transform:translateX(-50%);
-  display:grid;place-items:center;font-family:var(--serif);font-size:12px;font-weight:700;border-radius:3px;
+  position:absolute;top:21px;height:20px;min-width:20px;padding:0 4px;margin-left:5px;
+  display:grid;place-items:center;font-family:var(--serif);font-size:12px;font-weight:700;border-radius:3px;white-space:nowrap;
 }
 .mark-断{background:var(--red);color:var(--panel)}
 .mark-完{background:var(--green-soft);color:var(--green);border:1px solid var(--green)}
 .mark-待定{background:var(--amber-soft);color:var(--amber);border:1px solid var(--amber)}
-.meet{
-  position:absolute;top:13px;width:12px;height:12px;border-radius:50%;
-  border:2px solid var(--ink);background:var(--panel);transform:translateX(-50%);
-}
-.ver{
-  position:absolute;top:-1px;transform:translateX(-50%);font-family:var(--mono);font-size:10px;color:var(--ink-2);
-  background:var(--panel);border:1px solid var(--line);border-radius:3px;padding:0 3px;line-height:14px;
-}
-.gap{
-  position:absolute;top:9px;width:14px;height:14px;transform:translateX(-50%) rotate(45deg);
-  background:var(--red);border-radius:2px;cursor:pointer;
-  display:flex;align-items:center;justify-content:center;color:var(--panel);font-size:9px;
-}
-.gap > * { transform: rotate(-45deg); }
+
+.tail{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding-left:6px;min-width:0}
 .orph{
-  margin-left:10px;font-size:11px;color:var(--red);background:var(--red-soft);border-radius:4px;
-  padding:1px 6px;cursor:pointer;position:absolute;right:0;top:11px;
+  font-size:11px;color:var(--red);background:var(--red-soft);border-radius:4px;
+  padding:1px 6px;cursor:pointer;white-space:nowrap;
 }
-.nt{display:block;font-size:11px;color:var(--ink-3);margin-top:2px}
+.nt{font-size:11px;color:var(--ink-3);line-height:1.3}
 </style>
