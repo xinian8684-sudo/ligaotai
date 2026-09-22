@@ -183,6 +183,10 @@ def run_dedup(book: Book, progress: Progress = _noop) -> dict:
         "pairs": len(pairs),
         "groups": len(groups),
         "scenes_in_groups": sum(len(g["members"]) for g in groups),
+        # 上次作者手选、这次没保住的主版本（两个手选组合成一组、场景不再成组等），界面要提示作者重选
+        "voided_picks": sorted(
+            author_mains - {g["main"] for g in groups if g["main_by"] == "author"}, key=natural_key
+        ),
     }
     book.set_step("dedup", "done", summary, changed=changed)
     return summary

@@ -136,4 +136,24 @@ describe('PipelinePage', () => {
     expect(跟踪.mock.calls[0][0].id).toBe('j2')
     w.unmount()
   })
+
+  it('查重作废了作者的手选时提示，并给出场景编号', async () => {
+    vi.spyOn(api, 'getBook').mockResolvedValue(造书({
+      dedup: { status: 'done', summary: { scenes: 10, pairs: 2, groups: 1, voided_picks: ['S-0001', 'S-0002'] } },
+    }))
+    const w = mount(PipelinePage, { props: { name: 'guixu' }, global: { stubs } })
+    await flushPromises()
+    const hint = w.find('[data-test="作废的手选"]')
+    expect(hint.exists()).toBe(true)
+    expect(hint.text()).toContain('S-0001、S-0002')
+  })
+
+  it('没有作废的手选时不提示', async () => {
+    vi.spyOn(api, 'getBook').mockResolvedValue(造书({
+      dedup: { status: 'done', summary: { scenes: 10, pairs: 2, groups: 1, voided_picks: [] } },
+    }))
+    const w = mount(PipelinePage, { props: { name: 'guixu' }, global: { stubs } })
+    await flushPromises()
+    expect(w.find('[data-test="作废的手选"]').exists()).toBe(false)
+  })
 })

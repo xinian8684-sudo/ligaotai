@@ -61,6 +61,13 @@ function 一句话(step: StepName, summary: Record<string, unknown>): string {
   return parts.join('、')
 }
 
+/** 第 3 步：上次作者手选、这次重跑没保住的主版本（后端 dedup summary.voided_picks）。 */
+function 作废的手选(step: StepName): string[] {
+  if (step !== 'dedup' || book.value?.steps.dedup.status !== 'done') return []
+  const v = book.value.steps.dedup.summary.voided_picks
+  return Array.isArray(v) ? v.map(String) : []
+}
+
 /** 第 5、6 步做完后，如果有待确认项，给一个「去确认」的链接。 */
 function 待确认数(step: StepName): number {
   const s = book.value?.steps[step]?.summary
@@ -114,6 +121,10 @@ onUnmounted(() => {
             上游变了，这一步的结果已过期
           </template>
           <template v-else>{{ 一句话(step, book.steps[step].summary) }}</template>
+          <span v-if="作废的手选(step).length > 0" class="voided" data-test="作废的手选">
+            你手选的主版本有 {{ 作废的手选(step).length }} 个这次没保住（{{ 作废的手选(step).join('、') }}），已退回自动选，
+            <RouterLink :to="`/b/${name}/scenes`">去场景浏览重选</RouterLink>
+          </span>
         </span>
 
         <RouterLink
@@ -157,7 +168,9 @@ h1{font-family:var(--serif);font-size:20px;margin:16px 0}
 .badge.s-done{background:var(--green-soft);color:var(--green)}
 .badge.s-failed{background:var(--red-soft);color:var(--red)}
 .badge.s-outdated{background:var(--amber-soft);color:var(--amber)}
-.summary{flex:1;color:var(--ink-2);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 不截断：失败那行的报错要完整显示（验收清单），长了就换行 */
+.summary{flex:1;min-width:0;color:var(--ink-2);font-size:13px;overflow-wrap:anywhere}
+.voided{display:block;margin-top:4px;color:var(--amber)}
 .confirm{flex:none;color:var(--accent);font-size:13px}
 .run{flex:none}
 </style>

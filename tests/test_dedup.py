@@ -157,3 +157,25 @@ def test_set_main_errors(dup_book):
         set_main(dup_book, "G-001", "S-0004")
     with pytest.raises(KeyError):
         set_main(dup_book, "G-999", "S-0001")
+
+
+def test_两组手选合成一组时记下作废的手选(dup_book):
+    """两个组各有作者手选的主版本，重跑后合成一组：两个手选都退回自动选，summary 要记下来给界面提示。"""
+    from ligaotai.fsutil import write_json
+
+    run_dedup(dup_book)
+    write_json(dup_book.versions_path, {"groups": [
+        {"id": "G-001", "members": ["S-0001", "S-0003"], "main": "S-0001", "main_by": "author", "pairs": []},
+        {"id": "G-002", "members": ["S-0002"], "main": "S-0002", "main_by": "author", "pairs": []},
+    ]})
+    summary = run_dedup(dup_book)
+    [g] = read_json(dup_book.versions_path)["groups"]
+    assert g["main_by"] == "auto"
+    assert summary["voided_picks"] == ["S-0001", "S-0002"]
+
+
+def test_手选保住了就不算作废(dup_book):
+    run_dedup(dup_book)
+    set_main(dup_book, "G-001", "S-0002")
+    summary = run_dedup(dup_book)
+    assert summary["voided_picks"] == []

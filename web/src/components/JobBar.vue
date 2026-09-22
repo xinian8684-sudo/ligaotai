@@ -30,7 +30,9 @@ async function 暂停(): Promise<void> {
   <div v-if="jobStore.pollError" class="bar err">
     连不上后端：{{ jobStore.pollError }}
   </div>
-  <div v-else-if="jobStore.current" class="bar">
+  <!-- 只在任务没结束时显示：后端 /jobs/current 会一直返回上一个任务（可能是别的书的），
+       结束了还挂着就是一条永远 100% 又不说完没完的条。结果看流水线那一行。 -->
+  <div v-else-if="jobStore.current && jobStore.busy" class="bar">
     <span class="name">{{ 步骤名 }}</span>
     <div class="track"><div class="fill" :style="{ width: 百分比 + '%' }" /></div>
     <span class="n">{{ jobStore.current.done }}/{{ jobStore.current.total }}</span>
