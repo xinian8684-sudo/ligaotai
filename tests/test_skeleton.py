@@ -104,6 +104,24 @@ def test_分章一直不合规_用兜底切法(book_with_threads):
     assert [c["title"] for c in vol["chapters"]] == ["S-0001 摘要"]    # seed_book 的摘要默认是「S-000x 摘要」
 
 
+def test_模型一直不合规_坏结果不进缓存_再生成还会真调模型(book_with_threads):
+    """T1/T2：分章、空洞两处调用都要传 usable。不传的话 Caller 会把重试用尽仍不合规的
+    结果存进缓存，下次生成直接命中坏缓存、模型一次都不调，作者永远拿不到好结果。"""
+    b = book_with_threads
+    bad = {"volumes": [{"title": "卷", "start": 0}], "chapters": [{"title": "甲", "start": 3}]}
+    calls = {"n": 0}
+
+    def count():
+        calls["n"] += 1
+
+    client, _ = _client(b, _handler(chapters=bad, holes_ok=False, on_call=count))
+    generate(b, client)
+    first = calls["n"]
+    assert first > 0
+    generate(b, client)
+    assert calls["n"] == 2 * first    # 两处都没进缓存，第二次原样再调一遍
+
+
 def test_空洞说明模型失败_用程序拼的说明(book_with_threads):
     b = book_with_threads
     client, _ = _client(b, _handler(holes_ok=False))
