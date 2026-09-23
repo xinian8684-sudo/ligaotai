@@ -23,6 +23,7 @@ from datetime import datetime
 from . import archive_input as ai
 from . import hanfold
 from . import contradictions as cd
+from . import verdicts as vd
 from .book import Book, now_iso
 from .cards import load_cards, pick_error
 from .facts import OTHER, candidates, collect_facts, group_facts, norm_attr
@@ -509,6 +510,15 @@ class _Run:
         for key in cd.STATUSES:
             result["stats"][key] = sum(1 for g in result["groups"] if g["status"] == key)
         write_json(self.book.contradictions_path, result)
+        # S3：重跑之后磁盘上的 定稿设定.json 得跟着新的 矛盾.json 一起更新，不然步骤 7
+        # 重跑完、有裁决因为值集合变了标 stale，作者在裁决页看到的是新状态，但磁盘上的
+        # 定稿设定文件还是重跑前那份（下一次读它的地方——导出、AI 建议——用的是旧文件，
+        # 不是现算的）。current_canon() 是幂等的现算 + 对比重写，这里只是提前触发一次；
+        # 它自己的失败（比如磁盘写不进去）不该让整个步骤 7 失败，包一层 try 只记日志。
+        try:
+            vd.current_canon(self.book)
+        except Exception:
+            log.warning("步骤 7 写完矛盾.json 后重算定稿设定失败，磁盘上仍是旧版本", exc_info=True)
         self.contra_failed = bool(failed)
         self.contra_status = "generated"
         index["contradictions"] = {"file": "矛盾.json", "sig": c["sig"], "failed": bool(failed),

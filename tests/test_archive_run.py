@@ -333,6 +333,31 @@ def test_矛盾某批失败且值集合真变了_不沿用旧判断落无法判�
     assert load_index(b)["contradictions"]["failed"] is True
 
 
+def test_写完矛盾json后重算定稿设定(book_with_threads, fake_client):
+    """S3：步骤 7 重跑之后，磁盘上的 定稿设定.json 要跟着新的 矛盾.json 一起更新——不然
+    值集合真的变了、裁决标了 stale，作者在裁决页看到的是新状态，但没人专门去点一下
+    「读定稿设定」接口的话，磁盘上那份文件还是重跑前的旧内容（下次导出 / AI 建议读的
+    是磁盘文件，不是现算结果）。"""
+    from ligaotai.archive import run_archive
+    from ligaotai.verdicts import set_verdict
+
+    b = book_with_threads
+    run_archive(b, fake_client)
+    [g0] = read_json(b.contradictions_path)["groups"]
+    set_verdict(b, g0["id"], "pick", "如意金箍棒")
+    assert read_json(b.canon_path)["items"][0]["value"] == "如意金箍棒"
+
+    # 值真的变了（不是摘录）：如意金箍棒 → 定海神针，values_sig 变了，判定标 stale
+    rec = read_json(card_path(b, "S-0001"))
+    rec["card"]["facts"][0]["value"] = "定海神针"
+    write_json(card_path(b, "S-0001"), rec)
+    run_archive(b, make_client(b))
+    [g1] = read_json(b.contradictions_path)["groups"]
+    assert g1["verdict_stale"] is True
+    # 没有再调一次 GET /canon，磁盘上的定稿设定.json 也该已经不含这条 stale 的裁决了
+    assert read_json(b.canon_path)["items"] == []
+
+
 def test_回填幂等且换号重填(book_with_threads):
     """I5（F+DE 合并审查，DE 建议1要求的行为）：回填先把上一轮回填过的还原成占位再重填——
     (a) 连跑两次、输入什么都没变，W-01.md 正文一字不差；
