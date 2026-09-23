@@ -115,6 +115,35 @@ def test_要跟着改的场景_没裁决时为空(cbook):
     assert followups(cbook, "C-001")["scenes"] == []
 
 
+def test_值写法变了但签名没变_定稿设定和followups按norm_number比对(book):
+    """R1：values_sig 用 facts.norm_number 规范化过的值算签名（步骤7 contradictions.values_sig
+    同一套逻辑）；canon_items / followups 原来直接比原字符串，值的代表写法从「十六」变成
+    「16」时（签名不变，判定不标 stale）会一条都对不上——定稿设定丢了出处场景，
+    followups 把选中值自己的场景也当成「要跟着改」报出来。"""
+    from ligaotai.contradictions import values_sig
+
+    values = [
+        {"value": "十六", "scenes": [{"id": "S-0001", "quote": "年方十六", "thread": "L-001", "t": 0, "conf": "高"}]},
+        {"value": "十七", "scenes": [{"id": "S-0002", "quote": "今年十七", "thread": "L-001", "t": 1, "conf": "中"}]},
+    ]
+    sig = values_sig(values)
+    write_json(book.contradictions_path, {"groups": [{
+        "id": "C-001", "subject": "小梅", "attribute": "年龄", "status": "真矛盾", "level": "严重",
+        "category": "人物", "reason": "r [S-0001]", "values": values, "values_sig": sig,
+        "verdict": None, "verdict_sig": None, "verdict_stale": False}], "stats": {}})
+    set_verdict(book, "C-001", "pick", "十六")
+    # 模拟步骤 7 重跑：组里「十六」的代表写法换成了「16」，规范化后签名没变
+    data = read_json(book.contradictions_path)
+    data["groups"][0]["values"][0]["value"] = "16"
+    assert values_sig(data["groups"][0]["values"]) == sig
+    write_json(book.contradictions_path, data)
+    canon = current_canon(book)
+    assert canon["items"][0]["value"] == "十六"
+    assert canon["items"][0]["sources"] == ["S-0001"]
+    f = followups(book, "C-001")
+    assert [s["id"] for s in f["scenes"]] == ["S-0002"]
+
+
 def test_没有矛盾文件和编号不存在(book, cbook):
     with pytest.raises(NoSuchGroup):
         set_verdict(cbook, "C-999", "later")

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from .book import FILE_LOCK, Book, now_iso
+from .facts import norm_number
 from .fsutil import read_json, write_json
 
 KINDS = ("pick", "own", "later")
@@ -72,8 +73,13 @@ def canon_items(data: dict) -> list[dict]:
             continue
         sources: list[str] = []
         if v["kind"] == "pick":
+            # 值比对要过 facts.norm_number 规范化，不能直接比原字符串（S1）：values_sig
+            # 已经这么算过；重跑之后组里的值代表写法可能从「十六」变成「16」，签名不变
+            # （sig 一致所以 verdict 没标 stale），但字面值变了，原样比较会一条都对不上，
+            # 定稿设定就丢了出处场景。
+            target = norm_number(str(v.get("value") or "").strip())
             for val in _values(g):
-                if val.get("value") == v.get("value"):
+                if norm_number(str(val.get("value") or "").strip()) == target:
                     sources = [s.get("id") for s in val.get("scenes") or [] if isinstance(s, dict)]
         items.append({"id": g.get("id"), "subject": g.get("subject"), "attribute": g.get("attribute"),
                       "value": v.get("value"), "sources": sources, "note": v.get("note", "")})
@@ -123,8 +129,11 @@ def followups(book: Book, cid: str) -> dict:
     v = g.get("verdict")
     scenes: list[dict] = []
     if isinstance(v, dict) and v.get("kind") in ("pick", "own"):
+        # 跟 canon_items 同一处道理（S1）：判断「是不是选中的那个值」要过 norm_number，
+        # 不然选中值的写法变了（十六→16），这里会把它自己的场景也当成「要跟着改」报出来。
+        picked = norm_number(str(v.get("value") or "").strip()) if v["kind"] == "pick" else None
         for val in _values(g):
-            if v["kind"] == "pick" and val.get("value") == v.get("value"):
+            if picked is not None and norm_number(str(val.get("value") or "").strip()) == picked:
                 continue
             for s in val.get("scenes") or []:
                 if isinstance(s, dict):
