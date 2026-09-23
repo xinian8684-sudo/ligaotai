@@ -58,6 +58,14 @@ def test_人物在两条线都出场就不算独有(ib):
     assert program_impact(ib, load_threads(ib), "L-002")["only_characters"] == []
 
 
+def test_提及角色不算独有人物(ib):
+    # 「打杂的」只在 L-002 出场，但角色是「提及」，不是「主要/次要」——不该进 only_characters
+    _set_card(ib, "S-0004", characters=[{"name": "敖广", "role": "主要"}, {"name": "打杂的", "role": "提及"}])
+    names = [c["name"] for c in program_impact(ib, load_threads(ib), "L-002")["only_characters"]]
+    assert names == ["敖广"]
+    assert "打杂的" not in names
+
+
 def test_代词不算人物(ib):
     _set_card(ib, "S-0004", characters=[{"name": "我", "role": "主要"}, {"name": "敖广", "role": "主要"}])
     names = [c["name"] for c in program_impact(ib, load_threads(ib), "L-002")["only_characters"]]
@@ -103,6 +111,28 @@ def test_被砍的线不算其他线(ib):
     assert others == set()
 
 
+def test_核对_编号不是字符串不炸_报问题而不是抛异常(ib):
+    own, others = {"S-0004", "S-0005"}, {"S-0002"}
+    bad = {"pairs": [{"planted": ["S-0002"], "resolved": "S-0004", "hook": "紧箍咒"}],
+           "remedy": "改到主线收 [S-0002]"}
+    problems = check_impact(bad, own, others)  # 不该抛 TypeError: unhashable type: 'list'
+    assert any("不对" in p for p in problems)
+
+
+def test_模型第一次回不可哈希的编号_重试后成功(ib):
+    _hooks(ib)
+    th = load_threads(ib)
+    set_card(ib, th, "L-002", "cut")
+    bad = json.dumps({"pairs": [{"planted": ["S-0002"], "resolved": "S-0004", "hook": "紧箍咒"}],
+                      "remedy": "改到主线收 [S-0002]"}, ensure_ascii=False)
+    good = json.dumps({"pairs": [{"planted": "S-0002", "resolved": "S-0004", "hook": "紧箍咒"}],
+                       "remedy": "改到主线收 [S-0002]"}, ensure_ascii=False)
+    backend = FakeBackend(replies=[bad, good])
+    r = run_impact(ib, LLMClient(AppConfig(), backend, log_dir=ib.logs_dir), "L-002")
+    assert r["ok"] is True
+    assert len(backend.calls) == 2
+
+
 def test_核对_两端要一端在这条线一端在别的线(ib):
     own, others = {"S-0004", "S-0005"}, {"S-0002"}
     ok = {"pairs": [{"planted": "S-0002", "resolved": "S-0004", "hook": "紧箍咒"}], "remedy": "改到主线收 [S-0002]"}
@@ -135,6 +165,36 @@ def test_这条线一个伏笔都没有_不调模型(ib):
     r = run_impact(ib, LLMClient(AppConfig(), backend, log_dir=ib.logs_dir), "L-002")
     assert r["ok"] is True and backend.calls == []
     assert model_impact_status(ib, load_threads(ib), "L-002")["pairs"] == []
+
+
+def test_拖回还没想好_旧影响结果不再显示(ib):
+    _hooks(ib)
+    th = load_threads(ib)
+    set_card(ib, th, "L-002", "cut")
+    reply = {"pairs": [{"planted": "S-0002", "resolved": "S-0004", "hook": "紧箍咒"}], "remedy": "改到主线收 [S-0002]"}
+    backend = FakeBackend(handler=lambda tier, messages: json.dumps(reply, ensure_ascii=False))
+    run_impact(ib, LLMClient(AppConfig(), backend, log_dir=ib.logs_dir), "L-002")
+    assert model_impact_status(ib, load_threads(ib), "L-002") is not None
+    set_card(ib, load_threads(ib), "L-002", "undecided")
+    assert model_impact_status(ib, load_threads(ib), "L-002") is None
+    # 再拖回砍掉：原结果原样回来，签名没变，stale 仍是 False（钱不重花）
+    set_card(ib, load_threads(ib), "L-002", "cut")
+    st = model_impact_status(ib, load_threads(ib), "L-002")
+    assert st is not None and st["stale"] is False and st["pairs"][0]["resolved"] == "S-0004"
+
+
+def test_别的线改列_没变own_others输入_不算过期(ib):
+    _hooks(ib)
+    th = load_threads(ib)
+    set_card(ib, th, "L-002", "cut")
+    reply = {"pairs": [{"planted": "S-0002", "resolved": "S-0004", "hook": "紧箍咒"}], "remedy": "改到主线收 [S-0002]"}
+    backend = FakeBackend(handler=lambda tier, messages: json.dumps(reply, ensure_ascii=False))
+    run_impact(ib, LLMClient(AppConfig(), backend, log_dir=ib.logs_dir), "L-002")
+    assert model_impact_status(ib, load_threads(ib), "L-002")["stale"] is False
+    # L-001 从「还没想好」改成「保留」：既不是 cut，也没碰 L-001 的伏笔内容，
+    # impact_input 的 own / others 完全不变，不该被判成过期（不重花钱）
+    set_card(ib, load_threads(ib), "L-001", "keep")
+    assert model_impact_status(ib, load_threads(ib), "L-002")["stale"] is False
 
 
 def test_卡不在砍掉或合并列_不许跑(ib):

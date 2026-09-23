@@ -17,7 +17,7 @@ from .llm import LLMClient
 from .llm_caller import Caller, Progress, _noop
 from .threads_input import name_map
 from .threads_ops import load_threads
-from .triage import columns, thread_ids
+from .triage import NoSuchThread, columns, thread_ids
 
 STRONG_ROLES = ("主要", "次要")
 
@@ -42,7 +42,7 @@ def _aliases(book: Book, canon: str) -> list[str]:
 
 def program_impact(book: Book, threads: dict, tid: str) -> dict:
     if tid not in thread_ids(threads):
-        raise KeyError(tid)
+        raise NoSuchThread(tid)
     main = threads.get("main_thread")
 
     crossings = []
@@ -111,7 +111,7 @@ def _hook_lines(cards: dict, sid: str, prefix: str = "") -> list[str]:
 def impact_input(book: Book, threads: dict, tid: str) -> tuple[dict, set[str], set[str]]:
     """渲染模型输入。返回 (values, 这条线有伏笔的场景, 其他未砍线有伏笔的场景)。"""
     if tid not in thread_ids(threads):
-        raise KeyError(tid)
+        raise NoSuchThread(tid)
     cols = columns(book, threads)
     me = cols.get(tid, {"col": "undecided", "merge_into": None})
     if me["col"] == "merge":
@@ -146,7 +146,8 @@ def check_impact(data, own: set[str], others: set[str]) -> list[str]:
             problems.append("pairs 里每一项都要是对象")
             continue
         a, b = p.get("planted"), p.get("resolved")
-        if not ((a in own and b in others) or (a in others and b in own)):
+        if not (isinstance(a, str) and isinstance(b, str)
+                and ((a in own and b in others) or (a in others and b in own))):
             problems.append(f"伏笔对 {a} → {b} 不对：必须一端在这条线、另一端在其他线，编号只能用输入里的")
         if not str(p.get("hook") or "").strip():
             problems.append(f"伏笔对 {a} → {b} 没写是什么伏笔")
@@ -173,9 +174,14 @@ def _load_impacts(book: Book) -> dict:
 
 
 def model_impact_status(book: Book, threads: dict, tid: str) -> dict | None:
-    """这条线最近一次伏笔影响 + 是否过期（看板动作或伏笔输入变了）。没有返回 None。"""
+    """这条线最近一次伏笔影响 + 是否过期（看板动作或伏笔输入变了）。没有返回 None。
+
+    卡片当前不在 cut / merge 列时也返回 None：拖回「还没想好」/「保留」就是撤销这次检查
+    （spec 6.3），旧结果不该继续显示成「没过期」（M3）。"""
     saved = _load_impacts(book).get(tid)
     if not isinstance(saved, dict):
+        return None
+    if columns(book, threads).get(tid, {}).get("col") not in ("cut", "merge"):
         return None
     values, _, _ = impact_input(book, threads, tid)
     return {**saved, "stale": saved.get("sig") != _impact_sig(values)}
