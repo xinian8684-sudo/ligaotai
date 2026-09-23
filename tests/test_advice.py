@@ -27,6 +27,18 @@ def test_输入_有档案用档案摘要_没档案用about_列出场景编号(bo
     assert values["map"] == "（还没有全书地图）"
 
 
+def test_输入_合法编号并上地图和档案里出现的场景_不限于线里的场景(book_with_threads):
+    b = book_with_threads
+    atomic_write_text(b.thread_archive_dir / "L-001.md",
+                      "# L-001 取经\n- 一句话：取经的主线，参见设定笔记 [S-0006]\n\n## 主要人物\n- 略\n")
+    values, tids, allowed = advice_input(b, load_threads(b))
+    assert "S-0006" in allowed          # S-0006 是设定笔记，不属于任何一条线
+    bad = {"advice": [{"thread": "L-001", "advice": "keep", "merge_into": None,
+                       "reason": "沿用设定笔记 [S-0006]"},
+                      {"thread": "L-002", "advice": "cut", "merge_into": None, "reason": "可删 [S-0004]"}]}
+    assert check_advice(bad, tids, allowed) == []
+
+
 def test_核对_漏线_重复_编号不在范围_合并目标不对(book_with_threads):
     tids, allowed = ["L-001", "L-002"], {"S-0001", "S-0004"}
     assert check_advice(GOOD, tids, allowed) == []

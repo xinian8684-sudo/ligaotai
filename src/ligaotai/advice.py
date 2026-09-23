@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 
 from .archive import input_sig, refs_in
 from .book import Book, now_iso
@@ -16,6 +17,7 @@ PROMPT = "triage_advice"
 ADVICE = ("keep", "merge", "cut", "flashback")
 SUMMARY_MAX = 1500
 MAP_MAX = 6000
+_SCENE_ID = re.compile(r"S-\d{4}")
 
 
 def _summary(book: Book, t: dict) -> str:
@@ -41,7 +43,12 @@ def advice_input(book: Book, threads: dict) -> tuple[dict, list[str], set[str]]:
                 f"约 {s['words']} 字；{s['state']}）")
         blocks.append(f"{head}\n{_summary(book, t)}\n场景：{'、'.join(scenes)}")
     map_text = book.map_path.read_text(encoding="utf-8")[:MAP_MAX] if book.map_path.exists() else "（还没有全书地图）"
-    return {"map": map_text, "threads": "\n\n".join(blocks)}, thread_ids(threads), allowed
+    threads_text = "\n\n".join(blocks)
+    # S2：合法编号范围不能只收线里的场景——地图 / 支线档案摘要会提到设定笔记、缺口的出处
+    # 场景（比如 S-0006 是「设定笔记」，不属于任何一条线），模型理由引用它们是合理的，
+    # 不该被 check_advice 当成「编造的编号」报出来。把输入文本里出现的所有场景编号都并进来。
+    allowed |= set(_SCENE_ID.findall(map_text)) | set(_SCENE_ID.findall(threads_text))
+    return {"map": map_text, "threads": threads_text}, thread_ids(threads), allowed
 
 
 def check_advice(data, tids: list[str], allowed: set[str]) -> list[str]:
