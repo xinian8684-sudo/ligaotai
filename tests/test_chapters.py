@@ -34,6 +34,13 @@ def test_核对分章():
         assert any(word in p for p in check_chapters(data, 5)), (data, check_chapters(data, 5))
 
 
+def test_核对分章_标题不是字符串不该被当成有效标题():
+    # M2：旧代码用 str(title or "").strip() 判断「有没有标题」，["甲"] 这种非字符串会被
+    # str() 硬转成非空字符串蒙混过去，写进骨架后 assemble() 原样落地就是个列表。
+    bad = {"volumes": [{"title": "卷", "start": 0}], "chapters": [{"title": ["甲"], "start": 0}]}
+    assert any("标题" in p for p in check_chapters(bad, 3))
+
+
 def test_兜底切法_每章约一万字_每卷若干章():
     items = [_scene(f"S-000{i}") for i in range(1, 6)]
     info = {f"S-000{i}": {"chars": 6000, "summary": f"第{i}块的摘要很长很长很长"} for i in range(1, 6)}
@@ -83,3 +90,14 @@ def test_组装成卷章():
     assert [i["id"] for i in vols[0]["chapters"][1]["items"]] == ["S-0003"]
     assert [i["id"] for i in vols[1]["chapters"][0]["items"]] == ["S-0004", "S-0005"]
     assert vols[0]["chapters"][0]["notes"] == []
+
+
+def test_组装成卷章_标题里的换行折成一行():
+    # M2：模型回的标题夹带换行（甚至一个冒充的 Markdown 标题符号），写进骨架前要折成一行，
+    # 不然导出 md 时会被当成一个额外的一级/二级标题，跟真正的卷章标题混在一起。
+    items = [_scene("S-0001")]
+    d = {"volumes": [{"title": "上\n卷", "start": 0}],
+         "chapters": [{"title": "开篇\n# 冒充的标题", "start": 0}]}
+    vols = assemble(items, d)
+    assert vols[0]["title"] == "上 卷"
+    assert vols[0]["chapters"][0]["title"] == "开篇 # 冒充的标题"

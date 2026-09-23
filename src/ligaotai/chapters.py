@@ -12,7 +12,10 @@ PER_CHAPTER = 10000
 PER_VOLUME = 10
 
 
-def _one_line(s) -> str:
+def one_line(s) -> str:
+    """折成一行：换行 / 多空白压成单个空格。写进骨架的标题、任务说明都要过一遍，
+    不然模型回的换行（甚至夹带 Markdown 标题符号）会被原样写进导出的 md，跟真正的
+    卷/章标题混在一起（M2）。"""
     return " ".join(str(s or "").split())
 
 
@@ -21,9 +24,9 @@ def render_rows(items: list[dict], info: dict) -> list[str]:
     for i, it in enumerate(items):
         if it["type"] == "scene":
             x = info.get(it["id"]) or {}
-            rows.append(f"{i}｜{it['id']}｜{it.get('thread') or ''}｜{x.get('chars', 0)}｜{_one_line(x.get('summary'))}")
+            rows.append(f"{i}｜{it['id']}｜{it.get('thread') or ''}｜{x.get('chars', 0)}｜{one_line(x.get('summary'))}")
         else:
-            rows.append(f"{i}｜空洞｜{it.get('thread') or ''}｜0｜{_one_line(it.get('event'))}")
+            rows.append(f"{i}｜空洞｜{it.get('thread') or ''}｜0｜{one_line(it.get('event'))}")
     return rows
 
 
@@ -36,7 +39,10 @@ def _starts(lst, what: str) -> tuple[list[int], list[str]]:
         if not isinstance(st, int) or isinstance(st, bool):
             problems.append(f"{what} 里每一项都要有整数 start")
             continue
-        if not str(x.get("title") or "").strip():
+        title = x.get("title")
+        # M2：原先 str(title or "").strip() 会把 ["甲"] 这种非字符串也当成「有标题」放过，
+        # 写进骨架后 assemble() 直接落地就是个列表，不是真正的标题。
+        if not isinstance(title, str) or not title.strip():
             problems.append(f"{what} 里第 {st} 行开始的那一项没有标题")
         starts.append(st)
     return starts, problems
@@ -66,7 +72,7 @@ def check_chapters(data, n: int) -> list[str]:
 def _auto_title(it: dict, info: dict) -> str:
     if it["type"] != "scene":
         return "空洞"
-    return _one_line((info.get(it["id"]) or {}).get("summary"))[:12] or it["id"]
+    return one_line((info.get(it["id"]) or {}).get("summary"))[:12] or it["id"]
 
 
 def fallback_chapters(items: list[dict], info: dict, per_chapter: int = PER_CHAPTER,
@@ -124,12 +130,12 @@ def merge_windows(results: list[tuple[int, int, dict]], n: int, overlap: int = O
 
 def assemble(items: list[dict], data: dict) -> list[dict]:
     cs, n = data["chapters"], len(items)
-    vol_title = {v["start"]: v["title"] for v in data["volumes"]}
+    vol_title = {v["start"]: one_line(v["title"]) for v in data["volumes"]}
     vols: list[dict] = []
     for i, c in enumerate(cs):
         s = c["start"]
         e = cs[i + 1]["start"] if i + 1 < len(cs) else n
         if s in vol_title or not vols:
             vols.append({"title": vol_title.get(s, "第1卷"), "chapters": []})
-        vols[-1]["chapters"].append({"title": c["title"], "items": [dict(it) for it in items[s:e]], "notes": []})
+        vols[-1]["chapters"].append({"title": one_line(c["title"]), "items": [dict(it) for it in items[s:e]], "notes": []})
     return vols
