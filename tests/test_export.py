@@ -2,6 +2,7 @@ import pytest
 
 from ligaotai.export import export_book, export_path
 from ligaotai.fsutil import write_json
+from ligaotai.scenes import BrokenSceneFile
 
 SK = {"generated": "x", "by": "author", "volumes": [{"title": "第一卷 起", "chapters": [
     {"title": "开篇", "notes": [], "items": [
@@ -47,7 +48,8 @@ def test_导出md和txt(book_with_threads):
     b = book_with_threads
     write_json(b.skeleton_path, SK)
     r = export_book(b)
-    assert r == {"md": "导出/测试书.md", "txt": "导出/测试书.txt", "scenes": 2, "holes": 1, "missing": 1}
+    assert r == {"md": "导出/测试书.md", "txt": "导出/测试书.txt", "scenes": 2, "holes": 1, "missing": 1,
+                 "chars": 22, "cut": 0}
     assert export_path(b, "md").read_text(encoding="utf-8") == MD
     assert export_path(b, "txt").read_text(encoding="utf-8") == TXT
 
@@ -60,3 +62,14 @@ def test_没有骨架不能导出(book_with_threads):
 def test_格式只认md和txt(book_with_threads):
     with pytest.raises(ValueError):
         export_path(book_with_threads, "docx")
+
+
+def test_场景文件坏了_导出往上抛不当成原稿删了(book_with_threads):
+    """S2：export.py:322 原先吞了 BrokenSceneFile，把「文件手改坏了」说成「原稿里已经
+    没有这一块了」——两件不一样的事，得让它往上抛，接口那层才能报 500 说清是哪个文件坏的。"""
+    b = book_with_threads
+    write_json(b.skeleton_path, {"volumes": [{"title": "卷", "chapters": [{"title": "章", "items": [
+        {"type": "scene", "id": "S-0001"}]}]}]})
+    (b.scenes_dir / "S-0001.md").write_text("没有头信息，被手改坏了", encoding="utf-8")
+    with pytest.raises(BrokenSceneFile):
+        export_book(b)
