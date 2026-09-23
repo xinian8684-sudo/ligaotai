@@ -1,7 +1,9 @@
-import { get, post, put } from './client'
+import { del, get, post, put } from './client'
 import type {
-  ArchiveIndex, BookMeta, BookSummary, CardRecord, CardRow, ContradictionsFile,
-  EntitiesFile, Job, PublicConfig, SceneDetail, SceneMeta, StepName, ThreadsFile, VersionsFile,
+  ArchiveIndex, BoardCard, BoardView, BookMeta, BookSummary, CanonFile, CardRecord, CardReq, CardRow,
+  ContradictionGroup, ContradictionsFile, EntitiesFile, ExportResult, Followups, ImpactView,
+  Job, PublicConfig, SceneDetail, SceneMeta, Skeleton, StepName, ThreadsFile, VerdictReq,
+  VersionsFile,
 } from './types'
 
 const b = (name: string) => `/books/${encodeURIComponent(name)}`
@@ -70,3 +72,26 @@ export const getArchiveBody = (name: string, kind: 'thread' | 'world', oid: stri
 export const getArchiveMap = (name: string) => get<{ id: string; body: string }>(`${b(name)}/archive/map`)
 export const getContradictions = (name: string) => get<ContradictionsFile>(`${b(name)}/contradictions`)
 export const rerunArchive = (name: string, body: unknown) => post<unknown>(`${b(name)}/archive/rerun`, body)
+
+// 二期：裁决
+export const putVerdict = (name: string, cid: string, body: VerdictReq) =>
+  put<ContradictionGroup>(`${b(name)}/contradictions/${cid}/verdict`, body)
+export const getCanon = (name: string) => get<CanonFile>(`${b(name)}/canon`)
+export const getFollowups = (name: string, cid: string) => get<Followups>(`${b(name)}/contradictions/${cid}/followups`)
+
+// 二期：看板
+export const getBoard = (name: string) => get<BoardView>(`${b(name)}/triage/board`)
+export const putCard = (name: string, tid: string, body: CardReq) =>
+  put<{ cards: Record<string, BoardCard> }>(`${b(name)}/triage/board/${tid}`, body)
+export const deleteCard = (name: string, tid: string) =>
+  del<{ cards: Record<string, BoardCard> }>(`${b(name)}/triage/board/${tid}`)
+export const runAdvice = (name: string) => post<Job>(`${b(name)}/triage/advice`)
+export const getImpact = (name: string, tid: string) => get<ImpactView>(`${b(name)}/triage/impact/${tid}`)
+export const runImpact = (name: string, tid: string) => post<Job>(`${b(name)}/triage/impact/${tid}`)
+
+// 二期：骨架与导出
+export const getSkeleton = (name: string) => get<Skeleton>(`${b(name)}/skeleton`)
+export const putSkeleton = (name: string, sk: Skeleton) => put<Skeleton>(`${b(name)}/skeleton`, sk)
+export const generateSkeleton = (name: string) => post<Job>(`${b(name)}/skeleton/generate`)
+export const exportBook = (name: string) => post<ExportResult>(`${b(name)}/export`)
+export const exportUrl = (name: string, fmt: 'md' | 'txt') => `/api${b(name)}/export/${fmt}`

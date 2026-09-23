@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { request, ApiError } from './client'
+import { request, ApiError, del } from './client'
 
 function 假响应(status: number, body: unknown, contentType = 'application/json') {
   return new Response(typeof body === 'string' ? body : JSON.stringify(body), {
@@ -55,5 +55,11 @@ describe('request', () => {
     const e = (await request('/books/x/steps/cards/run', { method: 'POST' }).catch((x) => x)) as ApiError
     expect(e.status).toBe(409)
     expect(e.detail).toContain('已有任务在跑')
+  })
+
+  it('del 发 DELETE 请求', async () => {
+    const f = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
+    await del('/books/x/triage/board/L-009')
+    expect(f).toHaveBeenCalledWith('/api/books/x/triage/board/L-009', expect.objectContaining({ method: 'DELETE' }))
   })
 })

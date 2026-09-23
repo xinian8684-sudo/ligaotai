@@ -331,8 +331,8 @@ export interface ContradictionGroup {
   reason: string
   values: ContradictionValue[]
   values_sig: string
-  /** 二期才会写。一期永远是 null，界面不提供任何写它的入口。 */
-  verdict: unknown | null
+  /** 二期起作者裁决写这里（计划④ spec 第 5 节）。 */
+  verdict: Verdict | null
   verdict_sig: string | null
   /** 上一次判定依据的值集合跟现在不一样了（多了新值 / 原来的值消失了），要标出来重看。 */
   verdict_stale: boolean
@@ -347,4 +347,78 @@ export interface ContradictionsFile {
   id_registry?: unknown[]
   /** 里头有计数统计，没有任何费用字段——contradictions.py 的 stats 只统计条数。 */
   stats: Record<string, unknown>
+}
+
+// ---- 二期：取舍（计划④）----
+
+/** 不是流水线步骤的任务名（submit 时的 name），JobBar 显示用。 */
+export const EXTRA_JOB_LABELS: Record<string, string> = {
+  triage_advice: 'AI 取舍建议',
+  triage_impact: '影响检查',
+  skeleton: '生成骨架',
+}
+
+export type VerdictKind = 'pick' | 'own' | 'later'
+export interface Verdict { kind: VerdictKind; value?: string; note?: string; by: string; at: string }
+export interface VerdictReq { kind: VerdictKind | null; value?: string; note?: string }
+export interface CanonItem { id: string; subject: string; attribute: string; value: string; sources: string[]; note: string }
+export interface CanonFile { generated: string; items: CanonItem[] }
+export interface Followups { id: string; verdict: Verdict | null; scenes: { id: string; quote: string; value: string }[] }
+
+export type BoardCol = 'keep' | 'merge' | 'cut' | 'undecided'
+export interface BoardCard { col: BoardCol; merge_into: string | null; note: string; orphan: boolean; merge_invalid: boolean }
+export interface ThreadStat {
+  name: string; world: string; words: number; scenes: number; state: string
+  gaps: number; is_main: boolean; order_failed: boolean
+}
+export type AdviceKind = 'keep' | 'merge' | 'cut' | 'flashback'
+export interface AdviceItem { thread: string; advice: AdviceKind; merge_into?: string | null; reason: string }
+export interface AdviceStatus { generated: string; sig: string; items: AdviceItem[]; stale: boolean }
+export interface BoardView { cards: Record<string, BoardCard>; stats: Record<string, ThreadStat>; advice: AdviceStatus | null }
+export interface CardReq { col: BoardCol; merge_into?: string | null; note?: string | null }
+
+export interface ProgramImpact {
+  thread: string
+  crossings: { other: string; scene: string; main_scene: string; reason: string }[]
+  only_characters: { name: string; scenes: string[] }[]
+  maybe_refs: { scene: string; thread: string; text: string; names: string[] }[]
+}
+export interface ModelImpact {
+  sig: string; generated: string; stale: boolean; remedy: string
+  pairs: { planted: string; resolved: string; hook: string }[]
+}
+export interface ImpactView { program: ProgramImpact; model: ModelImpact | null }
+
+/**
+ * 后端 skeleton.annotate() 实际会打的 flag（核对过 src/ligaotai/skeleton.py 的 mark()）：
+ * 计划原稿只写了 missing/cut，漏了换过主版本这种（not_main）——真实后端已经在打这个值。
+ */
+export type SkFlag = 'missing' | 'not_main' | 'cut'
+export interface SkScene { type: 'scene'; id: string; thread?: string | null; flag?: SkFlag }
+export interface SkHole {
+  type: 'hole'; id: string; task: string; gap?: string | null; after?: string | null; before?: string | null
+  event?: string; thread?: string | null; mentioned_in?: string[]
+}
+export type SkItem = SkScene | SkHole
+export interface SkNote { kind: 'undecided' | 'merge' | 'cut_crossing'; thread: string; into?: string; scene?: string }
+export interface SkChapter { title: string; items: SkItem[]; notes: SkNote[] }
+export interface SkVolume { title: string; chapters: SkChapter[] }
+export interface SkUnplacedScene { id: string; thread: string | null; why: string; flag?: SkFlag }
+export interface Skeleton {
+  generated: string; by: 'program' | 'author'; edited?: string; fallback_chapters?: boolean
+  volumes: SkVolume[]
+  unplaced: { scenes: SkUnplacedScene[]; holes: (SkHole & { why?: string })[] }
+  /**
+   * 只有 GET /skeleton（annotate() 的返回）才有：按现在的线应该在书里、骨架里却找不到的
+   * 场景编号（src/ligaotai/skeleton.py 的 annotate()，见 p4/context.md）。计划原稿没写这个字段。
+   */
+  absent?: string[]
+}
+export interface ExportResult {
+  md: string; txt: string; scenes: number; holes: number; missing: number
+  /**
+   * 计划原稿漏了这两个字段——核对过 src/ligaotai/export.py 的 export_book()，
+   * counts 实际是 {scenes, holes, missing, chars, cut} 五项都会返回。
+   */
+  chars: number; cut: number
 }

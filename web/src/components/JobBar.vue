@@ -2,14 +2,14 @@
 import { computed } from 'vue'
 import { useJobStore } from '@/stores/job'
 import { cancelJob } from '@/api/endpoints'
-import { STEP_LABELS, type StepName } from '@/api/types'
+import { EXTRA_JOB_LABELS, STEP_LABELS, type StepName } from '@/api/types'
 
 const jobStore = useJobStore()
 
 const 步骤名 = computed(() => {
   const job = jobStore.current
   if (!job) return ''
-  return STEP_LABELS[job.name as StepName] ?? job.name
+  return STEP_LABELS[job.name as StepName] ?? EXTRA_JOB_LABELS[job.name] ?? job.name
 })
 
 const 百分比 = computed(() => {

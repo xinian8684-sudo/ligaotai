@@ -28,4 +28,9 @@ describe('JobBar', () => {
       expect(w.find('.bar').exists()).toBe(false)
     }
   })
+
+  it('二期任务显示中文名', () => {
+    useJobStore().current = { ...造任务('running'), name: 'skeleton' }
+    expect(mount(JobBar).text()).toContain('生成骨架')
+  })
 })
