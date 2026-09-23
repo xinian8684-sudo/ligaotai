@@ -18,6 +18,10 @@ class BrokenBoardFile(ValueError):
     """看板.json 坏了。作者的决定不能当空处理，得让作者自己修。"""
 
 
+class NoSuchThread(KeyError):
+    """给的线编号找不到（跟「文件缺字段」的 KeyError 分开，接口才能分别映射 404 / 500）。"""
+
+
 def load_board(book: Book) -> dict:
     try:
         data = read_json(book.board_path, {"cards": {}})
@@ -52,7 +56,9 @@ def reconcile(board: dict, threads: dict) -> dict:
     for tid, c in cards.items():
         if c["col"] == "merge":
             tgt = c["merge_into"]
-            if tgt == tid or tgt not in ids or cards[tgt]["col"] == "cut":
+            # 合并链长只能是 1：目标本身也在合并列（目标又并入了别的线）同样判失效，
+            # 不然界面会把 A→B→C 这种串联链当成合法数据（S4）。
+            if tgt == tid or tgt not in ids or cards[tgt]["col"] in ("cut", "merge"):
                 c["merge_invalid"] = True
     return {"cards": cards}
 
@@ -70,7 +76,7 @@ def set_card(book: Book, threads: dict, tid: str, col: str,
         raise ValueError(f"列只能是 {' / '.join(COLS)}")
     ids = thread_ids(threads)
     if tid not in ids:
-        raise KeyError(tid)
+        raise NoSuchThread(tid)
     with FILE_LOCK:
         board = load_board(book)
         cur = reconcile(board, threads)["cards"]
@@ -79,6 +85,10 @@ def set_card(book: Book, threads: dict, tid: str, col: str,
                 raise ValueError("合并要选另一条存在的线")
             if cur[merge_into]["col"] == "cut":
                 raise ValueError("不能并入已经砍掉的线")
+            if cur[merge_into]["col"] == "merge":
+                raise ValueError("不能并入一条也在合并列的线（合并链长只能是 1）")
+            if any(t2 != tid and c2["col"] == "merge" and c2["merge_into"] == tid for t2, c2 in cur.items()):
+                raise ValueError("已经有别的线并入这条线，不能再把它设为合并（合并链长只能是 1）")
         old = _entry(board["cards"].get(tid))
         board["cards"][tid] = {"col": col, "merge_into": merge_into if col == "merge" else None,
                                "note": old["note"] if note is None else str(note)}

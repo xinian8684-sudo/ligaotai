@@ -51,6 +51,37 @@ def test_非合并列不留合并目标_备注保留(book_with_threads):
     assert cards["L-002"]["note"] == "并进取经"
 
 
+def test_不能并入一条也在合并列的线(book_with_threads):
+    b = book_with_threads
+    th = load_threads(b)
+    set_card(b, th, "L-001", "merge", merge_into="L-002")
+    with pytest.raises(ValueError):
+        set_card(b, load_threads(b), "L-002", "merge", merge_into="L-001")
+
+
+def test_不能把已经被并入的线再设为合并(book_with_threads):
+    b = book_with_threads
+    data = read_json(b.threads_path)
+    data["threads"].append({"id": "L-003", "world": "W-01", "name": "三", "about": "", "status": "draft",
+                            "scenes": [], "times": {}, "outlines": [], "offset": 0,
+                            "end": {"state": "待定", "note": "", "last": None}, "order_failed": False})
+    write_json(b.threads_path, data)
+    th = load_threads(b)
+    set_card(b, th, "L-001", "merge", merge_into="L-002")
+    # L-002 已经是 L-001 的合并目标（L-002 本身列是「还没想好」，不是 merge，所以不会被前一条
+    # 「目标也在合并列」的检查挡住）；再把 L-002 设成合并会串成 L-001→L-002→L-003 的链，也要拒绝
+    with pytest.raises(ValueError):
+        set_card(b, load_threads(b), "L-002", "merge", merge_into="L-003")
+
+
+def test_对账时自并入标失效(book_with_threads):
+    b = book_with_threads
+    write_json(b.board_path, {"cards": {"L-002": {"col": "merge", "merge_into": "L-002", "note": ""}}})
+    th = load_threads(b)
+    cards = reconcile(load_board(b), th)["cards"]
+    assert cards["L-002"]["merge_invalid"] is True
+
+
 def test_线消失_卡保留标孤儿_可以删(book_with_threads):
     b = book_with_threads
     write_json(b.board_path, {"cards": {"L-009": {"col": "cut", "merge_into": None, "note": ""}}})
