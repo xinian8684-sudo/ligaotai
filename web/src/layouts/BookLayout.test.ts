@@ -3,7 +3,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import BookLayout from './BookLayout.vue'
 import * as api from '@/api/endpoints'
-import type { BookMeta, Job, StepName, StepState } from '@/api/types'
+import type { BookMeta, ContradictionGroup, Job, StepName, StepState } from '@/api/types'
 import { useJobStore } from '@/stores/job'
 
 const routerLinkStub = { template: '<a><slot /></a>', props: ['to'] }
@@ -24,9 +24,19 @@ function 造任务(over: Partial<Job> = {}): Job {
   }
 }
 
+/** 计划④起矛盾角标改口径，最小满足 ContradictionGroup 类型的假组。 */
+function 造矛盾组(over: Partial<ContradictionGroup> = {}): ContradictionGroup {
+  return {
+    id: 'C-001', subject: '孙悟空', attribute: '兵器', status: '真矛盾', level: '严重', category: '人物',
+    reason: '', values: [], values_sig: 'sig', verdict: null, verdict_sig: null, verdict_stale: false,
+    ...over,
+  }
+}
+
 beforeEach(() => {
   setActivePinia(createPinia())
   vi.spyOn(api, 'currentJob').mockResolvedValue(null)
+  vi.spyOn(api, 'getContradictions').mockResolvedValue({ groups: [], stats: {} })
 })
 afterEach(() => vi.restoreAllMocks())
 
@@ -40,26 +50,45 @@ describe('BookLayout', () => {
     expect(w.text()).toContain('子页面内容')
   })
 
-  it('角标取自各步 summary：实体待确认、待归线、矛盾组总数', async () => {
+  it('实体、归线角标取自各步 summary；矛盾角标是未裁决的严重矛盾数（计划④改口径）', async () => {
     vi.spyOn(api, 'getBook').mockResolvedValue(造书({
       entities: { status: 'done', summary: { draft_groups: 4 } },
       threads: { status: 'done', summary: { pending: 2 } },
       archive: { status: 'done', summary: { contradictions: 58, 严重: 11 } },
     }))
+    vi.mocked(api.getContradictions).mockResolvedValue({
+      groups: [
+        造矛盾组({ id: 'C-001' }), // 真矛盾 + 严重 + 未裁决 → 算
+        造矛盾组({ id: 'C-002' }), // 同上 → 算
+        造矛盾组({ id: 'C-003', verdict: { kind: 'later', by: 'author', at: 'x' } }), // 裁过（先放着）→ 不算
+        造矛盾组({ id: 'C-004', level: '中等' }), // 不是严重 → 不算
+        造矛盾组({ id: 'C-005', status: '无法判断', level: '' }), // 不是真矛盾 → 不算
+      ],
+      stats: {},
+    })
     const w = mount(BookLayout, { props: { name: 'guixu' }, global: { stubs } })
     await flushPromises()
     expect(w.find('[data-test="实体角标"]').text()).toBe('4')
     expect(w.find('[data-test="归线角标"]').text()).toBe('2')
-    expect(w.find('[data-test="矛盾角标"]').text()).toBe('58')
+    expect(w.find('[data-test="矛盾角标"]').text()).toBe('2')
   })
 
-  it('没有待办时子路由收起、矛盾不挂角标', async () => {
+  it('没有待办、没有未裁决严重矛盾时子路由收起、矛盾不挂角标', async () => {
     vi.spyOn(api, 'getBook').mockResolvedValue(造书())
     const w = mount(BookLayout, { props: { name: 'guixu' }, global: { stubs } })
     await flushPromises()
     expect(w.find('[data-test="实体角标"]').exists()).toBe(false)
     expect(w.find('[data-test="归线角标"]').exists()).toBe(false)
     expect(w.find('[data-test="矛盾角标"]').exists()).toBe(false)
+  })
+
+  it('矛盾.json 还没跑出来（getContradictions 报错）时角标不显示、不当错误', async () => {
+    vi.spyOn(api, 'getBook').mockResolvedValue(造书())
+    vi.mocked(api.getContradictions).mockRejectedValue(new Error('还没有矛盾扫描结果'))
+    const w = mount(BookLayout, { props: { name: 'guixu' }, global: { stubs } })
+    await flushPromises()
+    expect(w.find('[data-test="矛盾角标"]').exists()).toBe(false)
+    expect(w.text()).not.toContain('还没有矛盾扫描结果')
   })
 
   it('后台任务结束后重新拉书，角标跟着变', async () => {

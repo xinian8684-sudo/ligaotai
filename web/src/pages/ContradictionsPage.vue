@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getContradictions, getFollowups, putVerdict } from '@/api/endpoints'
 import type { ContradictionGroup, ContradictionsFile, Followups, VerdictReq } from '@/api/types'
 import { ApiError } from '@/api/client'
@@ -68,6 +68,9 @@ const 自己写开着 = ref<Record<string, boolean>>({})
 const 自己写草稿 = ref<Record<string, string>>({})
 const 跟着改 = ref<Record<string, Followups | undefined>>({})
 
+/** BookLayout provide 的重新拉书；裁决改变了未裁决严重矛盾数，角标要立刻跟着变。 */
+const 刷新书 = inject<() => Promise<void>>('刷新书', async () => {})
+
 async function 裁决(g: ContradictionGroup, body: VerdictReq): Promise<void> {
   error.value = ''
   try {
@@ -75,6 +78,7 @@ async function 裁决(g: ContradictionGroup, body: VerdictReq): Promise<void> {
     自己写开着.value[g.id] = false
     跟着改.value[g.id] = undefined
     await 加载()
+    await 刷新书()
   } catch (e) {
     error.value = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
   }

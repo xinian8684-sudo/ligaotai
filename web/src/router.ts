@@ -19,6 +19,8 @@ export const router = createRouter({
         { path: 'scenes', name: 'scenes', component: () => import('./pages/ScenesPage.vue'), props: true },
         { path: 'archive', name: 'archive', component: () => import('./pages/ArchivePage.vue'), props: true },
         { path: 'contradictions', name: 'contradictions', component: () => import('./pages/ContradictionsPage.vue'), props: true },
+        { path: 'board', name: 'board', component: () => import('./pages/BoardPage.vue'), props: true },
+        { path: 'skeleton', name: 'skeleton', component: () => import('./pages/SkeletonPage.vue'), props: true },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/' },

@@ -40,10 +40,14 @@ describe('NavRail', () => {
     expect(w.find('[data-test="矛盾角标"]').exists()).toBe(false)
   })
 
-  it('二期页面不出现在导航里', () => {
+  it('三期页面不出现在导航里', () => {
     const w = mount(NavRail, { props: 基本, global: { stubs: { RouterLink: routerLinkStub } } })
-    expect(w.text()).not.toContain('取舍')
-    expect(w.text()).not.toContain('骨架')
     expect(w.text()).not.toContain('补写')
+  })
+
+  it('取舍一组：看板和骨架两项常驻', () => {
+    const w = mount(NavRail, { props: 基本, global: { stubs: { RouterLink: routerLinkStub } } })
+    expect(w.find('[data-test="取舍组"]').text()).toContain('取舍看板')
+    expect(w.find('[data-test="取舍组"]').text()).toContain('成书骨架')
   })
 })

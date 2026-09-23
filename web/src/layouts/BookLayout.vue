@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, provide, onMounted, onUnmounted } from 'vue'
-import { getBook } from '@/api/endpoints'
+import { getBook, getContradictions } from '@/api/endpoints'
 import type { BookMeta, StepName } from '@/api/types'
 import { ApiError } from '@/api/client'
 import { useJobStore } from '@/stores/job'
@@ -26,6 +26,7 @@ async function 加载(): Promise<void> {
   } catch (e) {
     error.value = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
   }
+  await 数矛盾()
 }
 
 provide('刷新书', 加载)
@@ -39,7 +40,22 @@ function 数(step: StepName, key: string): number {
 // 口径跟 PipelinePage 的「去确认」一致
 const 待确认实体 = computed(() => 数('entities', 'draft_groups'))
 const 待归线 = computed(() => 数('threads', 'pending'))
-const 矛盾 = computed(() => 数('archive', 'contradictions'))
+
+/**
+ * 计划④起矛盾角标改口径：不再是矛盾组总数（steps.archive.summary.contradictions），
+ * 是「未裁决的严重矛盾数」——裁决了或者不是严重的都不算（spec 第 10 节）。
+ * 现算，不进 数()：数据来自 矛盾.json 本身，不是步骤 summary。
+ */
+const 未裁决严重 = ref(0)
+
+async function 数矛盾(): Promise<void> {
+  try {
+    const f = await getContradictions(props.name)
+    未裁决严重.value = f.groups.filter((g) => g.status === '真矛盾' && g.level === '严重' && g.verdict === null).length
+  } catch {
+    未裁决严重.value = 0 // 还没跑步骤 7：角标不显示，不当错误
+  }
+}
 
 const 退订 = jobStore.onFinish(() => { void 加载() })
 watch(() => props.name, () => { void 加载() })
@@ -60,7 +76,7 @@ onUnmounted(() => {
     :book-title="book?.title ?? name"
     :pending-entities="待确认实体"
     :pending-threads="待归线"
-    :contradictions="矛盾"
+    :contradictions="未裁决严重"
   >
     <ErrorBox :message="error" />
     <RouterView />

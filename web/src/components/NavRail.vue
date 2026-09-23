@@ -4,6 +4,7 @@ defineProps<{
   bookTitle: string
   pendingEntities: number
   pendingThreads: number
+  /** 计划④起：未裁决的严重矛盾数（不再是矛盾组总数），由 BookLayout 现算。 */
   contradictions: number
 }>()
 </script>
@@ -45,6 +46,12 @@ defineProps<{
         <span>矛盾</span>
         <span v-if="contradictions > 0" class="n" data-test="矛盾角标">{{ contradictions }}</span>
       </RouterLink>
+
+      <div class="group" data-test="取舍组">
+        <div class="glabel">取舍</div>
+        <RouterLink class="tab" :to="`/b/${bookName}/board`"><span>取舍看板</span></RouterLink>
+        <RouterLink class="tab" :to="`/b/${bookName}/skeleton`"><span>成书骨架</span></RouterLink>
+      </div>
     </nav>
 
     <div class="foot">
@@ -71,6 +78,8 @@ nav{display:flex;flex-direction:column;gap:2px}
 .tab.sub{padding:4px 10px 4px 22px;font-size:13px}
 .step{color:var(--ink-3);font-size:12px}
 .n{color:var(--red);font-size:12px;font-variant-numeric:tabular-nums}
+.group{margin-top:10px;padding-top:8px;border-top:1px solid var(--line-2);display:flex;flex-direction:column;gap:2px}
+.glabel{font-size:12px;color:var(--ink-3);padding:0 10px 4px}
 .foot{margin-top:auto;padding:0 8px;color:var(--ink-3);font-size:12px}
 .foot a{color:var(--ink-3);text-decoration:none}
 .foot a:hover{color:var(--accent)}
