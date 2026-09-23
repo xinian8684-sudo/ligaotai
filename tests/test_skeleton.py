@@ -143,6 +143,13 @@ def test_空洞说明核对():
         assert word in text
 
 
+def test_空洞说明核对_id不是字符串不炸_报问题而不是抛异常():
+    expect = {"H-001": {"S-0001"}}
+    bad = {"holes": [{"id": ["H-001"], "task": "补 [S-0001]"}]}
+    problems = check_holes(bad, expect)  # 不该抛 TypeError: unhashable type: 'list'
+    assert any("没有这个空洞" in p for p in problems)
+
+
 def test_兜底说明_没有锚点和出处也能写():
     assert fallback_task({"after": None, "before": None, "event": "某事", "mentioned_in": []}) == \
         "在 （开头） 与 （结尾） 之间补写：某事"

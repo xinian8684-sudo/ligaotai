@@ -71,7 +71,7 @@ def check_holes(data, expect: dict[str, set[str]]) -> list[str]:
             problems.append("holes 里每一项都要是对象")
             continue
         hid = x.get("id")
-        if hid not in expect:
+        if not isinstance(hid, str) or hid not in expect:
             problems.append(f"没有这个空洞：{hid}")
             continue
         if hid in seen:
