@@ -129,6 +129,33 @@ def test_改卡_错误映射(tmp_path):
     assert c.delete(f"{BOOK}/triage/board/L-001").status_code == 400
 
 
+def test_实体文件坏了_报500带文件名(tmp_path):
+    c = _client(tmp_path)
+    b = _seed_threads(tmp_path)
+    b.entities_path.parent.mkdir(parents=True, exist_ok=True)
+    b.entities_path.write_text("{坏", encoding="utf-8")
+    r = c.get(f"{BOOK}/triage/impact/L-002")
+    assert r.status_code == 500 and "实体.json" in r.json()["detail"]
+
+
+def test_实体条目缺canonical_报500不是404(tmp_path):
+    c = _client(tmp_path)
+    b = _seed_threads(tmp_path)
+    write_json(b.entities_path, {"next_id": 2, "entities": [
+        {"id": "E-0001", "type": "person", "names": ["悟空"], "status": "draft", "reason": "", "scenes": []}]})
+    r = c.get(f"{BOOK}/triage/impact/L-002")
+    assert r.status_code == 500 and "文件缺字段" in r.json()["detail"]
+
+
+def test_场景文件坏了_报500不是400(tmp_path):
+    c = _client(tmp_path)
+    b = _seed_threads(tmp_path)
+    from ligaotai.scenes import scene_path
+    scene_path(b, "S-0001").write_bytes(b"\xff\xfe\x00broken")
+    r = c.get(f"{BOOK}/triage/board")
+    assert r.status_code == 500 and "S-0001" in r.json()["detail"]
+
+
 def test_看板文件坏了报500带文件名(tmp_path):
     c = _client(tmp_path)
     b = _seed_threads(tmp_path)
@@ -170,6 +197,18 @@ def test_影响检查_程序部分即时_模型部分是任务(tmp_path):
     _wait(c, c.post(f"{BOOK}/triage/impact/L-002"))
     m = c.get(f"{BOOK}/triage/impact/L-002").json()["model"]
     assert m["remedy"] == "无须补救 [S-0004]" and m["stale"] is False
+
+
+def test_有任务在跑时改卡或删孤儿卡返回409(tmp_path, monkeypatch):
+    c = _client(tmp_path)
+    _seed_threads(tmp_path)
+
+    class _Job:
+        status, name, book = "running", "archive", "测试书"
+
+    monkeypatch.setattr(c.app.state.runner, "current", lambda: _Job())
+    assert c.put(f"{BOOK}/triage/board/L-002", json={"col": "cut"}).status_code == 409
+    assert c.delete(f"{BOOK}/triage/board/L-009").status_code == 409
 
 
 def _sk_handler(tier, messages):

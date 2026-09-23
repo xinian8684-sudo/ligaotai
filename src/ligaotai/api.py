@@ -257,16 +257,28 @@ def create_app(
     def triage_op(fn: Callable[[], object]):
         try:
             return fn()
-        except KeyError:
+        except tri.NoSuchThread:
             raise HTTPException(404, "没有这条线")
         except FileNotFoundError as e:
             raise HTTPException(404, str(e))
+        except BrokenSceneFile as e:
+            # 跟 /scenes /cards 一致：场景文件读不了是 500，不是 400（R4c）。
+            raise HTTPException(500, str(e))
         except tops.BrokenThreadsFile as e:
             raise HTTPException(409, str(e))
         except tri.BrokenBoardFile as e:
             raise _读坏了("取舍/看板.json", str(e))
         except skl.BrokenSkeletonFile as e:
             raise _读坏了("取舍/骨架.json", str(e))
+        except json.JSONDecodeError as e:
+            # 目前触发路径只有 threads_input.name_map 读 实体.json（program_impact 等间接调用），
+            # 坏了不该报成裸 400（R4a）。
+            raise _读坏了("实体.json", f"不是合法 JSON，第 {e.lineno} 行")
+        except KeyError as e:
+            # tri.NoSuchThread（上面已经接住）是「给的编号找不到」；这里剩下的是别的
+            # KeyError——比如实体条目缺 canonical（threads_input.name_map），文件多半被
+            # 手动改过，不是「没有这条线」，不能报 404（R4b）。
+            raise HTTPException(500, f"文件缺字段 {e}，多半被手动改过。")
         except ValueError as e:
             raise HTTPException(400, str(e))
 
@@ -611,7 +623,7 @@ def create_app(
         def precheck():
             th = tops.load_threads(b)
             if tid not in tri.thread_ids(th):
-                raise KeyError(tid)
+                raise tri.NoSuchThread(tid)
             if tri.columns(b, th).get(tid, {}).get("col") not in ("cut", "merge"):
                 raise ValueError("只有放进「砍掉」或「合并」的线才做影响检查")
 
