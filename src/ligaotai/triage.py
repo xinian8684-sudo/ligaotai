@@ -106,16 +106,39 @@ def delete_orphan(book: Book, threads: dict, tid: str) -> dict:
         return reconcile(board, threads)
 
 
-def non_main_versions(book: Book) -> set[str]:
-    """版本组里不是主版本的场景：骨架和字数都只算主版本。"""
+def _version_groups(book: Book) -> list[dict]:
     try:
         data = read_json(book.versions_path, {"groups": []})
     except ValueError:
         data = {"groups": []}
+    return [g for g in (data or {}).get("groups") or [] if isinstance(g, dict)]
+
+
+def non_main_versions(book: Book) -> set[str]:
+    """版本组里不是主版本的场景：骨架和字数都只算主版本。主版本字段坏了（缺失 / 不是字符串）
+    分不清该留哪个，整组都当非主处理（跟改之前行为一致）。"""
     out: set[str] = set()
-    for g in (data or {}).get("groups") or []:
-        if isinstance(g, dict):
-            out.update(m for m in g.get("members") or [] if m != g.get("main"))
+    for g in _version_groups(book):
+        members = g.get("members") or []
+        main = g.get("main")
+        if isinstance(main, str) and main:
+            out.update(m for m in members if m != main)
+        else:
+            out.update(m for m in members if isinstance(m, str))
+    return out
+
+
+def version_map(book: Book) -> dict[str, str]:
+    """非主成员 -> 组里当前主版本。骨架换主版本时用来把旧引用替换成新的，不是简单丢弃
+    （M3：只丢非主成员会让整组场景从书里消失）。主版本字段坏了的组不提供替换目标，
+    那组交给 non_main_versions 整组丢。"""
+    out: dict[str, str] = {}
+    for g in _version_groups(book):
+        main = g.get("main")
+        if isinstance(main, str) and main:
+            for m in g.get("members") or []:
+                if isinstance(m, str) and m != main:
+                    out[m] = main
     return out
 
 

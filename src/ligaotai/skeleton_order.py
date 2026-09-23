@@ -21,11 +21,26 @@ def _col(cols: dict, tid) -> dict:
     return cols.get(tid) or UNDECIDED
 
 
-def build_sequence(threads: dict, cols: dict, drop: set[str]) -> tuple[list[dict], list[dict]]:
+def build_sequence(threads: dict, cols: dict, drop: set[str],
+                    version_map: dict[str, str] | None = None) -> tuple[list[dict], list[dict]]:
     """参与的线的场景按全局时间排好。返回 (排好的场景条目, 排不进时间轴的场景)。
-    drop：不参与的场景（版本组里的非主版本、已移除的块）。"""
+    drop：不参与的场景（不属于任何版本组的、已移除的块；版本组里主版本字段坏了的也在这里）。
+    version_map：非主成员 -> 组里当前主版本。线里原来引用的是旧主版本时，换成当前主版本
+    （位置、时间还是按原来那个引用算），不是直接丢——不然换过主版本的组会整组从书里消失（M3）。
+    同一个主版本在书里只出现一次：真的出现过了，同组别的引用（不管是不是这次换来的）都丢，
+    不重复插入。"""
     main = threads.get("main_thread")
+    version_map = version_map or {}
     placed, unplaced = [], []
+    seen_main: set[str] = set()
+
+    def resolve(sid0: str) -> str | None:
+        sid = version_map.get(sid0, sid0)
+        if sid in seen_main:
+            return None
+        seen_main.add(sid)
+        return sid
+
     for t in threads.get("threads") or []:
         if not isinstance(t, dict) or not t.get("id"):
             continue
@@ -34,13 +49,14 @@ def build_sequence(threads: dict, cols: dict, drop: set[str]) -> tuple[list[dict
             continue
         off = t.get("offset")
         times = t.get("times") or {}
-        for i, sid in enumerate(t.get("scenes") or []):
-            if sid in drop:
+        for i, sid0 in enumerate(t.get("scenes") or []):
+            sid = resolve(sid0)
+            if sid is None or sid in drop:
                 continue
             if not _num(off):
                 unplaced.append({"id": sid, "thread": tid, "why": "unaligned_thread"})
                 continue
-            tm = times.get(sid)
+            tm = times.get(sid0)
             tv = tm.get("t") if isinstance(tm, dict) else None
             if not _num(tv):
                 unplaced.append({"id": sid, "thread": tid, "why": "no_time"})
@@ -48,9 +64,11 @@ def build_sequence(threads: dict, cols: dict, drop: set[str]) -> tuple[list[dict
             key = (off + tv, 0 if tid == main else 1, natural_key(tid), i)
             placed.append((key, {"type": "scene", "id": sid, "thread": tid}))
     for u in threads.get("unassigned") or []:
-        sid = u.get("scene") if isinstance(u, dict) else u
-        if isinstance(sid, str) and sid not in drop:
-            unplaced.append({"id": sid, "thread": None, "why": "unassigned"})
+        sid0 = u.get("scene") if isinstance(u, dict) else u
+        if isinstance(sid0, str):
+            sid = resolve(sid0)
+            if sid is not None and sid not in drop:
+                unplaced.append({"id": sid, "thread": None, "why": "unassigned"})
     placed.sort(key=lambda p: p[0])
     return [p[1] for p in placed], unplaced
 

@@ -93,6 +93,45 @@ def test_空洞_after优先_都没有就进未定位_同锚点保持缺口顺序
     assert items[1]["event"] == "甲" and items[4]["mentioned_in"] == ["S-0001"]
 
 
+def test_版本组换主版本_替换成组里当前主版本_而不是丢整组():
+    # M3：作者把 S-0002/S-0006 这组的主版本从 S-0002 改成 S-0006，S-0006 本身不在任何线的
+    # scenes 列表里（归线的时候还没这回事）。换主版本后，S-0002 原来的位置（t=1）应该
+    # 变成 S-0006，而不是两个都从书里消失。
+    th = {
+        "main_thread": "L-001",
+        "threads": [
+            {"id": "L-001", "scenes": ["S-0001", "S-0002", "S-0003"], "offset": 0,
+             "times": {"S-0001": {"t": 0}, "S-0002": {"t": 1}, "S-0003": {"t": 2}}},
+        ],
+        "unassigned": [],
+    }
+    seq, unplaced = build_sequence(th, {}, set(), {"S-0002": "S-0006"})
+    assert [x["id"] for x in seq] == ["S-0001", "S-0006", "S-0003"]
+    assert unplaced == []
+
+
+def test_同一个主版本只出现一次_不管是原有的还是替换来的():
+    th = {
+        "main_thread": "L-001",
+        "threads": [
+            {"id": "L-001", "scenes": ["S-0001", "S-0002"], "offset": 0,
+             "times": {"S-0001": {"t": 0}, "S-0002": {"t": 1}}},
+            {"id": "L-002", "scenes": ["S-0006"], "offset": 0, "times": {"S-0006": {"t": 2}}},
+        ],
+        "unassigned": [],
+    }
+    seq, unplaced = build_sequence(th, {}, set(), {"S-0002": "S-0006"})
+    assert [x["id"] for x in seq] == ["S-0001", "S-0006"]
+    assert unplaced == []
+
+
+def test_版本组_unassigned里的非主版本也换成主版本():
+    th = {"main_thread": None, "threads": [], "unassigned": [{"scene": "S-0002", "reason": "x"}]}
+    seq, unplaced = build_sequence(th, {}, set(), {"S-0002": "S-0006"})
+    assert seq == []
+    assert unplaced == [{"id": "S-0006", "thread": None, "why": "unassigned"}]
+
+
 def test_章节备注():
     th = _mini()
     items = [{"type": "scene", "id": "S-0002", "thread": "L-001"},
