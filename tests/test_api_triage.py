@@ -247,3 +247,55 @@ def test_骨架的错误映射(tmp_path):
     b.skeleton_path.write_text("{坏", encoding="utf-8")
     r = c.get(f"{BOOK}/skeleton")
     assert r.status_code == 500 and "骨架.json" in r.json()["detail"]
+
+
+def test_有任务在跑时改骨架或导出返回409(tmp_path, monkeypatch):
+    """T6：skeleton_put / export_run 各自的 require_idle() 去掉了不会让现有测试变红——
+    照裁决接口那条 409 测试的写法各补一条。"""
+    c = _client(tmp_path)
+    _seed_threads(tmp_path)
+
+    class _Job:
+        status, name, book = "running", "archive", "测试书"
+
+    monkeypatch.setattr(c.app.state.runner, "current", lambda: _Job())
+    assert c.put(f"{BOOK}/skeleton", json={"volumes": []}).status_code == 409
+    assert c.post(f"{BOOK}/export").status_code == 409
+
+
+def test_手改坏的骨架结构_GET和导出都报500带文件名(tmp_path):
+    """S1：结构检查挪进 load_skeleton，手改坏的骨架不管坏在哪儿都该是清清楚楚的 500，
+    不是走到哪炸到哪的裸 500 / 报错的 404（R7 五种手改坏法）。"""
+    c = _client(tmp_path)
+    b = _seed_threads(tmp_path)
+    b.triage_dir.mkdir(parents=True, exist_ok=True)
+    cases = {
+        "卷缺title": {"volumes": [{"chapters": [{"title": "章", "items": [{"type": "scene", "id": "S-0001"}]}]}]},
+        "章是字符串": {"volumes": [{"title": "卷", "chapters": ["章"]}]},
+        "场景重复": {"volumes": [{"title": "卷", "chapters": [{"title": "章", "items": [
+            {"type": "scene", "id": "S-0001"}, {"type": "scene", "id": "S-0001"}]}]}]},
+        "未定位场景没id": {"volumes": [], "unplaced": {"scenes": [{"why": "no_time"}], "holes": []}},
+        "空洞缺id": {"volumes": [{"title": "卷", "chapters": [{"title": "章",
+                                                              "items": [{"type": "hole", "task": "x"}]}]}]},
+    }
+    for name, sk in cases.items():
+        write_json(b.skeleton_path, sk)
+        g = c.get(f"{BOOK}/skeleton")
+        e = c.post(f"{BOOK}/export")
+        assert g.status_code == 500 and "骨架.json" in g.json()["detail"], (name, g.status_code, g.text)
+        assert e.status_code == 500 and "骨架.json" in e.json()["detail"], (name, e.status_code, e.text)
+
+
+def test_场景文件坏了_导出和读骨架都500不当成原稿删了(tmp_path):
+    """S2：场景文件手改坏了，跟场景真的从原稿里删掉是两件不一样的事——前者要报 500 说清
+    是哪个文件坏的，不能被 export 悄悄吞成「原稿里已经没有这一块了」。"""
+    c = _client(tmp_path)
+    b = _seed_threads(tmp_path)
+    b.triage_dir.mkdir(parents=True, exist_ok=True)
+    write_json(b.skeleton_path, {"volumes": [{"title": "卷", "chapters": [{"title": "章", "items": [
+        {"type": "scene", "id": "S-0001"}, {"type": "scene", "id": "S-0002"}]}]}]})
+    (b.scenes_dir / "S-0002.md").write_text("没有头信息，被手改坏了", encoding="utf-8")
+    e = c.post(f"{BOOK}/export")
+    assert e.status_code == 500 and "S-0002" in e.text
+    g = c.get(f"{BOOK}/skeleton")
+    assert g.status_code == 500 and "S-0002" in g.text
