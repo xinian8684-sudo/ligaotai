@@ -117,4 +117,128 @@ describe('BoardPage', () => {
     await w.find('[data-test="删卡-L-009"]').trigger('click')
     expect(del).toHaveBeenCalledWith('x', 'L-009')
   })
+
+  it('拖放：dragstart 后 drop 到某列会走 putCard', async () => {
+    vi.spyOn(api, 'getBoard').mockResolvedValue(造看板())
+    const put = vi.spyOn(api, 'putCard').mockResolvedValue({ cards: 造看板().cards })
+    const w = mount(BoardPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    await w.find('[data-test="卡-L-001"]').trigger('dragstart')
+    await w.find('[data-test="列-cut"]').trigger('drop')
+    await flushPromises()
+    expect(put).toHaveBeenCalledWith('x', 'L-001', { col: 'cut' })
+  })
+
+  it('建议1：dragend 清空拖着状态，之后 drop 不再动作', async () => {
+    vi.spyOn(api, 'getBoard').mockResolvedValue(造看板())
+    const put = vi.spyOn(api, 'putCard').mockResolvedValue({ cards: 造看板().cards })
+    const w = mount(BoardPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    const card = w.find('[data-test="卡-L-001"]')
+    await card.trigger('dragstart')
+    await card.trigger('dragend')
+    await w.find('[data-test="列-cut"]').trigger('drop')
+    await flushPromises()
+    expect(put).not.toHaveBeenCalled()
+  })
+
+  it('拖放绕过「移到」直接调 putCard 会被拦：拖到合并列要先选目标，不直接调 putCard', async () => {
+    vi.spyOn(api, 'getBoard').mockResolvedValue(造看板())
+    const put = vi.spyOn(api, 'putCard').mockResolvedValue({ cards: 造看板().cards })
+    const w = mount(BoardPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    await w.find('[data-test="卡-L-002"]').trigger('dragstart')
+    await w.find('[data-test="列-merge"]').trigger('drop')
+    await flushPromises()
+    expect(put).not.toHaveBeenCalled()
+    expect(w.find('[data-test="并入-L-002"]').exists()).toBe(true)
+  })
+
+  it('建议2：并入候选排除已经砍掉的线和在合并列的线', async () => {
+    const view = 造看板()
+    view.cards['L-003'] = { col: 'cut', merge_into: null, note: '', orphan: false, merge_invalid: false }
+    view.cards['L-004'] = { col: 'merge', merge_into: 'L-001', note: '', orphan: false, merge_invalid: false }
+    view.stats['L-003'] = { name: '被砍的线', world: 'W-01', words: 100, scenes: 1, state: '待定', gaps: 0, is_main: false, order_failed: false }
+    view.stats['L-004'] = { name: '已并入的线', world: 'W-01', words: 100, scenes: 1, state: '待定', gaps: 0, is_main: false, order_failed: false }
+    vi.spyOn(api, 'getBoard').mockResolvedValue(view)
+    const w = mount(BoardPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    await w.find('[data-test="移到-L-002"]').setValue('merge')
+    const options = w.find('[data-test="并入-L-002"]').findAll('option').map((o) => o.text())
+    expect(options.some((t) => t.includes('被砍的线'))).toBe(false)
+    expect(options.some((t) => t.includes('已并入的线'))).toBe(false)
+    expect(options.some((t) => t.includes('岑秀入仕'))).toBe(true)
+  })
+
+  it('建议3：col 已经是 merge 时并入下拉常驻显示，能直接改目标', async () => {
+    const view = 造看板()
+    view.cards['L-002'] = { col: 'merge', merge_into: 'L-001', note: '', orphan: false, merge_invalid: false }
+    vi.spyOn(api, 'getBoard').mockResolvedValue(view)
+    const put = vi.spyOn(api, 'putCard').mockResolvedValue({ cards: view.cards })
+    const w = mount(BoardPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    // 不用先从主下拉重新选一次「合并」，下拉本来就在
+    const select = w.find('[data-test="并入-L-002"]')
+    expect(select.exists()).toBe(true)
+    await select.setValue('L-001')
+    await flushPromises()
+    expect(put).toHaveBeenCalledWith('x', 'L-002', { col: 'merge', merge_into: 'L-001' })
+  })
+
+  it('建议4：模型影响过期时伏笔配对标已过期，按钮文案改成中性表述，旧建议不显示', async () => {
+    const view = 造看板()
+    view.cards['L-002'].col = 'cut'
+    vi.spyOn(api, 'getBoard').mockResolvedValue(view)
+    vi.spyOn(api, 'getImpact').mockResolvedValue({
+      program: 影响.program,
+      model: { sig: 's', generated: 'x', stale: true, remedy: '旧建议',
+        pairs: [{ planted: 'S-0001', resolved: 'S-0002', hook: '钩子' }] },
+    })
+    const w = mount(BoardPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    const box = w.find('[data-test="影响-L-002"]')
+    expect(box.text()).toContain('已过期')
+    expect(box.text()).toContain('输入变了，可能过时')
+    expect(box.text()).not.toContain('看板变了')
+    expect(box.text()).not.toContain('旧建议')
+  })
+
+  it('M4：AI 建议任务失败时提示，不再只是默默刷新', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(api, 'getBoard').mockResolvedValue(造看板())
+    vi.spyOn(api, 'currentJob')
+      .mockResolvedValueOnce({ ...job, name: 'triage_advice', status: 'queued' })
+      .mockResolvedValueOnce({ ...job, name: 'triage_advice', status: 'failed', error: '模型欠费' })
+    const w = mount(BoardPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(1000)
+    await flushPromises()
+    expect(w.text()).toContain('模型欠费')
+    vi.useRealTimers()
+  })
+
+  it('M4：影响检查任务 result.ok===false 时提示', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(api, 'getBoard').mockResolvedValue(造看板())
+    vi.spyOn(api, 'currentJob')
+      .mockResolvedValueOnce({ ...job, status: 'queued' })
+      .mockResolvedValueOnce({ ...job, status: 'done', result: { ok: false, failed: [] } })
+    const w = mount(BoardPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(1000)
+    await flushPromises()
+    expect(w.text()).toContain('没有成功')
+    vi.useRealTimers()
+  })
+
+  it('补测：任务进行中时「移到」下拉和 AI 建议按钮禁用', async () => {
+    vi.spyOn(api, 'getBoard').mockResolvedValue(造看板())
+    vi.spyOn(api, 'runAdvice').mockResolvedValue({ ...job, name: 'triage_advice' })
+    const w = mount(BoardPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    await w.find('[data-test="AI建议"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-test="AI建议"]').attributes('disabled')).toBeDefined()
+    expect(w.find('[data-test="移到-L-001"]').attributes('disabled')).toBeDefined()
+  })
 })

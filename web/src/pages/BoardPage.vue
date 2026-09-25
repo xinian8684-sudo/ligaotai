@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { deleteCard, getBoard, getImpact, putCard, runAdvice, runImpact } from '@/api/endpoints'
-import type { AdviceItem, BoardCol, BoardView, ImpactView } from '@/api/types'
+import type { AdviceItem, BoardCol, BoardView, ImpactView, Job } from '@/api/types'
 import { ApiError } from '@/api/client'
 import { useJobStore } from '@/stores/job'
 import ErrorBox from '@/components/ErrorBox.vue'
@@ -63,6 +63,12 @@ function 线名(tid: string): string {
   return view.value?.stats[tid]?.name ?? tid
 }
 
+/** 建议 2：并入候选要排除已经砍掉的线（后端 set_card 会 400）——原来只排除了 cut，
+ * 没排除 merge：并入一条自己也在合并列的线，后端同样会 400（合并链长只能是 1）。 */
+function 并入候选(tid: string): string[] {
+  return 活线.value.filter((x) => x !== tid && !['cut', 'merge'].includes(view.value!.cards[x].col))
+}
+
 async function 移到(tid: string, col: BoardCol, mergeInto?: string): Promise<void> {
   if (col === 'merge' && !mergeInto) {
     待选并入.value[tid] = true
@@ -108,12 +114,41 @@ async function 查伏笔(tid: string): Promise<void> {
 
 // 拖放：跟「移到」下拉走同一个函数
 const 拖着 = ref('')
+function 开始拖(e: DragEvent, tid: string): void {
+  拖着.value = tid
+  // 建议 1：标准 HTML5 拖放要靠 dataTransfer 传数据，drop 事件不设默认会被浏览器拒绝
+  // （某些浏览器/场景下 dragover.prevent 都不足以让 drop 生效）。
+  e.dataTransfer?.setData('text/plain', tid)
+}
+function 结束拖(): void {
+  // 建议 1：dragend 清掉拖着的卡——没落进任何列（拖到列外面松手、按 Esc 取消）时
+  // 状态会一直留着，万一后面又触发一次 drop（哪怕概率很低）会把不相关的那次动作
+  // 当成「还在拖同一张卡」，误移一张卡。
+  拖着.value = ''
+}
 function 放下(col: BoardCol): void {
   if (拖着.value) void 移到(拖着.value, col)
   拖着.value = ''
 }
 
-const 退订 = jobStore.onFinish(() => { void 加载() })
+/** M4：原来 onFinish 只重新加载，AI 建议 / 影响检查失败（模型欠费、多次不合规）
+ * 没有任何提示——作者只会看到页面刷新了一下，以为任务顺利跑完了。 */
+function 任务提示(job: Job): string {
+  const label = job.name === 'triage_advice' ? 'AI 建议' : '影响检查'
+  if (job.status !== 'done') return `${label}${job.status === 'cancelled' ? '被取消' : '失败'}：${job.error || '原因不明'}`
+  const r = (job.result ?? {}) as Record<string, unknown>
+  if (r.ok === false) return `${label}没有成功：模型没给出可用结果`
+  return ''
+}
+
+const 退订 = jobStore.onFinish((job) => {
+  if (job.name !== 'triage_advice' && job.name !== 'triage_impact') return
+  void (async () => {
+    await 加载()
+    const msg = 任务提示(job)
+    if (msg) error.value = msg
+  })()
+})
 onMounted(() => {
   jobStore.start()
   void 加载()
@@ -141,7 +176,7 @@ onUnmounted(() => {
         <h2>{{ c.label }}（{{ 按列[c.key].length }}）</h2>
         <article v-for="tid in 按列[c.key]" :key="tid" class="card" :class="{ orphan: view.cards[tid].orphan }"
                  :data-test="`卡-${tid}`" :draggable="!view.cards[tid].orphan && !jobStore.busy"
-                 @dragstart="拖着 = tid">
+                 @dragstart="开始拖($event, tid)" @dragend="结束拖">
           <header>
             <b>{{ view.stats[tid]?.is_main ? '★ ' : '' }}{{ 线名(tid) }}</b>
             <span class="id">{{ tid }}</span>
@@ -163,10 +198,11 @@ onUnmounted(() => {
                     @change="移到(tid, ($event.target as HTMLSelectElement).value as BoardCol)">
               <option v-for="o in 列" :key="o.key" :value="o.key">移到：{{ o.label }}</option>
             </select>
-            <select v-if="待选并入[tid]" :data-test="`并入-${tid}`" :disabled="jobStore.busy" value=""
+            <select v-if="待选并入[tid] || view.cards[tid].col === 'merge'" :data-test="`并入-${tid}`" :disabled="jobStore.busy"
+                    :value="view.cards[tid].col === 'merge' ? (view.cards[tid].merge_into ?? '') : ''"
                     @change="移到(tid, 'merge', ($event.target as HTMLSelectElement).value)">
               <option value="" disabled>并入哪条线？</option>
-              <option v-for="o in 活线.filter((x) => x !== tid && view!.cards[x].col !== 'cut')" :key="o" :value="o">{{ 线名(o) }}</option>
+              <option v-for="o in 并入候选(tid)" :key="o" :value="o">{{ 线名(o) }}</option>
             </select>
           </div>
 
@@ -183,13 +219,13 @@ onUnmounted(() => {
               <li v-for="r in 影响[tid]!.program.maybe_refs" :key="r.scene + r.text">
                 可能：{{ 线名(r.thread) }} 的 {{ r.scene }} 提到「{{ r.text }}」
               </li>
-              <li v-for="p in 影响[tid]!.model?.pairs ?? []" :key="p.planted + p.resolved">
-                伏笔：{{ p.planted }} 埋 → {{ p.resolved }} 收（{{ p.hook }}）
+              <li v-for="p in 影响[tid]!.model?.pairs ?? []" :key="p.planted + p.resolved" :class="{ stale: 影响[tid]!.model!.stale }">
+                伏笔：{{ p.planted }} 埋 → {{ p.resolved }} 收（{{ p.hook }}）<span v-if="影响[tid]!.model!.stale" class="stale-tag">（已过期）</span>
               </li>
             </ul>
             <p v-if="影响[tid]!.model && !影响[tid]!.model!.stale" class="remedy">{{ 影响[tid]!.model!.remedy }}</p>
             <button v-else :data-test="`检查伏笔-${tid}`" :disabled="jobStore.busy" @click="查伏笔(tid)">
-              {{ 影响[tid]!.model ? '看板变了，重新检查伏笔影响' : '检查伏笔影响' }}
+              {{ 影响[tid]!.model ? '输入变了，可能过时，重新检查伏笔影响' : '检查伏笔影响' }}
             </button>
           </div>
         </article>
@@ -218,5 +254,7 @@ h1{font-family:var(--serif);font-size:20px;margin:16px 0}
 .impact{margin-top:8px;border-top:1px dashed var(--line);padding-top:6px}
 .impact .k{font-weight:600;color:var(--red)}
 .impact ul{margin:4px 0;padding-left:16px}
+.impact li.stale{opacity:.6}
+.stale-tag{color:var(--amber)}
 .remedy{color:var(--ink-2)}
 </style>
