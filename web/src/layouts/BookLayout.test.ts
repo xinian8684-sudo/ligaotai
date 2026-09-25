@@ -105,6 +105,20 @@ describe('BookLayout', () => {
     expect(w.find('[data-test="实体角标"]').text()).toBe('7')
   })
 
+  it('补测：矛盾角标只认真矛盾，「严重」但不是真矛盾的组不算', async () => {
+    // 现有测试里「不是真矛盾」的那个组（C-005）level 是空字符串，本来就会被「严重」那关
+    // 筛掉——就算去掉 status==='真矛盾' 这个条件，那个测试也不会红。这里单独造一个
+    // 「level 是严重、但 status 不是真矛盾」的组，才能真的测出角标有没有认 status。
+    vi.spyOn(api, 'getBook').mockResolvedValue(造书())
+    vi.mocked(api.getContradictions).mockResolvedValue({
+      groups: [造矛盾组({ id: 'C-001', status: '合理变化', level: '严重' })],
+      stats: {},
+    })
+    const w = mount(BookLayout, { props: { name: 'guixu' }, global: { stubs } })
+    await flushPromises()
+    expect(w.find('[data-test="矛盾角标"]').exists()).toBe(false)
+  })
+
   it('书拉不下来时给出原因，而不是空白', async () => {
     vi.spyOn(api, 'getBook').mockRejectedValue(new Error('书不存在'))
     const w = mount(BookLayout, { props: { name: 'guixu' }, global: { stubs } })

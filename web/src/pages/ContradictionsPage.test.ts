@@ -191,4 +191,41 @@ describe('ContradictionsPage', () => {
     await flushPromises()
     expect(w.find('[data-test="以此为准-C-001-0"]').attributes('disabled')).toBeDefined()
   })
+
+  it('补测：有任务在跑时「撤销」按钮也禁用', async () => {
+    vi.spyOn(api, 'getContradictions').mockResolvedValue(造文件([造组({
+      verdict: { kind: 'pick', value: '如意金箍棒', by: 'author', at: 'x' } })]))
+    const w = mount(ContradictionsPage, { props: { name: 'guixu' }, global: { stubs } })
+    await flushPromises()
+    useJobStore().current = { id: 'j', name: 'archive', book: 'guixu', status: 'running', done: 0, total: 1,
+      message: '', error: '', result: null, started: '', finished: '', cancel_requested: false }
+    await flushPromises()
+    expect(w.find('[data-test="撤销-C-001"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('补测：过期的裁决仍要显示重判按钮，不因为已经有 verdict 就藏起来', async () => {
+    vi.spyOn(api, 'getContradictions').mockResolvedValue(造文件([造组({
+      verdict: { kind: 'pick', value: '如意金箍棒', by: 'author', at: 'x' }, verdict_stale: true })]))
+    const w = mount(ContradictionsPage, { props: { name: 'guixu' }, global: { stubs } })
+    await flushPromises()
+    const btns = w.findAll('[data-test^="以此为准-"]')
+    expect(btns.length).toBe(2)
+    expect(w.find('[data-test="自己写-C-001"]').exists()).toBe(true)
+    expect(w.find('[data-test="先放着-C-001"]').exists()).toBe(true)
+  })
+
+  it('补测：裁决后要刷新角标（调注入的「刷新书」）', async () => {
+    vi.spyOn(api, 'getContradictions').mockResolvedValue(造文件([造组()]))
+    vi.spyOn(api, 'putVerdict').mockResolvedValue(造组({
+      verdict: { kind: 'pick', value: '如意金箍棒', by: 'author', at: 'x' } }))
+    const 刷新书 = vi.fn().mockResolvedValue(undefined)
+    const w = mount(ContradictionsPage, {
+      props: { name: 'guixu' },
+      global: { stubs, provide: { 刷新书 } },
+    })
+    await flushPromises()
+    await w.find('[data-test="以此为准-C-001-0"]').trigger('click')
+    await flushPromises()
+    expect(刷新书).toHaveBeenCalled()
+  })
 })
