@@ -234,6 +234,31 @@ describe('SkeletonPage', () => {
     vi.useRealTimers()
   })
 
+  it('M2：空洞说明框重新加载后要跟着新数据走，不能停在初次渲染的旧文本上', async () => {
+    // M2 的坑只有「同一个 DOM 节点被复用着 patch」才会现出来——textarea 的 key 是
+    // it.type+it.id，H-001 重新加载前后 id 不变，Vue 会复用同一个 <textarea>，不会
+    // 重新创建。子节点插值（{{ it.task }}）在这种复用场景下更新的是文本子节点，
+    // 不会同步进浏览器已经渲染出来的 textarea.value（这是 HTML textarea 的老毛病，
+    // 也是 Vue 官方建议 textarea 用 :value 绑定的原因）；首次渲染两种写法看起来
+    // 一样，所以这个测试必须走一次「重新加载」才测得出差别。
+    vi.useFakeTimers()
+    let 当前 = 造骨架()
+    vi.spyOn(api, 'getSkeleton').mockImplementation(async () => 当前)
+    vi.spyOn(api, 'currentJob')
+      .mockResolvedValueOnce({ ...job, status: 'queued' })
+      .mockResolvedValueOnce({ ...job, status: 'done', result: { written: true, input_changed: false, failed: [] } })
+    const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    expect((w.find('[data-test="空洞输入-H-001"]').element as HTMLTextAreaElement).value).toContain('大闹天宫')
+    const 新 = 造骨架()
+    ;(新.volumes[0].chapters[0].items[1] as { task: string }).task = '全新的补写说明关于闹天宫 [S-0001]'
+    当前 = 新
+    await vi.advanceTimersByTimeAsync(1000)
+    await flushPromises()
+    expect((w.find('[data-test="空洞输入-H-001"]').element as HTMLTextAreaElement).value).toBe('全新的补写说明关于闹天宫 [S-0001]')
+    vi.useRealTimers()
+  })
+
   it('S2：场景行显示摘要和线名', async () => {
     const sk = 造骨架()
     const it0 = sk.volumes[0].chapters[0].items[0] as unknown as Record<string, unknown>
