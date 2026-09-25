@@ -1,6 +1,13 @@
+import json
+
+from helpers import FakeBackend
+
+from ligaotai.config import AppConfig
 from ligaotai.export import export_book
-from ligaotai.fsutil import write_json
-from tools.eval_skeleton import check_book
+from ligaotai.fsutil import read_json, write_json
+from ligaotai.llm import LLMClient
+from ligaotai.skeleton import generate
+from tools.eval_skeleton import check_book, main
 
 
 def _sk(items, unplaced=None):
@@ -85,3 +92,123 @@ def test_未定位里的空洞说明也要查编造(book_with_threads):
     export_book(b)
     r = check_book(b, truth=None, cut=[])
     assert r["fabricated_refs"] == ["S-0999"]
+
+
+def _chapters_handler(tier, messages):
+    system = messages[0]["content"]
+    if "分卷分章" in system:
+        return json.dumps({"volumes": [{"title": "卷一", "start": 0}],
+                           "chapters": [{"title": "全", "start": 0}]}, ensure_ascii=False)
+    return json.dumps({"holes": []})
+
+
+def test_M5_生成器悄悄丢一条线的场景_判据1要红(book_with_threads, monkeypatch):
+    """M5：判据 1、3 原来拿 skeleton_order.build_sequence/insert_holes 自己算期望值再拿它
+    验自己——生成器真的悄悄丢了一条线的场景，期望值会跟着一起丢，两边一起错，判据照样绿。
+    这里 monkeypatch 生成器（ligaotai.skeleton 模块里 import 进来的 build_sequence 名字），
+    让它在真实生成时悄悄把 L-002 的场景过滤掉，验证改用独立重算之后判据 1 真的会报出来。"""
+    import ligaotai.skeleton as skl_mod
+    from ligaotai.skeleton_order import build_sequence as real_build_sequence
+
+    def buggy(threads, cols, drop, vmap=None):
+        seq, unplaced = real_build_sequence(threads, cols, drop, vmap)
+        seq = [it for it in seq if it["thread"] != "L-002"]  # 悄悄丢掉 L-002 的场景
+        return seq, unplaced
+
+    monkeypatch.setattr(skl_mod, "build_sequence", buggy)
+
+    b = book_with_threads
+    client = LLMClient(AppConfig(), FakeBackend(handler=_chapters_handler), log_dir=b.logs_dir)
+    r = generate(b, client)
+    assert r["written"] is True
+    export_book(b)
+    result = check_book(b, truth=None, cut=[])
+    assert result["each_once"] is False
+    assert "S-0004" in result["missing"] and "S-0005" in result["missing"]
+
+
+def test_M6_只属于砍线的缺口泄漏进骨架(book_with_threads):
+    """M6：判据 4 原来只查场景层面的砍线泄漏，没查空洞——手改骨架（或者线砍了骨架没
+    重新生成）时，只属于被砍线的缺口还留在骨架里、照样导出，测不出来。"""
+    b = book_with_threads
+    items = [{"type": "scene", "id": f"S-000{i}", "thread": "L-001"} for i in range(1, 4)] + \
+            [{"type": "hole", "id": "H-001", "gap": "Q-001", "task": "补 [S-0001]"}]
+    write_json(b.skeleton_path, _sk(items))
+    write_json(b.board_path, {"cards": {"L-001": {"col": "cut", "merge_into": None, "note": ""}}})
+    export_book(b)
+    r = check_book(b, truth=None, cut=["L-001"])
+    assert r["cut_hole_leaks"] == ["Q-001"]
+
+
+def test_建议8_给了key但算不出tau不能算pass(book_with_threads, tmp_path):
+    """建议 8：--key/--folder 都给了，就是真的想验证顺序；答案文件跟书里场景的来源对不上号，
+    算出来的 τ 会是 None——这不是「没要求」，不能悄悄放过，pass 必须是 False。
+    骨架本身其它方面（每块恰好一次、空洞对得上、没有编造）都是干净的，这样 pass=False
+    才能确定是 tau 这一项拖的，不是被别的问题顺带带崩的（不然测试测不出 tau_ok 这条逻辑）。"""
+    b = book_with_threads
+    items = [{"type": "scene", "id": "S-0001", "thread": "L-001"},
+             {"type": "hole", "id": "H-001", "gap": "Q-001", "task": "补 [S-0002]"},
+             *[{"type": "scene", "id": f"S-000{i}", "thread": "L-001" if i < 4 else "L-002"} for i in range(2, 6)]]
+    write_json(b.skeleton_path, _sk(items))
+    export_book(b)
+    r0 = check_book(b, truth=None, cut=[])
+    assert r0["each_once"] and not r0["holes_missing"] and not r0["holes_extra"] and not r0["fabricated_refs"]
+    key_path = tmp_path / "答案.json"
+    key_path.write_text(json.dumps({"files": []}, ensure_ascii=False), encoding="utf-8")
+    report_path = tmp_path / "报告.json"
+    main(["--library", str(b.root.parent), "--book", b.name,
+         "--folder", "不存在的乱稿文件夹", "--key", str(key_path), "--report", str(report_path)])
+    r = read_json(report_path)
+    assert r["tau"] is None
+    assert r["pass"] is False
+
+
+def test_建议8_cut不给时默认从看板读(book_with_threads, tmp_path):
+    """建议 8：--cut 不给时默认从看板现读 cut 列，不强制每次都手填。"""
+    b = book_with_threads
+    items = [{"type": "scene", "id": f"S-000{i}", "thread": "L-001"} for i in range(1, 4)] + \
+            [{"type": "scene", "id": "S-0004", "thread": "L-002"}]
+    write_json(b.skeleton_path, _sk(items))
+    write_json(b.board_path, {"cards": {"L-002": {"col": "cut", "merge_into": None, "note": ""}}})
+    export_book(b)
+    report_path = tmp_path / "报告.json"
+    main(["--library", str(b.root.parent), "--book", b.name, "--report", str(report_path)])
+    r = read_json(report_path)
+    assert r["cut_leaks"] == ["S-0004"]
+
+
+def test_建议9_正常情况两边一致(book_with_threads):
+    b = book_with_threads
+    data = read_json(b.threads_path)
+    data["intersections"] = [{"thread": "L-002", "scene": "S-0004", "main_scene": "S-0002", "reason": "r"}]
+    write_json(b.threads_path, data)
+    items = [{"type": "scene", "id": f"S-000{i}", "thread": "L-001"} for i in range(1, 4)]
+    write_json(b.skeleton_path, _sk(items))
+    write_json(b.board_path, {"cards": {"L-002": {"col": "cut", "merge_into": None, "note": ""}}})
+    export_book(b)
+    r = check_book(b, truth=None, cut=["L-002"])
+    assert r["crossing_mismatch"] == []  # 正常情况下两边一致
+
+
+def test_建议9_program_impact漏交汇点时要报出来(book_with_threads, monkeypatch):
+    """建议 9：program_impact 算出来的交汇点跟 threads.intersections 原始列表直接筛出来的
+    对不上（这里 monkeypatch program_impact 模拟它漏了一个交汇点）时，crossing_mismatch
+    要把那条线的编号列出来——不能因为「program_impact 反正也是从 intersections 算的」
+    就假定它俩永远一致。"""
+    import tools.eval_skeleton as ev_mod
+
+    def buggy(book, threads, tid):
+        return {"thread": tid, "crossings": [], "only_characters": [], "maybe_refs": []}
+
+    monkeypatch.setattr(ev_mod, "program_impact", buggy)
+
+    b = book_with_threads
+    data = read_json(b.threads_path)
+    data["intersections"] = [{"thread": "L-002", "scene": "S-0004", "main_scene": "S-0002", "reason": "r"}]
+    write_json(b.threads_path, data)
+    items = [{"type": "scene", "id": f"S-000{i}", "thread": "L-001"} for i in range(1, 4)]
+    write_json(b.skeleton_path, _sk(items))
+    write_json(b.board_path, {"cards": {"L-002": {"col": "cut", "merge_into": None, "note": ""}}})
+    export_book(b)
+    r = check_book(b, truth=None, cut=["L-002"])
+    assert r["crossing_mismatch"] == ["L-002"]
