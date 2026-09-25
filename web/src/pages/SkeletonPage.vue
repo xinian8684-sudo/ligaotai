@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { exportBook, exportUrl, generateSkeleton, getSkeleton, putSkeleton } from '@/api/endpoints'
-import type { ExportResult, SkChapter, SkHole, SkItem, SkNote, Skeleton } from '@/api/types'
+import type { ExportResult, Job, SkChapter, SkHole, SkItem, SkNote, Skeleton } from '@/api/types'
 import { ApiError } from '@/api/client'
 import { useJobStore } from '@/stores/job'
 import ErrorBox from '@/components/ErrorBox.vue'
@@ -24,8 +24,11 @@ function 报错(e: unknown): void {
   error.value = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
 }
 
-function 是404(e: unknown): boolean {
-  return e instanceof ApiError && e.status === 404
+/** 建议 7：只有「真的还没有骨架」才显示空态那句——GET /skeleton 也会把「没有归线结果」
+ * 这种别的 404（tri_op 里 load_threads 抛的）原样映射成 404，跟「没有骨架」的 404
+ * 长得一样但原因完全不同，不能都当成空态糊弄过去，要看 detail 文案分辨。 */
+function 是缺骨架(e: unknown): boolean {
+  return e instanceof ApiError && e.status === 404 && e.detail.includes('还没有骨架')
 }
 
 async function 加载(): Promise<void> {
@@ -34,10 +37,13 @@ async function 加载(): Promise<void> {
     sk.value = await getSkeleton(props.name)
     没有.value = false
   } catch (e) {
-    if (是404(e)) {
+    if (是缺骨架(e)) {
       没有.value = true
       sk.value = null
-    } else 报错(e)
+    } else {
+      没有.value = false
+      报错(e)
+    }
   }
 }
 
@@ -56,11 +62,19 @@ function 章位置(v: number, c: number): number {
 
 async function 保存(next: Skeleton): Promise<void> {
   error.value = ''
+  // M3：PUT 返回的是后端剥掉 flag/absent 的版本（没有 not_main/cut 这些标注），拿它直接
+  // 赋值给 sk.value 会让灰显、absent 提醒全部消失，看着像是保存把这些信息弄丢了。改成
+  // 保存成功后 await 加载()，用 GET（annotate()）的结果重新标注一遍。
+  // absent 是界面标注、不是骨架数据，PUT 前先去掉（后端 _strip_flags 也会剥，这里双保险）。
+  const { absent: _absent, ...body } = next
   try {
-    sk.value = await putSkeleton(props.name, next)
-  } catch (e) {
-    报错(e)
+    await putSkeleton(props.name, body)
     await 加载()
+  } catch (e) {
+    // M1：先重新加载再报错——原来的顺序是先报错、加载()一上来就清 error，会把刚报的
+    // 保存失败（409/400 等）立刻吞掉，界面看着像是保存成功了。
+    await 加载()
+    报错(e)
   }
 }
 
@@ -105,10 +119,15 @@ async function 存名字(kind: 'vol' | 'ch', v: number, c = -1): Promise<void> {
 }
 
 /** 同卷内跟相邻章交换；卷首章上移挪到上一卷末尾，卷末章下移挪到下一卷开头。
- *  全书第一章 / 最后一章的按钮已经禁用，所以跨卷时相邻卷一定存在。 */
+ *  全书第一章 / 最后一章的按钮已经禁用，所以跨卷时相邻卷一定存在。
+ *  建议 5：移章把一卷移空了，删掉这个空卷（不然导出会带一个没有任何章节的空卷标题）；
+ *  移章后 选中 要跟着走——不管是「选中的章被移动了」还是「前面的空卷被删掉、后面所有卷的
+ *  下标往前挪了一位」，都拿移动前 选中 指着的那个章节对象（引用不变，splice 不会克隆元素）
+ *  在移动后的结果里重新定位一遍，不用手算下标怎么挪。 */
 async function 移章(v: number, c: number, dir: -1 | 1): Promise<void> {
   const next = 副本()
   const vols = next.volumes
+  const 原选中章 = vols[选中.value[0]]?.chapters[选中.value[1]]
   const [ch] = vols[v].chapters.splice(c, 1)
   if (dir === -1) {
     if (c > 0) vols[v].chapters.splice(c - 1, 0, ch)
@@ -117,6 +136,16 @@ async function 移章(v: number, c: number, dir: -1 | 1): Promise<void> {
     vols[v].chapters.splice(c + 1, 0, ch)
   } else {
     vols[v + 1].chapters.unshift(ch)
+  }
+  if (vols[v].chapters.length === 0) vols.splice(v, 1)
+  if (原选中章) {
+    for (let vi = 0; vi < vols.length; vi++) {
+      const ci = vols[vi].chapters.indexOf(原选中章)
+      if (ci >= 0) {
+        选中.value = [vi, ci]
+        break
+      }
+    }
   }
   await 保存(next)
 }
@@ -173,13 +202,59 @@ async function 放进当前章(sid: string): Promise<void> {
   await 保存(next)
 }
 
-function 备注(n: SkNote): string {
-  if (n.kind === 'undecided') return `去留未定：${n.thread}`
-  if (n.kind === 'merge') return `待并入 ${n.into} 改写：${n.thread}`
-  return `此处原与被砍的 ${n.thread} 交汇`
+/** S3：章节备注原来只显示线编号（L-002），带上线名读起来才知道是哪条线。名字从骨架里
+ * 已经带着的 thread_name（annotate() 给每个场景项补的，S2）现拼一张编号→名字的表；
+ * 砍掉的线全书都没有场景项还留着它的编号，表里查不到，这时就只显示编号（S3 原话）。 */
+const 线名表 = computed<Record<string, string>>(() => {
+  const out: Record<string, string> = {}
+  const 记 = (thread?: string | null, name?: string) => {
+    if (thread && name) out[thread] = name
+  }
+  for (const v of sk.value?.volumes ?? []) {
+    for (const ch of v.chapters) {
+      for (const it of ch.items) {
+        if (it.type === 'scene') 记(it.thread, it.thread_name)
+      }
+    }
+  }
+  for (const s of sk.value?.unplaced.scenes ?? []) 记(s.thread, s.thread_name)
+  return out
+})
+
+function 线名(tid?: string | null): string {
+  if (!tid) return ''
+  return 线名表.value[tid] ?? tid
 }
 
-const 退订 = jobStore.onFinish(() => { void 加载() })
+function 备注(n: SkNote): string {
+  if (n.kind === 'undecided') return `去留未定：${线名(n.thread)}`
+  if (n.kind === 'merge') return `待并入 ${线名(n.into)} 改写：${线名(n.thread)}`
+  return `此处原与被砍的 ${线名(n.thread)} 交汇`
+}
+
+/** M4：原来 onFinish 只重新加载，track_step=False 的「生成骨架」任务失败（模型一直不合规、
+ * 输入跑到一半变了）没有任何提示——作者只会看到页面刷新了一下，以为生成成功了。 */
+function 骨架任务提示(job: Job): string {
+  if (job.status !== 'done') return `生成骨架${job.status === 'cancelled' ? '被取消' : '失败'}：${job.error || '原因不明'}`
+  const r = (job.result ?? {}) as Record<string, unknown>
+  if (r.ok === false) return '生成骨架没有成功：模型多次都没给出可用结果'
+  if (r.written === false) return r.input_changed ? '生成骨架时输入变了，请重新生成' : '生成骨架没有成功'
+  const failed = Array.isArray(r.failed) ? (r.failed as { call?: string }[]) : []
+  if (failed.length) {
+    const tags = failed.map((f) => f.call).filter(Boolean).join('、')
+    return `骨架已生成，但有 ${failed.length} 处模型没给出结果，用了程序兜底：${tags}`
+  }
+  return ''
+}
+
+const 退订 = jobStore.onFinish((job) => {
+  if (job.name !== 'skeleton') return
+  void (async () => {
+    await 加载()
+    const msg = 骨架任务提示(job)
+    if (msg) error.value = msg
+  })()
+})
 onMounted(() => {
   jobStore.start()
   void 加载()
@@ -240,7 +315,8 @@ onUnmounted(() => {
         <template v-for="it in 当前章.items" :key="it.type + it.id">
           <div v-if="it.type === 'scene'" class="scene" :class="{ flagged: it.flag }" :data-test="`场景-${it.id}`">
             <span class="sid">{{ it.id }}</span>
-            <span class="thread">{{ it.thread }}</span>
+            <span class="thread">{{ it.thread_name ?? it.thread }}</span>
+            <span v-if="it.summary" class="summary">{{ it.summary }}</span>
             <span v-if="it.flag" class="why">{{ flag文字[it.flag] ?? it.flag }}</span>
             <span class="ops">
               <button :disabled="jobStore.busy || 章位置(选中[0], 选中[1]) === 0" @click="移场景(it, -1)">移到上一章</button>
@@ -249,7 +325,12 @@ onUnmounted(() => {
           </div>
           <details v-else class="hole" :data-test="`空洞-${it.id}`" open>
             <summary>空洞 {{ it.id }}</summary>
-            <textarea :disabled="jobStore.busy" @change="改说明(it, ($event.target as HTMLTextAreaElement).value)">{{ it.task }}</textarea>
+            <textarea :data-test="`空洞输入-${it.id}`" :disabled="jobStore.busy" :value="it.task"
+                      @change="改说明(it, ($event.target as HTMLTextAreaElement).value)"></textarea>
+            <span class="ops">
+              <button :disabled="jobStore.busy || 章位置(选中[0], 选中[1]) === 0" @click="移场景(it, -1)">移到上一章</button>
+              <button :data-test="`下移空洞-${it.id}`" :disabled="jobStore.busy || 章位置(选中[0], 选中[1]) === 章序.length - 1" @click="移场景(it, 1)">移到下一章</button>
+            </span>
             <button :data-test="`删空洞-${it.id}`" :disabled="jobStore.busy" @click="删空洞(it)">删掉这个空洞</button>
           </details>
         </template>
@@ -260,7 +341,8 @@ onUnmounted(() => {
     <section v-if="sk && (sk.unplaced.scenes.length || sk.unplaced.holes.length)" class="unplaced" data-test="未定位">
       <h2>未定位</h2>
       <div v-for="s in sk.unplaced.scenes" :key="s.id" class="scene">
-        <span class="sid">{{ s.id }}</span><span class="thread">{{ s.thread ?? '' }}</span>
+        <span class="sid">{{ s.id }}</span><span class="thread">{{ s.thread_name ?? s.thread ?? '' }}</span>
+        <span v-if="s.summary" class="summary">{{ s.summary }}</span>
         <span class="why">{{ 原因[s.why] ?? s.why }}</span>
         <button :disabled="jobStore.busy || !当前章" @click="放进当前章(s.id)">放进当前章</button>
       </div>
@@ -293,6 +375,7 @@ h1{font-family:var(--serif);font-size:20px;margin:16px 0}
 .scene.flagged{opacity:.55}
 .sid{font-family:var(--mono)}
 .thread{color:var(--accent)}
+.summary{color:var(--ink-2)}
 .why{color:var(--ink-3)}
 .scene .ops{margin-left:auto;display:flex;gap:4px}
 .hole{border:1px solid var(--red);border-radius:6px;padding:6px 8px;margin:6px 0;font-size:13px}

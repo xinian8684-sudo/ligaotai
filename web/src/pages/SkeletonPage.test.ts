@@ -38,7 +38,9 @@ describe('SkeletonPage', () => {
     expect(w.find('[data-test="卷章树"]').text()).toContain('龙宫')
     const items = w.find('[data-test="条目"]')
     expect(items.text()).toContain('S-0001')
-    expect(items.find('[data-test="空洞-H-001"]').text()).toContain('大闹天宫')
+    // M2：textarea 改成 :value 绑定（不再是子节点插值），要读 DOM 的 value 属性，
+    // 不能再用 .text()（这是改「怎么读值」，不是改期望值——期望的文字内容没变）。
+    expect((items.find('[data-test="空洞输入-H-001"]').element as HTMLTextAreaElement).value).toContain('大闹天宫')
     expect(items.find('[data-test="场景-S-0004"]').classes()).toContain('flagged')
     expect(w.text()).toContain('去留未定：L-003')
     expect(w.find('[data-test="未定位"]').text()).toContain('S-0084')
@@ -82,8 +84,14 @@ describe('SkeletonPage', () => {
   })
 
   it('场景移到下一章、删空洞', async () => {
-    vi.spyOn(api, 'getSkeleton').mockResolvedValue(造骨架())
-    const put = vi.spyOn(api, 'putSkeleton').mockImplementation(async (_n, sk) => sk)
+    // M3：保存成功后会 await 加载()（重新 GET），不再直接拿 PUT 的回包当新状态——
+    // getSkeleton 的 mock 要跟着 putSkeleton 存的东西走，不然第二次操作会读到没更新的旧数据。
+    let 当前 = 造骨架()
+    vi.spyOn(api, 'getSkeleton').mockImplementation(async () => 当前)
+    const put = vi.spyOn(api, 'putSkeleton').mockImplementation(async (_n, sk) => {
+      当前 = sk
+      return sk
+    })
     const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
     await flushPromises()
     await w.find('[data-test="下移场景-S-0001"]').trigger('click')
@@ -124,8 +132,12 @@ describe('SkeletonPage', () => {
   it('章下移：同卷交换；卷末章下移到下一卷开头', async () => {
     const sk = 造骨架()
     sk.volumes.push({ title: '第二卷', chapters: [{ title: '归来', notes: [], items: [] }] })
-    vi.spyOn(api, 'getSkeleton').mockResolvedValue(sk)
-    const put = vi.spyOn(api, 'putSkeleton').mockImplementation(async (_n, x) => x)
+    let 当前 = sk
+    vi.spyOn(api, 'getSkeleton').mockImplementation(async () => 当前)
+    const put = vi.spyOn(api, 'putSkeleton').mockImplementation(async (_n, x) => {
+      当前 = x
+      return x
+    })
     const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
     await flushPromises()
     await w.find('[data-test="章下移-0-0"]').trigger('click')
@@ -144,5 +156,216 @@ describe('SkeletonPage', () => {
     await flushPromises()
     expect(w.find('[data-test="章上移-0-0"]').attributes('disabled')).toBeDefined()
     expect(w.find('[data-test="章下移-0-1"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('M1/补测：保存失败时错误提示不会被吞，且会重新拉一次最新状态', async () => {
+    const get = vi.spyOn(api, 'getSkeleton').mockResolvedValue(造骨架())
+    vi.spyOn(api, 'putSkeleton').mockRejectedValue(new ApiError(409, '骨架已经被改过，请刷新后重试'))
+    const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    expect(get).toHaveBeenCalledTimes(1)
+    await w.find('[data-test="章名-0-0"]').trigger('dblclick')
+    await w.find('[data-test="章名输入-0-0"]').setValue('新章名')
+    await w.find('[data-test="章名输入-0-0"]').trigger('keyup.enter')
+    await flushPromises()
+    // 保存失败：加载()会先跑一遍（重新拉最新状态，不留着失败前的半成品），报错要留在最后，
+    // 不能被加载()清空——不然作者会以为保存成功了。
+    expect(get).toHaveBeenCalledTimes(2)
+    expect(w.text()).toContain('骨架已经被改过，请刷新后重试')
+  })
+
+  it('M3：保存前去掉 absent，保存后重新加载让 flag/absent 恢复', async () => {
+    const 原 = 造骨架({ absent: ['S-0099'] })
+    const get = vi.spyOn(api, 'getSkeleton').mockResolvedValue(原)
+    const put = vi.spyOn(api, 'putSkeleton').mockResolvedValue({ ...造骨架(), by: 'author' })
+    const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    expect(w.text()).toContain('S-0099')
+    await w.find('[data-test="章名-0-0"]').trigger('dblclick')
+    await w.find('[data-test="章名输入-0-0"]').setValue('新章名')
+    await w.find('[data-test="章名输入-0-0"]').trigger('keyup.enter')
+    await flushPromises()
+    expect(put.mock.calls[0][1]).not.toHaveProperty('absent')
+    expect(get).toHaveBeenCalledTimes(2)
+    expect(w.text()).toContain('S-0099')   // 重新 GET 过，absent 提醒没有因为 PUT 的回包丢掉
+  })
+
+  it('M4：任务失败时提示，不再只是默默刷新', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(api, 'getSkeleton').mockResolvedValue(造骨架())
+    vi.spyOn(api, 'currentJob')
+      .mockResolvedValueOnce({ ...job, status: 'queued' })
+      .mockResolvedValueOnce({ ...job, status: 'failed', error: '模型欠费' })
+    const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(1000)
+    await flushPromises()
+    expect(w.text()).toContain('模型欠费')
+    vi.useRealTimers()
+  })
+
+  it('M4：input_changed 时提示重新生成', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(api, 'getSkeleton').mockResolvedValue(造骨架())
+    vi.spyOn(api, 'currentJob')
+      .mockResolvedValueOnce({ ...job, status: 'queued' })
+      .mockResolvedValueOnce({ ...job, status: 'done',
+        result: { written: false, input_changed: true, failed: [] } })
+    const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(1000)
+    await flushPromises()
+    expect(w.text()).toContain('输入变了，请重新生成')
+    vi.useRealTimers()
+  })
+
+  it('M4：failed 非空但写入成功时说明用了兜底', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(api, 'getSkeleton').mockResolvedValue(造骨架())
+    vi.spyOn(api, 'currentJob')
+      .mockResolvedValueOnce({ ...job, status: 'queued' })
+      .mockResolvedValueOnce({ ...job, status: 'done',
+        result: { written: true, input_changed: false, failed: [{ call: 'chapters/0', error: 'x' }] } })
+    const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(1000)
+    await flushPromises()
+    expect(w.text()).toContain('用了程序兜底')
+    vi.useRealTimers()
+  })
+
+  it('S2：场景行显示摘要和线名', async () => {
+    const sk = 造骨架()
+    const it0 = sk.volumes[0].chapters[0].items[0] as unknown as Record<string, unknown>
+    it0.summary = '悟空大闹天宫的开端'
+    it0.thread_name = '取经'
+    vi.spyOn(api, 'getSkeleton').mockResolvedValue(sk)
+    const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    const scene = w.find('[data-test="场景-S-0001"]')
+    expect(scene.text()).toContain('悟空大闹天宫的开端')
+    expect(scene.text()).toContain('取经')
+  })
+
+  it('S3：章节备注带线名，查不到名字就退回编号', async () => {
+    const sk = 造骨架()
+    const it0 = sk.volumes[0].chapters[1].items[0] as unknown as Record<string, unknown>
+    it0.thread = 'L-003'
+    it0.thread_name = '奇怪的世界'
+    vi.spyOn(api, 'getSkeleton').mockResolvedValue(sk)
+    const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    expect(w.text()).toContain('去留未定：奇怪的世界')   // 章0的备注，线名从章1里的场景项查到
+    await w.find('[data-test="章名-0-1"]').trigger('click')   // 切到章1看它自己的备注
+    expect(w.text()).toContain('此处原与被砍的 L-004 交汇')   // L-004 全书没有场景项带名字，退回编号
+  })
+
+  it('建议5：移章把卷移空了删掉空卷，选中跟着移动的章走', async () => {
+    const sk = 造骨架()
+    sk.volumes[0].chapters = [sk.volumes[0].chapters[0]]
+    sk.volumes.push({ title: '第二卷', chapters: [{ title: '归来', notes: [], items: [] }] })
+    let 当前 = sk
+    vi.spyOn(api, 'getSkeleton').mockImplementation(async () => 当前)
+    const put = vi.spyOn(api, 'putSkeleton').mockImplementation(async (_n, x) => {
+      当前 = x
+      return x
+    })
+    const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    await w.find('[data-test="章下移-0-0"]').trigger('click')
+    await flushPromises()
+    const saved = put.mock.calls[0][1]
+    expect(saved.volumes.length).toBe(1)
+    expect(saved.volumes[0].chapters.map((c) => c.title)).toEqual(['开篇', '归来'])
+    expect(w.find('[data-test="条目"] h2').text()).toBe('开篇')
+  })
+
+  it('建议6：空洞也能移到上一章/下一章，跟场景同一套函数', async () => {
+    vi.spyOn(api, 'getSkeleton').mockResolvedValue(造骨架())
+    const put = vi.spyOn(api, 'putSkeleton').mockImplementation(async (_n, sk) => sk)
+    const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    await w.find('[data-test="下移空洞-H-001"]').trigger('click')
+    await flushPromises()
+    const saved = put.mock.calls[0][1]
+    expect(saved.volumes[0].chapters[0].items.map((i) => i.id)).toEqual(['S-0001', 'S-0004'])
+    expect(saved.volumes[0].chapters[1].items.map((i) => i.id)).toEqual(['H-001', 'S-0005'])
+  })
+
+  it('建议7：404但不是「还没有骨架」时按普通错误显示，不当空态', async () => {
+    vi.spyOn(api, 'getSkeleton').mockRejectedValue(new ApiError(404, '还没有归线结果，先跑步骤 6'))
+    const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    expect(w.find('[data-test="空态"]').exists()).toBe(false)
+    expect(w.text()).toContain('还没有归线结果，先跑步骤 6')
+  })
+
+  it('补测：跨卷上移插到上一卷末尾，不是卷首', async () => {
+    const sk = 造骨架()
+    sk.volumes.unshift({ title: '第零卷', chapters: [{ title: '楔子', notes: [], items: [] }] })
+    let 当前 = sk
+    vi.spyOn(api, 'getSkeleton').mockImplementation(async () => 当前)
+    const put = vi.spyOn(api, 'putSkeleton').mockImplementation(async (_n, x) => {
+      当前 = x
+      return x
+    })
+    const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    await w.find('[data-test="章上移-1-0"]').trigger('click')
+    await flushPromises()
+    const saved = put.mock.calls[0][1]
+    expect(saved.volumes[0].chapters.map((c) => c.title)).toEqual(['楔子', '开篇'])
+  })
+
+  it('补测：场景移到上一章插在章尾，不是章首', async () => {
+    vi.spyOn(api, 'getSkeleton').mockResolvedValue(造骨架())
+    const put = vi.spyOn(api, 'putSkeleton').mockImplementation(async (_n, sk) => sk)
+    const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    await w.find('[data-test="章名-0-1"]').trigger('click')
+    const btn = w.find('[data-test="场景-S-0005"] button')
+    await btn.trigger('click')
+    await flushPromises()
+    const saved = put.mock.calls[0][1]
+    expect(saved.volumes[0].chapters[0].items.map((i) => i.id)).toEqual(['S-0001', 'H-001', 'S-0004', 'S-0005'])
+  })
+
+  it('补测：absent 提醒正常显示', async () => {
+    vi.spyOn(api, 'getSkeleton').mockResolvedValue(造骨架({ absent: ['S-0099'] }))
+    const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    expect(w.text()).toContain('本该在书里')
+    expect(w.text()).toContain('S-0099')
+  })
+
+  it('补测：not_main 提示文案正常显示', async () => {
+    const sk = 造骨架()
+    const it0 = sk.volumes[0].chapters[0].items[0] as unknown as Record<string, unknown>
+    it0.flag = 'not_main'
+    vi.spyOn(api, 'getSkeleton').mockResolvedValue(sk)
+    const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    expect(w.find('[data-test="场景-S-0001"]').text()).toContain('这个版本已经不是主版本了')
+  })
+
+  it('补测：没有选中章节时「放进当前章」按钮禁用', async () => {
+    const sk = 造骨架()
+    sk.volumes[0].chapters = []
+    vi.spyOn(api, 'getSkeleton').mockResolvedValue(sk)
+    const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    const btn = w.find('[data-test="未定位"] button')
+    expect(btn.attributes('disabled')).toBeDefined()
+  })
+
+  it('补测：任务进行中时空洞说明输入框禁用', async () => {
+    vi.spyOn(api, 'getSkeleton').mockResolvedValue(造骨架())
+    vi.spyOn(api, 'generateSkeleton').mockResolvedValue(job)
+    const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    await w.find('[data-test="生成"]').trigger('click')
+    await flushPromises()
+    const ta = w.find('[data-test="空洞输入-H-001"]')
+    expect(ta.attributes('disabled')).toBeDefined()
   })
 })
