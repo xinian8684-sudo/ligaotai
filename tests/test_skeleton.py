@@ -214,6 +214,17 @@ def test_保存时去掉界面标注(book_with_threads):
     assert "flag" not in item
 
 
+def test_保存时带absent不落盘(book_with_threads):
+    # M3：前端 PUT 请求体多半是拿 GET（annotate() 的返回，带 absent）改出来的，
+    # 顶层 absent 是界面标注，不是骨架数据，不该原样落盘。
+    b = book_with_threads
+    sk = _sk([{"type": "scene", "id": "S-0001", "thread": "L-001"}])
+    sk["absent"] = ["S-0099"]
+    out = save_skeleton(b, sk)
+    assert "absent" not in out
+    assert "absent" not in read_json(b.skeleton_path)
+
+
 def test_读骨架_没有和坏了(book_with_threads):
     b = book_with_threads
     with pytest.raises(FileNotFoundError):
@@ -237,6 +248,30 @@ def test_对账标注_场景没了或线被砍(book_with_threads):
     assert flags == [None, "cut", "missing"]
     assert out["unplaced"]["scenes"][0]["flag"] == "cut"
     assert "flag" not in sk["volumes"][0]["chapters"][0]["items"][1]   # 不改原对象
+
+
+def test_S2_对账标注带摘要和线名(book_with_threads):
+    # S2：场景行只显示 S-0060 L-003 时作者看不出这一块写的是什么，annotate() 要给场景项
+    # 补只读的 summary（场景卡摘要）和 thread_name（线的名字，不只是编号）。
+    b = book_with_threads
+    th = load_threads(b)
+    sk = _sk([{"type": "scene", "id": "S-0001", "thread": "L-001"}],
+             {"scenes": [{"id": "S-0004", "thread": "L-002", "why": "no_time"}], "holes": []})
+    out = annotate(b, sk, th)
+    item = out["volumes"][0]["chapters"][0]["items"][0]
+    assert item["summary"] == "S-0001 摘要"
+    assert item["thread_name"] == "取经"
+    up = out["unplaced"]["scenes"][0]
+    assert up["summary"] == "S-0004 摘要"
+    assert up["thread_name"] == "龙宫"
+
+
+def test_S2_保存时去掉摘要和线名(book_with_threads):
+    b = book_with_threads
+    save_skeleton(b, _sk([{"type": "scene", "id": "S-0001", "thread": "L-001",
+                           "summary": "别落盘", "thread_name": "别落盘"}]))
+    item = read_json(b.skeleton_path)["volumes"][0]["chapters"][0]["items"][0]
+    assert "summary" not in item and "thread_name" not in item
 
 
 # ---------------------------------------------------------------------------

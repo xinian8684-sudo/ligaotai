@@ -284,15 +284,25 @@ def validate_skeleton(sk, known: set[str]) -> list[str]:
 
 
 def _strip_flags(sk: dict) -> dict:
+    """去掉只读的界面标注再落盘：annotate() 打的 flag（每个场景条目上）、顶层的 absent
+    （M3：那是 annotate() 现算的「按现在的线应该在书里、骨架里却找不到」提醒，不是骨架本身
+    的数据；PUT 请求体多半是前端拿 GET 回来的副本改的，原样带着这两样发过来，存进磁盘就是
+    死数据——下次 annotate() 反正会重新算一份 absent 盖掉它，留着只是徒增体积、看着像是
+    「骨架自己记的东西」，防御性地在这里也剥掉）。"""
     sk = copy.deepcopy(sk)
     for v in sk.get("volumes") or []:
         for ch in v.get("chapters") or []:
             for it in ch.get("items") or []:
                 if isinstance(it, dict):
                     it.pop("flag", None)
+                    it.pop("summary", None)
+                    it.pop("thread_name", None)
     for x in (sk.get("unplaced") or {}).get("scenes") or []:
         if isinstance(x, dict):
             x.pop("flag", None)
+            x.pop("summary", None)
+            x.pop("thread_name", None)
+    sk.pop("absent", None)
     return sk
 
 
@@ -362,11 +372,17 @@ def annotate(book: Book, sk: dict, threads: dict) -> dict:
     章节备注每次用当前的看板 / 线重算，不用生成那一刻存的快照（S5：看板改了、场景挪了，
     界面显示的应该是现在的状态，不是生成那一刻的旧备注）；另外把「按现在的线应该在书里、
     骨架里却找不到」的场景列进 absent——PUT 挡住了新的静默丢场景（S3），但手改文件、
-    或者生成骨架之后归线又加了新场景，都可能出现这种缺口，读的时候补上提醒。不落盘。"""
+    或者生成骨架之后归线又加了新场景，都可能出现这种缺口，读的时候补上提醒。
+    S2：场景条目只带编号和线号（S-0060 / L-003），作者看不出这一块写的是什么、没法凭这个
+    手改骨架，给场景项补上只读的 summary（场景卡摘要前 30 字）和 thread_name（线的名字，
+    不只是编号）。跟 flag 一样只是界面标注，不落盘（_strip_flags 里剥掉）。"""
     out = copy.deepcopy(sk)
     live = {s.id for s in load_scenes(book) if not s.removed}
     cols = columns(book, threads)
     vmap = version_map(book)
+    info = scene_info(book)
+    thread_name = {t["id"]: (t.get("name") or t["id"]) for t in threads.get("threads") or []
+                   if isinstance(t, dict) and t.get("id")}
     thread_of: dict[str, str] = {}
     for t in threads.get("threads") or []:
         if not isinstance(t, dict) or not t.get("id"):
@@ -377,6 +393,10 @@ def annotate(book: Book, sk: dict, threads: dict) -> dict:
 
     def mark(it: dict) -> None:
         sid = it.get("id")
+        it["summary"] = one_line((info.get(sid) or {}).get("summary"))[:30]
+        tid = it.get("thread")
+        if isinstance(tid, str) and tid:
+            it["thread_name"] = thread_name.get(tid, tid)
         if sid not in live:
             it["flag"] = "missing"
         elif sid in vmap:

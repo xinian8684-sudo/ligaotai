@@ -59,6 +59,22 @@ def test_兜底切法_空洞当章首_空列表():
     assert fallback_chapters([], {}) == {"volumes": [], "chapters": []}
 
 
+def test_S1_章以空洞开头时章名取后面场景的摘要():
+    # spec 第 147 行：章名是「首个场景摘要的前 12 字」，不是「这一章第一项」。
+    # 空洞排在章首（缺口插在了章界上）时，旧代码会把章名叫成「空洞」。
+    items = [{"type": "hole", "id": "H-001", "event": "x"}, _scene("S-0001")]
+    info = {"S-0001": {"chars": 100, "summary": "真正的摘要在这里不是空洞"}}
+    d = fallback_chapters(items, info, per_chapter=100_000, per_volume=10)
+    assert len(d["chapters"]) == 1
+    assert d["chapters"][0]["title"] == "真正的摘要在这里不是空洞"[:12]
+
+
+def test_S1_整章没有场景才退回空洞():
+    items = [{"type": "hole", "id": "H-001", "event": "x"}, {"type": "hole", "id": "H-002", "event": "y"}]
+    d = fallback_chapters(items, {}, per_chapter=100_000, per_volume=10)
+    assert d["chapters"][0]["title"] == "空洞"
+
+
 def test_窗口切分_相邻窗口重叠():
     rows = ["x" * 9] * 25          # 每行 9 字 + 换行 = 10
     assert windows(rows, 100, overlap=3) == [(0, 10), (7, 17), (14, 24), (21, 25)]

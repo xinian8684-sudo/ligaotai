@@ -69,21 +69,34 @@ def check_chapters(data, n: int) -> list[str]:
     return problems
 
 
-def _auto_title(it: dict, info: dict) -> str:
-    if it["type"] != "scene":
-        return "空洞"
+def _scene_title(it: dict, info: dict) -> str:
     return one_line((info.get(it["id"]) or {}).get("summary"))[:12] or it["id"]
+
+
+def _chapter_title(items: list[dict], s: int, e: int, info: dict) -> str:
+    """章名取本章 [s, e) 内首个**场景**摘要的前 12 字（spec 第 147 行）。章首可能是空洞
+    （缺口插在了章界上），这时不能拿空洞当章名——一本书里但凡空洞多，会出现一堆叫
+    「空洞」的章节（S1）。整章没有场景（比如章首空洞后面还是空洞，或者章尾就是空洞）
+    才退回「空洞」。"""
+    for it in items[s:e]:
+        if it["type"] == "scene":
+            return _scene_title(it, info)
+    return "空洞"
 
 
 def fallback_chapters(items: list[dict], info: dict, per_chapter: int = PER_CHAPTER,
                       per_volume: int = PER_VOLUME) -> dict:
-    chapters, acc = [], 0
+    starts, acc = [], 0
     for i, it in enumerate(items):
         if i == 0 or acc >= per_chapter:
-            chapters.append({"title": _auto_title(it, info), "start": i})
+            starts.append(i)
             acc = 0
         if it["type"] == "scene":
             acc += (info.get(it["id"]) or {}).get("chars", 0)
+    chapters = []
+    for k, s in enumerate(starts):
+        e = starts[k + 1] if k + 1 < len(starts) else len(items)
+        chapters.append({"title": _chapter_title(items, s, e, info), "start": s})
     volumes = [{"title": f"第{k // per_volume + 1}卷", "start": chapters[k]["start"]}
                for k in range(0, len(chapters), per_volume)]
     return {"volumes": volumes, "chapters": chapters}

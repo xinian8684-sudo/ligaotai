@@ -394,7 +394,11 @@ export interface ImpactView { program: ProgramImpact; model: ModelImpact | null 
  * 计划原稿只写了 missing/cut，漏了换过主版本这种（not_main）——真实后端已经在打这个值。
  */
 export type SkFlag = 'missing' | 'not_main' | 'cut'
-export interface SkScene { type: 'scene'; id: string; thread?: string | null; flag?: SkFlag }
+/**
+ * S2：GET /skeleton（annotate() 的返回）才有 summary/thread_name——只读的界面标注
+ * （场景卡摘要前 30 字、线的名字），PUT 会被 _strip_flags 剥掉，别指望它们能存住。
+ */
+export interface SkScene { type: 'scene'; id: string; thread?: string | null; flag?: SkFlag; summary?: string; thread_name?: string }
 export interface SkHole {
   type: 'hole'; id: string; task: string; gap?: string | null; after?: string | null; before?: string | null
   event?: string; thread?: string | null; mentioned_in?: string[]
@@ -403,7 +407,7 @@ export type SkItem = SkScene | SkHole
 export interface SkNote { kind: 'undecided' | 'merge' | 'cut_crossing'; thread: string; into?: string; scene?: string }
 export interface SkChapter { title: string; items: SkItem[]; notes: SkNote[] }
 export interface SkVolume { title: string; chapters: SkChapter[] }
-export interface SkUnplacedScene { id: string; thread: string | null; why: string; flag?: SkFlag }
+export interface SkUnplacedScene { id: string; thread: string | null; why: string; flag?: SkFlag; summary?: string; thread_name?: string }
 export interface Skeleton {
   generated: string; by: 'program' | 'author'; edited?: string; fallback_chapters?: boolean
   volumes: SkVolume[]
