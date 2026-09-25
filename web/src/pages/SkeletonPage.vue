@@ -208,7 +208,7 @@ onUnmounted(() => {
       {{ sk.absent.length }} 个场景按现在的线本该在书里，骨架中却找不到：{{ sk.absent.join('、') }}。重新生成骨架会补上。
     </p>
     <div v-if="导出结果" class="export" data-test="导出结果">
-      已导出 {{ 导出结果.md }}、{{ 导出结果.txt }}：{{ 导出结果.chars }} 字、{{ 导出结果.scenes }} 块场景、{{ 导出结果.holes }} 个空洞<template v-if="导出结果.missing">、{{ 导出结果.missing }} 块缺失</template><template v-if="导出结果.cut">、{{ 导出结果.cut }} 块因为线被砍掉没收进书里</template>。
+      已导出 {{ 导出结果.md }}、{{ 导出结果.txt }}：{{ 导出结果.chars }} 字、{{ 导出结果.scenes }} 块场景、{{ 导出结果.holes }} 个空洞<template v-if="导出结果.missing">、{{ 导出结果.missing }} 块缺失</template><template v-if="导出结果.cut">。其中 {{ 导出结果.cut }} 块所属的线已经在看板上砍掉了，但还留在骨架里、照样导出了——要去掉请在骨架里删</template>。
       <a :href="exportUrl(name, 'md')">下载 md</a> · <a :href="exportUrl(name, 'txt')">下载 txt</a>
     </div>
 

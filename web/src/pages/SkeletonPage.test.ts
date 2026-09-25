@@ -108,6 +108,19 @@ describe('SkeletonPage', () => {
     expect(r.find('a[href$="/export/md"]').exists()).toBe(true)
   })
 
+  it('导出：cut 是「砍掉的线仍被导出」的块数，不能说成没收进书', async () => {
+    vi.spyOn(api, 'getSkeleton').mockResolvedValue(造骨架())
+    vi.spyOn(api, 'exportBook').mockResolvedValue({ md: '导出/x.md', txt: '导出/x.txt', scenes: 3, holes: 1, missing: 0, chars: 12000, cut: 2 })
+    const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    await w.find('[data-test="导出"]').trigger('click')
+    await flushPromises()
+    const t = w.find('[data-test="导出结果"]').text()
+    expect(t).toContain('2 块所属的线已经在看板上砍掉了')
+    expect(t).toContain('照样导出了')
+    expect(t).not.toContain('没收进')
+  })
+
   it('章下移：同卷交换；卷末章下移到下一卷开头', async () => {
     const sk = 造骨架()
     sk.volumes.push({ title: '第二卷', chapters: [{ title: '归来', notes: [], items: [] }] })
