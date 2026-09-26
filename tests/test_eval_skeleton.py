@@ -212,3 +212,43 @@ def test_建议9_program_impact漏交汇点时要报出来(book_with_threads, mo
     export_book(b)
     r = check_book(b, truth=None, cut=["L-002"])
     assert r["crossing_mismatch"] == ["L-002"]
+
+
+def _truth5():
+    return {f"S-000{i}": (i, 0, 0) for i in range(1, 6)}
+
+
+def test_判据2拆开_线内全对跨线全错(book_with_threads):
+    """判据 2 拆成线内 / 跨线两个 τ（9-26 真书验收定的）：线内顺序是计划④ 自己的活，跨线穿插
+    取决于上游 ②b 各线时间对齐。手算：L-002 两块整体排到 L-001 三块前面、各线内部顺序都对——
+    线内 4 对全顺 τ=1.0；跨线 6 对全逆 τ=-1.0；全局 10 对 4 顺 6 逆 τ=-0.2。"""
+    b = book_with_threads
+    items = [{"type": "scene", "id": f"S-000{i}", "thread": "L-002"} for i in (4, 5)] + \
+            [{"type": "scene", "id": f"S-000{i}", "thread": "L-001"} for i in (1, 2, 3)]
+    write_json(b.skeleton_path, _sk(items))
+    export_book(b)
+    r = check_book(b, truth=_truth5(), cut=[])
+    assert r["tau_within"] == 1.0
+    assert r["tau_cross"] == -1.0
+    assert abs(r["tau"] - (-0.2)) < 1e-9
+
+
+def test_判据2拆开_线内排乱要看得出来(book_with_threads):
+    """变异方向：线内 S-0002 排到 S-0001 前面、跨线全对。手算线内 4 对 3 顺 1 逆 τ=0.5，跨线 6 对全顺 τ=1.0。"""
+    b = book_with_threads
+    items = [{"type": "scene", "id": f"S-000{i}", "thread": "L-001" if i < 4 else "L-002"} for i in (2, 1, 3, 4, 5)]
+    write_json(b.skeleton_path, _sk(items))
+    export_book(b)
+    r = check_book(b, truth=_truth5(), cut=[])
+    assert r["tau_within"] == 0.5
+    assert r["tau_cross"] == 1.0
+
+
+def test_判据2_pass只看线内τ():
+    from tools.eval_skeleton import passes
+    clean = {"each_once": True, "holes_missing": [], "holes_extra": [], "cut_leaks": [], "cut_hole_leaks": [],
+             "crossing_mismatch": [], "fabricated_refs": []}
+    assert passes({**clean, "tau_within": 0.95, "tau_cross": 0.2}, truth_requested=True) is True
+    assert passes({**clean, "tau_within": 0.85, "tau_cross": 1.0}, truth_requested=True) is False
+    assert passes({**clean, "tau_within": None, "tau_cross": None}, truth_requested=True) is False
+    assert passes({**clean, "tau_within": None, "tau_cross": None}, truth_requested=False) is True

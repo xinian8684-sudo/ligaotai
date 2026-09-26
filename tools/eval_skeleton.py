@@ -6,8 +6,9 @@
 
 五条判据（对应返回字典）：
 1. 每块参与场景（主版本）在导出里恰好出现一次 —— each_once / duplicates / missing。
-2. 导出场景顺序跟原书顺序的 Kendall τ ≥ 0.9 —— tau（`--key`/`--folder` 都给了才算，只看正文，
-   不算「附：未定位」）。**给了 `--key` 但算出来 τ 是 None（没有可比较的块对）不算 pass**——
+2. 导出场景顺序跟原书顺序的 Kendall τ，拆成线内 / 跨线两半：**只有线内 τ ≥ 0.9 算判据**
+   —— tau_within；跨线 tau_cross 和全局 tau 只报不判（跨线穿插取决于 ②b 各线时间对齐，
+   见 `passes`）。`--key`/`--folder` 都给了才算，只看正文，不算「附：未定位」。**给了 `--key` 但算出来 τ 是 None（没有可比较的块对）不算 pass**——
    那不是「没要求」，是「想验但验不出来」，不能悄悄放过（建议 8）。
 3. 骨架里的空洞数 = 能定位的缺口数 —— holes_expected（重算）对 holes_in_skeleton（现存骨架），
    而且要比缺口**编号集合**（holes_missing / holes_extra），不只比个数——个数凑巧相等、
@@ -234,10 +235,14 @@ def check_book(book: Book, truth: dict | None, cut: list[str] | None) -> dict:
         texts += [f"[{p.get('planted')}] [{p.get('resolved')}]" for p in x.get("pairs") or []]
     fabricated = sorted({r for t in texts for r in refs_in(str(t)) if r not in known})
 
-    tau = None
+    tau = tau_within = tau_cross = None
     if truth:
         ranked = [s for s in body_ids if s in truth]
-        tau, _ = kendall_tau_b(list(range(len(ranked))), [truth[s] for s in ranked])
+        xs, ys = list(range(len(ranked))), [truth[s] for s in ranked]
+        tau, _ = kendall_tau_b(xs, ys)
+        same = lambda i, j: thread_of.get(ranked[i]) == thread_of.get(ranked[j])  # noqa: E731
+        tau_within, _ = kendall_tau_b(xs, ys, keep=same)
+        tau_cross, _ = kendall_tau_b(xs, ys, keep=lambda i, j: not same(i, j))
 
     return {
         "each_once": not duplicates and not missing,
@@ -250,9 +255,22 @@ def check_book(book: Book, truth: dict | None, cut: list[str] | None) -> dict:
         "cut_hole_leaks": cut_hole_leaks,
         "crossing_mismatch": crossing_mismatch,
         "fabricated_refs": fabricated,
-        "tau": tau,
+        "tau": tau, "tau_within": tau_within, "tau_cross": tau_cross,
         "scenes_in_body": len(body_ids),
     }
+
+
+def passes(r: dict, truth_requested: bool) -> bool:
+    """判据 2 只看线内 τ（tau_within）；跨线 τ（tau_cross）和全局 τ 只报不判——跨线穿插靠的是
+    ②b 各线时间对齐，不是骨架/导出这一步能左右的（9-26 真书验收：线内 0.985、跨线 0.78，
+    神谕按原书顺序排同一年内的块也只到 0.90）。
+    建议 8：给了 --key 就是真的想验顺序，算出来的 τ 是 None（没有可比较的块对）不能悄悄
+    当「没要求」放过——那是「想验但验不出来」，得报不过。"""
+    tw = r.get("tau_within")
+    tau_ok = tw is not None and tw >= 0.9 if truth_requested else True
+    return bool(r["each_once"] and not r["holes_missing"] and not r["holes_extra"]
+                and not r["cut_leaks"] and not r["cut_hole_leaks"] and not r["crossing_mismatch"]
+                and not r["fabricated_refs"] and tau_ok)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -271,15 +289,10 @@ def main(argv: list[str] | None = None) -> None:
         key = json.loads(Path(a.key).read_text(encoding="utf-8"))
         truth = truth_positions(book, key, Path(a.folder).name)
     r = check_book(book, truth, a.cut or None)
-    # 建议 8：给了 --key 就是真的想验顺序，算出来的 τ 是 None（没有可比较的块对）不能悄悄
-    # 当「没要求」放过——那是「想验但验不出来」，得报不过。
-    tau_ok = r["tau"] is not None and r["tau"] >= 0.9 if truth_requested else True
-    r["pass"] = (r["each_once"] and not r["holes_missing"] and not r["holes_extra"]
-                and not r["cut_leaks"] and not r["cut_hole_leaks"] and not r["crossing_mismatch"]
-                and not r["fabricated_refs"] and tau_ok)
+    r["pass"] = passes(r, truth_requested)
     write_json(Path(a.report), r)
-    print(json.dumps({k: r[k] for k in ("pass", "each_once", "tau", "holes_expected", "holes_in_skeleton")},
-                     ensure_ascii=False))
+    print(json.dumps({k: r[k] for k in ("pass", "each_once", "tau_within", "tau_cross", "tau",
+                                        "holes_expected", "holes_in_skeleton")}, ensure_ascii=False))
 
 
 if __name__ == "__main__":
