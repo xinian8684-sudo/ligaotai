@@ -239,7 +239,7 @@ onUnmounted(() => {
 h1{font-family:var(--serif);font-size:20px;margin:16px 0}
 .bar{display:flex;align-items:center;gap:10px;margin-bottom:14px}
 .warn{color:var(--amber);font-size:13px}
-.cols{display:grid;grid-template-columns:repeat(4,minmax(220px,1fr));gap:12px;align-items:start}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;align-items:start}
 .col{background:var(--sunk);border-radius:8px;padding:10px;min-height:120px}
 .col h2{font-size:14px;margin:0 0 8px}
 .card{background:var(--panel);border:1px solid var(--line-2);border-radius:8px;padding:10px;margin-bottom:8px;font-size:13px}

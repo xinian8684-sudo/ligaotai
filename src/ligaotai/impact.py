@@ -117,7 +117,7 @@ def impact_input(book: Book, threads: dict, tid: str) -> tuple[dict, set[str], s
     if me["col"] == "merge":
         action = f"动作：把 {tid} 并入 {me['merge_into']}"
     else:
-        action = f"动作：砍掉 {tid}"
+        action = f"动作：砍掉 {tid}（整条线不进书，不是并入别的线）"
     cards = load_cards(book)
     own_lines, own_ids, other_lines, other_ids = [], set(), [], set()
     for t in threads.get("threads") or []:

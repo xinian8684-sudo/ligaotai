@@ -89,6 +89,8 @@ def test_输入_这条线和其他线分开列_带动作(ib):
     set_card(ib, th, "L-002", "cut")
     values, own, others = impact_input(ib, th, "L-002")
     assert "砍掉 L-002" in values["action"]
+    # 9-26 真跑：动作只写「砍掉」，模型照样把补救建议写成「若併入 L-001」——砍要明说不是并入
+    assert "不是并入" in values["action"]
     assert "S-0004｜收｜紧箍咒原来是观音所赐" in values["own"]
     assert "S-0005｜埋｜定海神针的去向" in values["own"]
     assert "L-001｜S-0002｜埋｜紧箍咒的来历" in values["others"]
