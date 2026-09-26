@@ -236,6 +236,18 @@ THREAD_HEADINGS = ["来龙去脉", "主要人物", "写到哪", "缺口", "开�
 MAP_HEADINGS = ["全书概况"]
 _ANY_SCENE = re.compile(r"S-\d{4}")
 _BACKFILLED = re.compile(r"（多个说法，见矛盾 C-\d+）")
+_NO_GROUP = "（几处写法略有出入）"
+
+
+def finish_backfill(md: str, groups: list[dict], aliases: dict[str, str] | None = None) -> tuple[str, int]:
+    """回填的完整一轮：先把上一轮的结果（链接、老实话）都还原成占位，再回填；回填不上的
+    改写成「（几处写法略有出入）」——写设定集的模型看到了不同写法，但矛盾扫描没把它列成矛盾
+    （9-26 雪月梅 5 处全是这种：总兵 / 黄岩总兵、四十三四 / 四十四），光秃秃的占位留着像没做完。
+    返回 (新文本, 回填不上的个数)；个数照样进 summary。重复跑结果不变，以后有了对应的组还能改回链接。"""
+    base = _BACKFILLED.sub(_MULTI, md).replace(_NO_GROUP, _MULTI)
+    filled = backfill_refs(base, groups, aliases)
+    left = filled.count(_MULTI)
+    return filled.replace(_MULTI, _NO_GROUP), left
 
 
 @dataclass
@@ -529,7 +541,7 @@ class _Run:
 
     def backfill(self, groups: list[dict]) -> int:
         """回填 C- 编号。先把上一轮回填过的还原成占位再填：矛盾编号变了不会留下指错的旧编号，
-        重复跑结果不变（地图签名才能稳定）。返回回填后仍然光秃秃的「（多个说法）」个数——
+        重复跑结果不变（地图签名才能稳定）。返回回填不上的「（多个说法）」个数（文本里已改写成「（几处写法略有出入）」）——
         对不上的不静默，进 summary 给作者看（DE 审查必须修3）。"""
         left = 0
         for wid in self.inp.world_text:
@@ -537,8 +549,8 @@ class _Run:
             if not p.exists():
                 continue
             before = p.read_text(encoding="utf-8")
-            after = backfill_refs(_BACKFILLED.sub(_MULTI, before), groups, self.inp.aliases)
-            left += after.count(_MULTI)
+            after, n = finish_backfill(before, groups, self.inp.aliases)
+            left += n
             if after != before:
                 atomic_write_text(p, after)
         return left

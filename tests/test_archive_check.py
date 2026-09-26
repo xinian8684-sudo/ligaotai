@@ -116,3 +116,21 @@ def test_各种分隔符里藏的编造编号都要抓出来(ref):
 def test_通篇带空格的合法引用不算没有编号():
     md = "## 来龙去脉\n他救了人 [S-0003, S-0004]。\n"
     assert check_archive(md, allowed={"S-0003", "S-0004"}, required_headings=["来龙去脉"]) == []
+
+
+def test_回填不上的改成老实话_计数照报_以后有组了还能改回链接():
+    """9-26 雪月梅：5 处「（多个说法）」在矛盾扫描里根本没有对应的组（总兵 / 黄岩总兵这种
+    扫描没判成矛盾），光秃秃留着像没做完。回填不上的改写成「（几处写法略有出入）」，
+    对不上的个数照样返回；以后有了对应的组，重跑回填还能改回链接；重复跑结果不变。"""
+    from ligaotai.archive import finish_backfill
+
+    md = "## 官职\n- 戚继光：黄岩总兵 / 总兵（多个说法）[S-0073]\n## 兵器\n- 孙悟空：金箍棒 / 宝杖（多个说法）[S-0014]\n"
+    groups = [{"id": "C-007", "subject": "孙悟空", "attribute": "兵器"}]
+    got, left = finish_backfill(md, groups)
+    assert left == 1
+    assert "黄岩总兵 / 总兵（几处写法略有出入）" in got
+    assert "（多个说法，见矛盾 C-007）" in got
+    assert "（多个说法）" not in got
+    assert finish_backfill(got, groups) == (got, 1)  # 重复跑不变
+    got2, left2 = finish_backfill(got, groups + [{"id": "C-020", "subject": "戚继光", "attribute": "官职"}])
+    assert left2 == 0 and "（多个说法，见矛盾 C-020）" in got2
