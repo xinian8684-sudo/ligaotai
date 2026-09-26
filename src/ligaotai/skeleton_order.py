@@ -3,12 +3,15 @@
 全局时间 = 线 offset + times[sid].t，跟前端 lib/segments.ts 同一规则：offset 为 null 的线
 （没对齐主线）和 t 为 null / 缺键的场景都放不进时间轴，进「未定位」，不当 0。
 同一时刻：主线优先，再按线编号，再按线内原顺序。
+哪些场景进时间轴按上面的规则定；进了时间轴的场景之间谁先谁后，优先用步骤 6 存的
+global_order（全书穿插，见 interleave.py）——它跟现在的线对不上（作者改过线）时退回按时间排。
 cols：{线编号: {"col", "merge_into"}}（triage.columns 的返回值）；缺的线当「还没想好」。
 """
 
 from __future__ import annotations
 
 from .fsutil import natural_key
+from .interleave import usable_order
 
 UNDECIDED = {"col": "undecided", "merge_into": None}
 
@@ -31,6 +34,10 @@ def build_sequence(threads: dict, cols: dict, drop: set[str],
     不重复插入。"""
     main = threads.get("main_thread")
     version_map = version_map or {}
+    lines = {t["id"]: [s for s in t.get("scenes") or [] if isinstance(s, str)]
+             for t in threads.get("threads") or [] if isinstance(t, dict) and t.get("id")}
+    order = usable_order(threads.get("global_order"), lines)
+    rank = {s: i for i, s in enumerate(order)} if order else None
     placed, unplaced = [], []
     seen_main: set[str] = set()
 
@@ -61,7 +68,7 @@ def build_sequence(threads: dict, cols: dict, drop: set[str],
             if not _num(tv):
                 unplaced.append({"id": sid, "thread": tid, "why": "no_time"})
                 continue
-            key = (off + tv, 0 if tid == main else 1, natural_key(tid), i)
+            key = (rank[sid0],) if rank is not None else (off + tv, 0 if tid == main else 1, natural_key(tid), i)
             placed.append((key, {"type": "scene", "id": sid, "thread": tid}))
     for u in threads.get("unassigned") or []:
         sid0 = u.get("scene") if isinstance(u, dict) else u

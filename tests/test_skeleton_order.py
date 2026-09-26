@@ -142,3 +142,21 @@ def test_章节备注():
     cols["L-002"] = {"col": "cut", "merge_into": None}
     assert notes_for(items[:1], cols, th) == [{"kind": "cut_crossing", "thread": "L-002", "scene": "S-0002"}]
     assert notes_for(items[:1], {}, th) == [{"kind": "undecided", "thread": "L-001"}]
+
+
+def test_有全书穿插顺序就按它排_进不进时间轴规则不变():
+    """global_order 把 L-002 整条排到 L-001 前面：进时间轴的四块按它排成 S-0004、S-0005、S-0001、S-0002；
+    S-0003（没时间）、S-0006（线没对齐）照旧进未定位——哪些块进正文不因为有了穿插顺序而变。"""
+    th = {**_mini(), "global_order": ["S-0004", "S-0005", "S-0006", "S-0001", "S-0002", "S-0003"]}
+    seq, unplaced = build_sequence(th, {}, set())
+    assert [x["id"] for x in seq] == ["S-0004", "S-0005", "S-0001", "S-0002"]
+    assert [(u["id"], u["why"]) for u in unplaced] == [
+        ("S-0003", "no_time"), ("S-0006", "unaligned_thread"), ("S-0007", "unassigned")]
+
+
+def test_穿插顺序跟现在的线对不上就退回按时间排():
+    """作者把 L-001 的线内顺序调过了（存的 global_order 里还是旧顺序 S-0002 在 S-0001 前）→ 不用它。
+    按时间：S-0001(0)、S-0004(1)、S-0002(2)、S-0005(6)。"""
+    th = {**_mini(), "global_order": ["S-0004", "S-0005", "S-0006", "S-0002", "S-0001", "S-0003"]}
+    seq, _ = build_sequence(th, {}, set())
+    assert [x["id"] for x in seq] == ["S-0001", "S-0004", "S-0002", "S-0005"]

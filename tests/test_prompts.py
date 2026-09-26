@@ -51,6 +51,7 @@ THREAD_PROMPTS = [
     ("threads_order", {"thread": "t", "unit": "年", "segments": "s", "lines": "l"}, "线内排序"),
     ("threads_align", {"unit": "年", "main": "L-001", "threads": "t"}, "跨线对齐"),
     ("threads_gaps", {"world": "w", "threads": "t", "refs": "r"}, "找缺口"),
+    ("threads_interleave", {"main": "L-001", "threads": "t"}, "全书穿插"),
 ]
 
 
@@ -271,3 +272,13 @@ def test_世界设定集提示词_其他类不写多个说法标记():
     两本验收书各剩 187 / 94 处光秃秃的占位进了地图。"""
     system, _ = render("archive_world", body="B")
     assert "「其他」这一节" in system and "不写「（多个说法）」" in system
+
+
+def test_interleave_example_passes_check():
+    from ligaotai.interleave import check_interleave
+
+    ex, _ = example("threads_interleave")
+    main = [s for s in ex["order"] if s < "S-0040"]
+    sub = [s for s in ex["order"] if s >= "S-0040"]
+    assert main and sub
+    assert check_interleave(ex, {"L-001": main, "L-002": sub}) == []

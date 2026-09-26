@@ -349,3 +349,30 @@ def test_same_time_intersection_anchors_the_sub_thread(seeded):
     sub = th["L-002"]
     assert sub["offset"] + sub["times"]["S-0002"]["t"] == main_t
     assert result(seeded)["intersections"][0]["same_time"] is True
+
+
+def _two_lines(m):
+    ids = listed_scenes(m)
+    user = m[1]["content"]
+    outl = [i for i in ids if f"{i}｜提纲" in user]
+    return json.dumps({"threads": [
+        {"name": "主线", "about": "测试", "main": True, "scenes": ["S-0003", "S-0001"], "outlines": outl},
+        {"name": "支线", "about": "测试", "scenes": ["S-0002"], "outlines": []},
+    ], "world_outlines": []}, ensure_ascii=False)
+
+
+def test_interleave_result_is_saved(seeded):
+    """全书穿插：支线的 S-0002 排在主线两块中间，存进 global_order。"""
+    run_threads(seeded, client(seeded, lines=_two_lines,
+                               interleave=lambda m: '{"order": ["S-0003", "S-0002", "S-0001"]}'))
+    data = result(seeded)
+    main = next(t for t in data["threads"] if t["name"] == "主线")["scenes"]
+    assert main == ["S-0003", "S-0001"]  # 默认排序按列出顺序，前提核一下
+    assert data["global_order"] == ["S-0003", "S-0002", "S-0001"]
+
+
+def test_interleave_garbage_falls_back_to_empty(seeded):
+    """模型只给了一块（1/3 < 八成）：不算它排的，global_order 留空、记一条失败，骨架退回按时间排。"""
+    summary = run_threads(seeded, client(seeded, lines=_two_lines, interleave=lambda m: '{"order": ["S-0002"]}'))
+    assert result(seeded)["global_order"] == []
+    assert any(f["call"] == "interleave" for f in summary["failed_calls"])

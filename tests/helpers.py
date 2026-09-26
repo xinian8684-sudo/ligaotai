@@ -215,7 +215,7 @@ def listed_scenes(messages) -> list[str]:
     return _LISTED.findall(messages[1]["content"])
 
 
-def threads_handler(worlds=None, lines=None, order=None, align=None, gaps=None, fallback=None):
+def threads_handler(worlds=None, lines=None, order=None, align=None, gaps=None, fallback=None, interleave=None):
     """步骤 6 各次调用的假回复。每个参数是 fn(messages) -> 回复（字符串 / Reply / 异常实例）；不给就用默认：
     全部归一个世界「世界一」、正文碎片全归一条主线（提纲挂上去）、按列出的顺序排、偏移都是 0、没有缺口。
     认不出的提示词交给 fallback（比如 fake_ai_handler()），没有 fallback 就报错。
@@ -253,11 +253,15 @@ def threads_handler(worlds=None, lines=None, order=None, align=None, gaps=None, 
     def d_gaps(m):
         return '{"gaps": []}'
 
+    def d_interleave(m):  # 按输入里各线依次排：线接线，本来就是一种合法的合并
+        return json.dumps({"order": listed_scenes(m)})
+
     table = [
         ("划分世界", worlds or d_worlds),
         ("划分支线", lines or d_lines),
         ("线内排序", order or d_order),
         ("跨线对齐", align or d_align),
+        ("全书穿插", interleave or d_interleave),
         ("找缺口", gaps or d_gaps),
     ]
 

@@ -46,6 +46,7 @@ from .threads_check import (
 )
 from .threads_input import NOTE, ORDERED_KINDS, OUTLINE, Item, prepare, segments, split_by_budget
 from .time_anchor import anchor_times
+from .interleave import check_interleave, clean_interleave, mostly_there, score_interleave
 
 DRAFT, CONFIRMED = "draft", "confirmed"
 MISSED = "模型没分配"
@@ -345,6 +346,33 @@ async def stage_align(
     return got
 
 
+async def stage_interleave(
+    caller: Caller, threads: list[ThreadDraft], main: str | None, items: dict[str, Item], budget: int
+) -> list[str]:
+    """全书穿插（见 interleave.py）：各线排好的块合并成一条全书顺序。一条线、超预算、
+    模型给不出像样的结果时返回 []，骨架退回按时间排。"""
+    lines = {t.key: list(t.scenes) for t in threads if t.scenes}
+    if len(lines) <= 1:
+        return []
+    text = "\n\n".join(
+        "\n".join([f"## {t.key} {_one_line(t.name)}" + ("（主线）" if t.key == main else ""),
+                   *(items[s].line if s in items else s for s in t.scenes)])
+        for t in threads if t.scenes
+    )
+    if len(text) > budget:
+        caller.failed.append({"call": "interleave", "error": "输入太大，跳过全书穿插"})
+        return []
+    caller.plan(1)
+    got = await caller.call(
+        "threads_interleave", {"main": main or "", "threads": text},
+        lambda d: check_interleave(d, lines), "interleave",
+        score=lambda d: score_interleave(d, lines),
+        clean=lambda d: clean_interleave(d, lines) if mostly_there(d, lines) else None,
+        usable=lambda r: r is not None,
+    )
+    return got or []
+
+
 async def stage_gaps(
     caller: Caller, world_key: str, world_name: str, threads: list[ThreadDraft],
     world_scenes: list[str], items: dict[str, Item], budget: int,
@@ -383,11 +411,12 @@ EMPTY: dict = {
     "worlds": [],
     "threads": [],
     "intersections": [],
+    "global_order": [],
     "gaps": [],
     "unassigned": [],
     "pending": [],
 }
-_LIST_KEYS = ("worlds", "threads", "intersections", "gaps", "unassigned", "pending")
+_LIST_KEYS = ("worlds", "threads", "intersections", "global_order", "gaps", "unassigned", "pending")
 _KINDS = {"world": ("W", "worlds", "next_world"), "thread": ("L", "threads", "next_thread")}
 
 
@@ -673,6 +702,7 @@ async def _run_threads(book: Book, client: LLMClient, progress: Progress) -> dic
         main, main_by = choose_main(old, threads, world_mains, [w.key for w in worlds])
         offsets, intersections = await stage_align(caller, threads, main, items, unit, budget)
         offsets = anchor_times(threads, main, offsets, intersections)
+        global_order = await stage_interleave(caller, threads, main, items, budget)
         world_dicts = _world_dicts(worlds, old_worlds, locked_world_ids, items, world_outlines, prep.all_ids)
         gap_lists = await _all(
             stage_gaps(caller, w["id"], w["name"], [t for t in threads if t.world == w["id"]],
@@ -700,6 +730,7 @@ async def _run_threads(book: Book, client: LLMClient, progress: Progress) -> dic
         "worlds": world_dicts,
         "threads": thread_dicts,
         "intersections": intersections,
+        "global_order": global_order,
         "gaps": gaps,
         "unassigned": unassigned,
         "pending": pending,
