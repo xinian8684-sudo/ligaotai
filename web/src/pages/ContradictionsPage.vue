@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
-import { getContradictions, getFollowups, putVerdict } from '@/api/endpoints'
+import { getContradictions, getFollowups, getThreads, putVerdict } from '@/api/endpoints'
 import type { ContradictionGroup, ContradictionsFile, Followups, VerdictReq } from '@/api/types'
 import { ApiError } from '@/api/client'
 import { useJobStore } from '@/stores/job'
@@ -12,6 +12,17 @@ const jobStore = useJobStore()
 
 const data = ref<ContradictionsFile | null>(null)
 const error = ref('')
+/** 出处原来只显示 L-004，带上线名才知道是哪条线。拉不到归线结果（还没跑、文件坏了）就只显示编号，不算错。 */
+const 线名 = ref<Record<string, string>>({})
+
+async function 拉线名(): Promise<void> {
+  try {
+    const th = await getThreads(props.name)
+    线名.value = Object.fromEntries((th.threads ?? []).filter((x) => x.name).map((x) => [x.id, x.name]))
+  } catch {
+    线名.value = {}
+  }
+}
 
 async function 加载(): Promise<void> {
   error.value = ''
@@ -102,6 +113,7 @@ function 结论(g: ContradictionGroup): string {
 onMounted(() => {
   jobStore.start()
   void 加载()
+  void 拉线名()
 })
 onUnmounted(() => {
   jobStore.stop()
@@ -150,7 +162,7 @@ onUnmounted(() => {
             <ul class="scenes">
               <li v-for="s in v.scenes" :key="s.id">
                 <span class="sid">[{{ s.id }}]</span>
-                <span v-if="s.thread" class="thread">{{ s.thread }}</span>
+                <span v-if="s.thread" class="thread" :title="s.thread" data-test="出处线">{{ 线名[s.thread] ?? s.thread }}</span>
                 <span v-if="s.t !== null" class="t">故事时间约 {{ s.t }}{{ s.conf ? `（把握${s.conf}）` : '' }}</span>
                 <span v-else class="t">故事时间未知</span>
                 <span class="quote">{{ s.quote }}</span>

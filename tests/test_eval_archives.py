@@ -493,3 +493,46 @@ def test_有主语对得上的组就优先认它():
     assert res["hit"] == 1
     assert res["subject_mismatch"] == 0, "主语明明有对得上的组"
     assert res["unmatched_true"] == 1, "岑秀那组才是没对上的那个"
+
+
+def _book_for_folder_test(tmp_path):
+    from ligaotai.scenes import Scene, write_scene
+    book = Book(tmp_path)
+    book.thread_archive_dir.mkdir(parents=True, exist_ok=True)
+    book.scenes_dir.mkdir(parents=True, exist_ok=True)
+    (book.thread_archive_dir / "L-001.md").write_text("## 来龙去脉\n他救了人 [S-0001]。\n", encoding="utf-8")
+    write_scene(book, Scene(id="S-0001", source="真实乱稿文件夹/x.txt", index=1,
+                            start=0, end=2, chars=2, hash="h", text="正文"))
+    index = {"threads": {"L-001": {"file": "档案/支线/L-001.md", "scenes": ["S-0001"],
+                                    "world": "", "outdated": False}}}
+    book.archive_index_path.parent.mkdir(parents=True, exist_ok=True)
+    book.archive_index_path.write_text(_json.dumps(index, ensure_ascii=False), encoding="utf-8")
+    key_path = tmp_path / "答案.json"
+    key_path.write_text(_json.dumps({
+        "seed": 1, "files": [{"path": "x.txt", "chapter": 1, "piece": 1, "pieces": 1, "kind": "original"}],
+        "contradictions": [{"chapter": 1, "subject": "x", "attribute": "兵器", "old": "a", "new": "b"}],
+    }), encoding="utf-8")
+    return key_path
+
+
+def test_folder传路径也认_取最后一级文件夹名(tmp_path):
+    """9-21 踩过：--folder data/乱稿-雪月梅-c 被当成文件夹名去对，一个都对不上。传路径时取最后一级。
+    这本最小书后面还会因为别的原因退出（答案是旧格式），这里只管：不能是「--folder 没对上」那条报错。"""
+    key_path = _book_for_folder_test(tmp_path)
+    try:
+        eval_main(["--book", str(tmp_path), "--key", str(key_path),
+                   "--folder", str(tmp_path / "data" / "真实乱稿文件夹"), "--report", str(tmp_path / "验收.json")])
+    except SystemExit as e:
+        assert "一个场景都没对上" not in str(e.code)
+
+
+def test_宽范围算不出来要写进报告(tmp_path):
+    """generation_scopes 算不出生成时的范围（prepare_inputs 抛错）会退回严格范围，编造率可能无声跳高——
+    报告里要写明 lenient_available=False 和原因，不然分不清是真编造还是宽范围没算出来。"""
+    book = _make_book_with_outdated(tmp_path)  # 没有归线结果，prepare_inputs 必然失败
+    try:
+        eval_main(["--book", str(tmp_path), "--report", str(tmp_path / "验收.json")])
+    except SystemExit:
+        pass
+    r = _json.loads((tmp_path / "验收.json").read_text(encoding="utf-8"))
+    assert r["lenient_available"] is False and r["lenient_error"]

@@ -88,6 +88,10 @@ async function 归入(sid: string): Promise<void> {
 }
 
 const 改名草稿 = reactive<Record<string, string>>({})
+
+/** 世界列原来只显示 W-01，这里换成世界名（查不到名字的只显示编号，编号放 title 里）。 */
+const 世界名 = computed<Record<string, string>>(() =>
+  Object.fromEntries((data.value?.worlds ?? []).filter((w) => w.name).map((w) => [w.id, w.name])))
 function 开始改名(t: Thread): void {
   改名草稿[t.id] = t.name
 }
@@ -187,7 +191,7 @@ onUnmounted(() => {
               />
               <span v-else @dblclick="开始改名(t)">{{ t.name }}</span>
             </td>
-            <td>{{ t.world }}</td>
+            <td :title="t.world" :data-test="`世界-${t.id}`">{{ 世界名[t.world] ?? t.world }}</td>
             <td>{{ t.scenes.length }}</td>
             <td>{{ t.end?.state ?? '待定' }}</td>
             <td class="about">{{ t.about }}</td>

@@ -305,14 +305,16 @@ def _scene_texts(book: Book, ids: set[str]) -> dict[str, str]:
 # main() 用到的书内数据装配
 # --------------------------------------------------------------------------------------
 
-def generation_scopes(book: Book) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+def generation_scopes(book: Book) -> tuple[dict[str, set[str]], dict[str, set[str]], str | None]:
     """生成档案时模型真正被允许引用的范围（`archive.py` 的 thread_scope / world_scope：
-    本线场景 ∪ 渲染进输入材料的全部编号）。上游数据不全时返回空的，调用方退回严格范围。"""
+    本线场景 ∪ 渲染进输入材料的全部编号）。上游数据不全时返回空的 + 出错原因，调用方退回
+    严格范围；main() 把原因写进报告（lenient_available / lenient_error），免得编造率无声跳高
+    却看不出是真编造还是宽范围没算出来。"""
     try:
         inp = prepare_inputs(book)
-    except (OSError, ValueError, KeyError, TypeError):
-        return {}, {}
-    return dict(inp.thread_scope), dict(inp.world_scope)
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        return {}, {}, f"{type(e).__name__}: {e}"
+    return dict(inp.thread_scope), dict(inp.world_scope), None
 
 
 def load_scopes_and_bodies(book: Book) -> tuple[dict[str, str], dict[str, set[str]],
@@ -352,7 +354,7 @@ def load_scopes_and_bodies(book: Book) -> tuple[dict[str, str], dict[str, set[st
 
     existing = {p.stem for p in book.scenes_dir.glob("S-*.md")} if book.scenes_dir.exists() else set()
 
-    gen_thread, gen_world = generation_scopes(book)
+    gen_thread, gen_world, _ = generation_scopes(book)
 
     bodies: dict[str, str] = {}
     allowed: dict[str, set[str]] = {}
@@ -424,7 +426,8 @@ def main(argv: list[str] | None = None) -> None:
 
     bodies, allowed, existing, lenient, outdated = load_scopes_and_bodies(book)
     refs = check_refs(bodies, allowed, existing, lenient)
-    report: dict = {"refs": refs}
+    lenient_error = generation_scopes(book)[2]
+    report: dict = {"refs": refs, "lenient_available": lenient_error is None, "lenient_error": lenient_error}
     ok = refs["fabricated_rate"] <= FABRICATED_LIMIT and refs["no_ref_rate"] <= NO_REF_LIMIT
 
     n_outdated = len(outdated["threads"]) + len(outdated["worlds"]) + (1 if outdated["map"] else 0)
@@ -442,7 +445,8 @@ def main(argv: list[str] | None = None) -> None:
         # 硬报错逼着换一份带矛盾的答案文件，别让「没法算」悄悄看起来像「算出来是 0」。
         if not key.get("contradictions"):
             sys.exit("这份答案文件没有植入矛盾，重新跑 scramble --contradictions N")
-        chapter_scenes = chapter_to_scenes(book, key, args.folder)
+        # 传的是路径（data/乱稿-雪月梅-c）也认：只取最后一级文件夹名（9-21 踩过）
+        chapter_scenes = chapter_to_scenes(book, key, Path(args.folder).name)
         # 对称的坑：--folder 传错时 by_path 一个都对不上，chapter_scenes 全空，recall
         # 会静默变 0（这次 pass=False，但原因跟上面「没有 contradictions」完全不同，
         # 报告里分不出来）。同样硬报错，别让两种「0」看起来一样。
@@ -462,6 +466,8 @@ def main(argv: list[str] | None = None) -> None:
     report_path = Path(args.report)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    if lenient_error:
+        print(f"警告：算不出生成档案时的宽范围，缺口/伏笔小节按严格范围核对，编造率可能偏高（{lenient_error}）")
     if n_outdated:
         print(f"警告：本次读到的档案里有 {n_outdated} 份被标 outdated / 地图 blocked，验收结果不可信 "
               f"（threads={outdated['threads']} worlds={outdated['worlds']} map_blocked={outdated['map']}）")

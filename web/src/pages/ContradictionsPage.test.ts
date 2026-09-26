@@ -229,3 +229,25 @@ describe('ContradictionsPage', () => {
     expect(刷新书).toHaveBeenCalled()
   })
 })
+
+describe('ContradictionsPage 出处线名', () => {
+  it('拉得到归线结果就显示线名，编号放 title', async () => {
+    vi.spyOn(api, 'getContradictions').mockResolvedValue(造文件([造组()]))
+    vi.spyOn(api, 'getThreads').mockResolvedValue({ threads: [{ id: 'L-001', name: '西天取经' }] } as never)
+    const w = mount(ContradictionsPage, { props: { name: 'guixu' }, global: { stubs } })
+    await flushPromises()
+    const s = w.findAll('[data-test="出处线"]')
+    expect(s.length).toBe(2)
+    expect(s[0].text()).toBe('西天取经')
+    expect(s[0].attributes('title')).toBe('L-001')
+  })
+
+  it('拉不到归线结果就只显示编号，不报错', async () => {
+    vi.spyOn(api, 'getContradictions').mockResolvedValue(造文件([造组()]))
+    vi.spyOn(api, 'getThreads').mockRejectedValue(new Error('还没有归线结果'))
+    const w = mount(ContradictionsPage, { props: { name: 'guixu' }, global: { stubs } })
+    await flushPromises()
+    expect(w.findAll('[data-test="出处线"]')[0].text()).toBe('L-001')
+    expect(w.text()).not.toContain('还没有归线结果')
+  })
+})

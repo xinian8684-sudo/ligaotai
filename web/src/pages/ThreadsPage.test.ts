@@ -161,3 +161,19 @@ describe('ThreadsPage', () => {
     expect(w.find('[data-test="设为主线-L-002"]').attributes('disabled')).toBeDefined()
   })
 })
+
+describe('ThreadsPage 世界列', () => {
+  it('显示世界名，编号放 title；查不到名字的只显示编号', async () => {
+    const d = structuredClone(雪月梅) as unknown as ThreadsFile
+    d.worlds[0].name = '明朝人间'
+    d.threads[0].world = d.worlds[0].id
+    d.threads[1].world = 'W-99'
+    vi.spyOn(api, 'getThreads').mockResolvedValue(d)
+    const w = mount(ThreadsPage, { props: { name: 'guixu' }, global: { stubs } })
+    await flushPromises()
+    const a = w.find(`[data-test="世界-${d.threads[0].id}"]`)
+    expect(a.text()).toBe('明朝人间')
+    expect(a.attributes('title')).toBe(d.worlds[0].id)
+    expect(w.find(`[data-test="世界-${d.threads[1].id}"]`).text()).toBe('W-99')
+  })
+})
