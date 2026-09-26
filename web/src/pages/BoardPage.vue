@@ -5,6 +5,7 @@ import type { AdviceItem, BoardCol, BoardView, ImpactView, Job } from '@/api/typ
 import { ApiError } from '@/api/client'
 import { useJobStore } from '@/stores/job'
 import ErrorBox from '@/components/ErrorBox.vue'
+import SceneRefs from '@/components/SceneRefs.vue'
 
 const props = defineProps<{ name: string }>()
 const jobStore = useJobStore()
@@ -191,7 +192,7 @@ onUnmounted(() => {
           </p>
           <p v-if="view.cards[tid].col === 'merge'" class="meta">并入 {{ 线名(view.cards[tid].merge_into ?? '') }}</p>
           <p v-if="view.cards[tid].merge_invalid" class="bad">合并目标失效：并入的线已经被砍或不存在了</p>
-          <p v-if="建议(tid)" class="advice">AI：{{ 建议文字[建议(tid)!.advice] }}<template v-if="建议(tid)!.merge_into">（并入 {{ 线名(建议(tid)!.merge_into!) }}）</template>——{{ 建议(tid)!.reason }}</p>
+          <p v-if="建议(tid)" class="advice">AI：{{ 建议文字[建议(tid)!.advice] }}<template v-if="建议(tid)!.merge_into">（并入 {{ 线名(建议(tid)!.merge_into!) }}）</template>——<SceneRefs :text="建议(tid)!.reason" :book="name" /></p>
 
           <div v-if="!view.cards[tid].orphan" class="move">
             <select :data-test="`移到-${tid}`" :disabled="jobStore.busy" :value="view.cards[tid].col"
@@ -211,19 +212,19 @@ onUnmounted(() => {
             <div class="k">会影响</div>
             <ul>
               <li v-for="x in 影响[tid]!.program.crossings" :key="x.scene + x.main_scene">
-                和 {{ 线名(x.other) }} 的交汇点：{{ x.scene }} ↔ {{ x.main_scene }}（{{ x.reason }}）
+                和 {{ 线名(x.other) }} 的交汇点：<SceneRefs :text="x.scene" :book="name" /> ↔ <SceneRefs :text="x.main_scene" :book="name" />（<SceneRefs :text="x.reason" :book="name" />）
               </li>
               <li v-for="p in 影响[tid]!.program.only_characters" :key="p.name">
-                只在这条线出场的人物：{{ p.name }}（{{ p.scenes.join('、') }}）
+                只在这条线出场的人物：{{ p.name }}（<SceneRefs :text="p.scenes.join('、')" :book="name" />）
               </li>
               <li v-for="r in 影响[tid]!.program.maybe_refs" :key="r.scene + r.text">
-                可能：{{ 线名(r.thread) }} 的 {{ r.scene }} 提到「{{ r.text }}」
+                可能：{{ 线名(r.thread) }} 的 <SceneRefs :text="r.scene" :book="name" /> 提到「{{ r.text }}」
               </li>
               <li v-for="p in 影响[tid]!.model?.pairs ?? []" :key="p.planted + p.resolved" :class="{ stale: 影响[tid]!.model!.stale }">
-                伏笔：{{ p.planted }} 埋 → {{ p.resolved }} 收（{{ p.hook }}）<span v-if="影响[tid]!.model!.stale" class="stale-tag">（已过期）</span>
+                伏笔：<SceneRefs :text="p.planted" :book="name" /> 埋 → <SceneRefs :text="p.resolved" :book="name" /> 收（<SceneRefs :text="p.hook" :book="name" />）<span v-if="影响[tid]!.model!.stale" class="stale-tag">（已过期）</span>
               </li>
             </ul>
-            <p v-if="影响[tid]!.model && !影响[tid]!.model!.stale" class="remedy">{{ 影响[tid]!.model!.remedy }}</p>
+            <p v-if="影响[tid]!.model && !影响[tid]!.model!.stale" class="remedy"><SceneRefs :text="影响[tid]!.model!.remedy" :book="name" /></p>
             <button v-else :data-test="`检查伏笔-${tid}`" :disabled="jobStore.busy" @click="查伏笔(tid)">
               {{ 影响[tid]!.model ? '输入变了，可能过时，重新检查伏笔影响' : '检查伏笔影响' }}
             </button>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { listScenes, getScene, listCards, getCard, getVersions, setMainVersion } from '@/api/endpoints'
 import type { SceneMeta, SceneDetail, CardRow, CardRecord, VersionGroup } from '@/api/types'
 import { ApiError } from '@/api/client'
@@ -144,9 +145,25 @@ async function 设主版本(gid: string, sid: string): Promise<void> {
   }
 }
 
+/** 从别的页面点场景编号跳过来（?s=S-0030）：列表加载完后选中它、滚到它那一行。
+ *  测试里不装路由时 useRoute() 拿不到，当没有这个参数。 */
+const route = useRoute() as ReturnType<typeof useRoute> | undefined
+function 地址里的场景(): string | null {
+  const s = route?.query?.s
+  return typeof s === 'string' && s ? s : null
+}
+async function 跟地址选中(): Promise<void> {
+  const sid = 地址里的场景()
+  if (!sid || sid === 选中id.value) return
+  await 选中(sid)
+  await nextTick()
+  document.querySelector(`[data-test="场景-${sid}"]`)?.scrollIntoView?.({ block: 'center' })
+}
+watch(() => route?.query?.s, () => { void 跟地址选中() })
+
 onMounted(() => {
   jobStore.start()
-  void 加载()
+  void 加载().then(跟地址选中)
 })
 onUnmounted(() => {
   jobStore.stop()

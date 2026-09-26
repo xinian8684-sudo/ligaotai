@@ -5,6 +5,7 @@ import type { ArchiveIndex, ArchiveEntry } from '@/api/types'
 import { ApiError } from '@/api/client'
 import { useJobStore } from '@/stores/job'
 import ErrorBox from '@/components/ErrorBox.vue'
+import SceneRefs from '@/components/SceneRefs.vue'
 
 const props = defineProps<{ name: string }>()
 
@@ -167,7 +168,7 @@ onUnmounted(() => {
       <section v-if="选中" class="body-pane">
         <h2>{{ 选中.label }}</h2>
         <ErrorBox :message="正文错误" />
-        <pre v-if="正文" class="body">{{ 正文 }}</pre>
+        <pre v-if="正文" class="body"><SceneRefs :text="正文" :book="name" /></pre>
       </section>
     </div>
   </div>

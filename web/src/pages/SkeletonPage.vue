@@ -5,6 +5,7 @@ import type { ExportResult, Job, SkChapter, SkHole, SkItem, SkNote, Skeleton } f
 import { ApiError } from '@/api/client'
 import { useJobStore } from '@/stores/job'
 import ErrorBox from '@/components/ErrorBox.vue'
+import SceneRefs from '@/components/SceneRefs.vue'
 
 const props = defineProps<{ name: string }>()
 const jobStore = useJobStore()
@@ -314,7 +315,7 @@ onUnmounted(() => {
         </div>
         <template v-for="it in 当前章.items" :key="it.type + it.id">
           <div v-if="it.type === 'scene'" class="scene" :class="{ flagged: it.flag }" :data-test="`场景-${it.id}`">
-            <span class="sid">{{ it.id }}</span>
+            <span class="sid"><SceneRefs :text="it.id" :book="name" /></span>
             <span class="thread">{{ it.thread_name ?? it.thread }}</span>
             <span v-if="it.summary" class="summary">{{ it.summary }}</span>
             <span v-if="it.flag" class="why">{{ flag文字[it.flag] ?? it.flag }}</span>
@@ -341,12 +342,12 @@ onUnmounted(() => {
     <section v-if="sk && (sk.unplaced.scenes.length || sk.unplaced.holes.length)" class="unplaced" data-test="未定位">
       <h2>未定位</h2>
       <div v-for="s in sk.unplaced.scenes" :key="s.id" class="scene">
-        <span class="sid">{{ s.id }}</span><span class="thread">{{ s.thread_name ?? s.thread ?? '' }}</span>
+        <span class="sid"><SceneRefs :text="s.id" :book="name" /></span><span class="thread">{{ s.thread_name ?? s.thread ?? '' }}</span>
         <span v-if="s.summary" class="summary">{{ s.summary }}</span>
         <span class="why">{{ 原因[s.why] ?? s.why }}</span>
         <button :disabled="jobStore.busy || !当前章" @click="放进当前章(s.id)">放进当前章</button>
       </div>
-      <div v-for="h in sk.unplaced.holes" :key="h.id" class="hole-line">空洞 {{ h.id }}：{{ h.task }}</div>
+      <div v-for="h in sk.unplaced.holes" :key="h.id" class="hole-line">空洞 {{ h.id }}：<SceneRefs :text="h.task" :book="name" /></div>
     </section>
   </div>
 </template>

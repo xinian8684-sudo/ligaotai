@@ -5,6 +5,7 @@ import type { ContradictionGroup, ContradictionsFile, Followups, VerdictReq } fr
 import { ApiError } from '@/api/client'
 import { useJobStore } from '@/stores/job'
 import ErrorBox from '@/components/ErrorBox.vue'
+import SceneRefs from '@/components/SceneRefs.vue'
 
 const props = defineProps<{ name: string }>()
 
@@ -156,12 +157,12 @@ onUnmounted(() => {
             <span class="tag category">{{ g.category }}</span>
             <span v-if="g.verdict_stale" class="tag stale" data-test="verdict过期">值变了，请重看</span>
           </div>
-          <p class="reason">{{ g.reason || '（模型没给理由）' }}</p>
+          <p class="reason"><SceneRefs :text="g.reason || '（模型没给理由）'" :book="name" /></p>
           <div v-for="(v, i) in g.values" :key="i" class="value">
             <div class="vhead">值「{{ v.value }}」出现在：</div>
             <ul class="scenes">
               <li v-for="s in v.scenes" :key="s.id">
-                <span class="sid">[{{ s.id }}]</span>
+                <span class="sid">[<SceneRefs :text="s.id" :book="name" />]</span>
                 <span v-if="s.thread" class="thread" :title="s.thread" data-test="出处线">{{ 线名[s.thread] ?? s.thread }}</span>
                 <span v-if="s.t !== null" class="t">故事时间约 {{ s.t }}{{ s.conf ? `（把握${s.conf}）` : '' }}</span>
                 <span v-else class="t">故事时间未知</span>
@@ -176,7 +177,7 @@ onUnmounted(() => {
               <button :data-test="`撤销-${g.id}`" :disabled="jobStore.busy" @click="裁决(g, { kind: null })">撤销</button>
               <button v-if="g.verdict.kind !== 'later'" class="link" :data-test="`跟着改-${g.id}`" @click="看跟着改(g)">另一边要跟着改的地方</button>
               <ul v-if="跟着改[g.id]" class="followups">
-                <li v-for="s in 跟着改[g.id]!.scenes" :key="s.id + s.value"><span class="sid">[{{ s.id }}]</span> {{ s.quote }}（写的是「{{ s.value }}」）</li>
+                <li v-for="s in 跟着改[g.id]!.scenes" :key="s.id + s.value"><span class="sid">[<SceneRefs :text="s.id" :book="name" />]</span> {{ s.quote }}（写的是「{{ s.value }}」）</li>
                 <li v-if="跟着改[g.id]!.scenes.length === 0" class="none">没有要跟着改的地方</li>
               </ul>
             </template>
