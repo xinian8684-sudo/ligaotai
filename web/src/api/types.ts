@@ -225,7 +225,7 @@ export interface Thread {
   order_failed: boolean
 }
 
-export interface Intersection { thread: string; scene: string; main_scene: string; reason: string }
+export interface Intersection { thread: string; scene: string; main_scene: string; reason: string; same_time?: boolean }
 
 export interface Gap {
   id: string            // Q-001，每次重跑会重排，别拿它当稳定标识

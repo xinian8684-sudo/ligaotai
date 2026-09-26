@@ -674,12 +674,13 @@ def test_stage_align_reply(book):
 
     def reply(m):
         return json.dumps({"threads": [{"id": "L-001", "offset": 0}, {"id": "L-002", "offset": None}],
-                           "intersections": [{"thread": "L-002", "scene": "S-0003", "main_scene": "S-0002", "reason": "同一场"}]},
+                           "intersections": [{"thread": "L-002", "scene": "S-0003", "main_scene": "S-0002", "reason": "同一场",
+                                              "same_time": True}]},
                           ensure_ascii=False)
 
     (offsets, cross), _, _ = align_of(book, [a, b], "L-001", align=reply)
-    assert offsets == {"L-001": 0, "L-002": None}
-    assert cross == [{"thread": "L-002", "scene": "S-0003", "main_scene": "S-0002", "reason": "同一场"}]
+    assert offsets == {"L-001": 0, "L-002": None}  # stage_align 本身不锚定，锚定在 _run_threads 里接着做
+    assert cross == [{"thread": "L-002", "scene": "S-0003", "main_scene": "S-0002", "reason": "同一场", "same_time": True}]
 
 
 def test_stage_align_shifts_offsets_relative_to_main(book):

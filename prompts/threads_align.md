@@ -9,10 +9,12 @@
 1. threads 里每条线恰好出现一次，id 写 ## 后面的编号；主线 $main 的 offset 写 0。
 2. 依据共同事件、共同出场人物、原文里的时间线索对齐。完全找不到依据的线 offset 写 null，不要硬凑。
 3. intersections 列出其他线和主线交汇的地方：thread 写主线以外的线的编号，不能是 $main；scene 写这条线里的块，main_scene 写主线 $main 里对应的块，两个别写反；reason 用一句话说明（比如「两处写的是同一场婚宴」）。没有就给空列表。
+4. 每个交汇点都要写 same_time：两处写的是**同一时刻发生的同一件事**写 true；只是前后呼应、前因后果、回忆、提到对方（比如一处写被压在山下、另一处写多年后被救出）写 false。程序会拿 true 的交汇点校准各条线的时间，写错会把整条线的时间拽歪，拿不准就写 false。
 
 只输出一个 json 对象，格式如下（示例）：
 {"threads": [{"id": "L-001", "offset": 0}, {"id": "L-002", "offset": 3.5}, {"id": "L-004", "offset": null}],
- "intersections": [{"thread": "L-002", "scene": "S-0150", "main_scene": "S-0004", "reason": "两处写的是同一场婚宴"}]}
+ "intersections": [{"thread": "L-002", "scene": "S-0150", "main_scene": "S-0004", "reason": "两处写的是同一场婚宴", "same_time": true},
+                   {"thread": "L-004", "scene": "S-0210", "main_scene": "S-0031", "reason": "S-0210 写当年结仇，S-0031 写多年后报仇", "same_time": false}]}
 
 ## user
 $threads

@@ -323,3 +323,29 @@ def test_pause_then_rerun_uses_the_cache(seeded):
     c2 = client(seeded)
     run_threads(seeded, c2)
     assert (c1.usage.calls, c2.usage.calls) == (1, 3)
+
+
+def test_same_time_intersection_anchors_the_sub_thread(seeded):
+    """9-26：对齐的偏移给错了（支线写 100），但交汇点标了 same_time——跑完支线那块的全局时间
+    （offset + t）要等于主线对应那块的时间。把 _run_threads 里那行 anchor_times 删掉这里就红。"""
+
+    def lines(m):
+        ids = listed_scenes(m)
+        user = m[1]["content"]
+        outl = [i for i in ids if f"{i}｜提纲" in user]
+        return json.dumps({"threads": [
+            {"name": "主线", "about": "测试", "main": True, "scenes": ["S-0003", "S-0001"], "outlines": outl},
+            {"name": "支线", "about": "测试", "scenes": ["S-0002"], "outlines": []},
+        ], "world_outlines": []}, ensure_ascii=False)
+
+    def align(m):
+        return json.dumps({"threads": [{"id": "L-001", "offset": 0}, {"id": "L-002", "offset": 100}],
+                           "intersections": [{"thread": "L-002", "scene": "S-0002", "main_scene": "S-0001",
+                                              "reason": "同一场", "same_time": True}]}, ensure_ascii=False)
+
+    run_threads(seeded, client(seeded, lines=lines, align=align))
+    th = {t["id"]: t for t in result(seeded)["threads"]}
+    main_t = th["L-001"]["times"]["S-0001"]["t"]
+    sub = th["L-002"]
+    assert sub["offset"] + sub["times"]["S-0002"]["t"] == main_t
+    assert result(seeded)["intersections"][0]["same_time"] is True

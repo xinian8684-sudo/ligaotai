@@ -45,6 +45,7 @@ from .threads_check import (
     text,
 )
 from .threads_input import NOTE, ORDERED_KINDS, OUTLINE, Item, prepare, segments, split_by_budget
+from .time_anchor import anchor_times
 
 DRAFT, CONFIRMED = "draft", "confirmed"
 MISSED = "模型没分配"
@@ -671,6 +672,7 @@ async def _run_threads(book: Book, client: LLMClient, progress: Progress) -> dic
         threads = [t for w in worlds for t in alive if t.world == w.key]
         main, main_by = choose_main(old, threads, world_mains, [w.key for w in worlds])
         offsets, intersections = await stage_align(caller, threads, main, items, unit, budget)
+        offsets = anchor_times(threads, main, offsets, intersections)
         world_dicts = _world_dicts(worlds, old_worlds, locked_world_ids, items, world_outlines, prep.all_ids)
         gap_lists = await _all(
             stage_gaps(caller, w["id"], w["name"], [t for t in threads if t.world == w["id"]],

@@ -643,6 +643,8 @@ def _align(data, thread_ids: set[str], main: str, members: dict) -> _Report:
             _, why, fixable = _cross(c, tids, bids, main, members)
             if why:
                 r.add(f"第 {i} 个交汇点不对：{why}", FIX if fixable else LOST)
+            if isinstance(c, dict) and not isinstance(c.get("same_time"), bool):
+                r.add(f"第 {i} 个交汇点要写 same_time（true 或 false）", FIX)
     return r
 
 
@@ -685,7 +687,8 @@ def clean_align(
         if k is None or k in keys:
             continue
         keys.add(k)
-        cross.append({"thread": k[0], "scene": k[1], "main_scene": k[2], "reason": text(c.get("reason"))})
+        cross.append({"thread": k[0], "scene": k[1], "main_scene": k[2], "reason": text(c.get("reason")),
+                      "same_time": c.get("same_time") is True})
     return offsets, cross
 
 

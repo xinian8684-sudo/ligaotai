@@ -433,8 +433,13 @@ MEMBERS = {"L-001": {"S-0001", "S-0002"}, "L-002": {"S-0003"}, "L-003": {"S-0004
 
 def test_check_align():
     ok = {"threads": [{"id": "L-001", "offset": 0}, {"id": "L-002", "offset": 1.5}, {"id": "L-003", "offset": None}],
-          "intersections": [{"thread": "L-002", "scene": "S-0003", "main_scene": "S-0002", "reason": "r"}]}
+          "intersections": [{"thread": "L-002", "scene": "S-0003", "main_scene": "S-0002", "reason": "r", "same_time": True}]}
     assert check_align(ok, set(MEMBERS), "L-001", MEMBERS) == []
+    # 9-26：交汇点必须写 same_time（程序拿 true 的校准时间），没写或写成字符串都让模型改
+    for bad in ({}, {"same_time": "true"}):
+        c = {k: v for k, v in ok["intersections"][0].items() if k != "same_time"} | bad
+        p = check_align({**ok, "intersections": [c]}, set(MEMBERS), "L-001", MEMBERS)
+        assert len(p) == 1 and "same_time" in p[0]
     assert check_align({"threads": ok["threads"][:2]}, set(MEMBERS), "L-001", MEMBERS) != []
     bad_offset = {"threads": [{**t, "offset": "很久"} for t in ok["threads"]]}
     assert check_align(bad_offset, set(MEMBERS), "L-001", MEMBERS) != []
@@ -446,14 +451,18 @@ def test_check_align():
 def test_clean_align():
     data = {"threads": [{"id": "L-001", "offset": 9}, {"id": "L-002", "offset": "2"}, {"id": "L-003", "offset": "?"}],
             "intersections": [
-                {"thread": "L-002", "scene": "S-0003", "main_scene": "S-0002", "reason": "r"},
+                {"thread": "L-002", "scene": "S-0003", "main_scene": "S-0002", "reason": "r", "same_time": True},
                 {"thread": "L-002", "scene": "S-0003", "main_scene": "S-0002", "reason": "重复"},
                 {"thread": "L-003", "scene": "S-0003", "main_scene": "S-0002"},
             ]}
     offsets, cross = clean_align(data, set(MEMBERS), "L-001", MEMBERS)
     # 主线写了 9：其他线都减 9，保持相对关系（L-002 比主线早 7）
     assert offsets == {"L-001": 0, "L-002": -7.0, "L-003": None}
-    assert cross == [{"thread": "L-002", "scene": "S-0003", "main_scene": "S-0002", "reason": "r"}]
+    assert cross == [{"thread": "L-002", "scene": "S-0003", "main_scene": "S-0002", "reason": "r", "same_time": True}]
+    # 没写 / 写成非布尔值一律当 false：拿不准的交汇点不能拿去校准时间
+    for v in (None, "true", 1):
+        c = {"thread": "L-002", "scene": "S-0003", "main_scene": "S-0002", "reason": "r", "same_time": v}
+        assert clean_align({**data, "intersections": [c]}, set(MEMBERS), "L-001", MEMBERS)[1][0]["same_time"] is False
 
 
 def test_check_align_main_offset_must_be_zero():
@@ -517,12 +526,12 @@ def test_align_intersections():
     base = {"threads": [{"id": "L-001", "offset": 0}, {"id": "L-002", "offset": 1}, {"id": "L-003", "offset": None}]}
 
     def one(c):
-        d = {**base, "intersections": [c]}
+        d = {**base, "intersections": [{**c, "same_time": False}]}  # same_time 另有测试，这里都写上
         return check_align(d, ids, "L-001", MEMBERS), clean_align(d, ids, "L-001", MEMBERS)[1]
 
     p, cross = one({"thread": "L-002", "scene": "S-0002", "main_scene": "S-0003", "reason": "r"})  # 写反了
     assert len(p) == 1 and "写反" in p[0]
-    assert cross == [{"thread": "L-002", "scene": "S-0003", "main_scene": "S-0002", "reason": "r"}]
+    assert cross == [{"thread": "L-002", "scene": "S-0003", "main_scene": "S-0002", "reason": "r", "same_time": False}]
     p, cross = one({"thread": "L-002", "scene": "S-0004", "main_scene": "S-0002"})  # 只有 scene 不对
     assert len(p) == 1 and "scene「S-0004」不在 L-002 里" in p[0] and "main_scene" not in p[0] and cross == []
     p, cross = one({"thread": "L-002", "scene": "S-0003", "main_scene": "S-0004"})  # 只有 main_scene 不对
@@ -530,7 +539,8 @@ def test_align_intersections():
     p, cross = one({"thread": "L-001", "scene": "S-0001", "main_scene": "S-0002"})  # 跟主线自己对齐
     assert len(p) == 1 and "thread" in p[0] and cross == []
     p, cross = one({"thread": "l-2", "scene": "s-0003", "main_scene": "S-2"})  # 编号变体
-    assert p == [] and cross == [{"thread": "L-002", "scene": "S-0003", "main_scene": "S-0002", "reason": ""}]
+    assert p == [] and cross == [{"thread": "L-002", "scene": "S-0003", "main_scene": "S-0002", "reason": "",
+                                  "same_time": False}]
 
 
 def test_align_score_prefers_the_mostly_right_reply():
