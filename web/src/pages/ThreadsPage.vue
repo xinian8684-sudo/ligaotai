@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, reactive, computed, inject, onMounted, onUnmounted } from 'vue'
 import {
-  getThreads, moveScenes, rejectPending, renameThread, setMainThread,
+  getThreads, listCards, mergeThreads, moveScenes, rejectPending, renameThread, setMainThread, splitThread,
 } from '@/api/endpoints'
 import type { ThreadsFile, Thread, PendingScene, UnassignedScene } from '@/api/types'
 import { ApiError } from '@/api/client'
 import { useJobStore } from '@/stores/job'
 import ErrorBox from '@/components/ErrorBox.vue'
+import SceneRefs from '@/components/SceneRefs.vue'
 
 const props = defineProps<{ name: string }>()
 
@@ -121,6 +122,57 @@ async function 设为主线(t: Thread): Promise<void> {
   }
 }
 
+/** 合并：后端 merge_threads 保留 ids[0]，其余线的块并进来、时间估计丢掉。勾了主线就一律保留主线
+ *  （主线被并进别的线，主线全部块都会没有时间、在骨架里掉进未定位）；没勾主线就保留先勾的那条。 */
+const 合并选中 = ref<string[]>([])
+const 合并确认中 = ref(false)
+const 合并顺序 = computed<string[]>(() => {
+  const main = data.value?.main_thread
+  return main && 合并选中.value.includes(main) ? [main, ...合并选中.value.filter((x) => x !== main)] : 合并选中.value
+})
+const 保留的线 = computed<Thread | null>(() => threads.value.find((t) => t.id === 合并顺序.value[0]) ?? null)
+
+async function 合并(): Promise<void> {
+  error.value = ''
+  try {
+    await mergeThreads(props.name, { ids: 合并顺序.value })
+    合并选中.value = []
+    合并确认中.value = false
+    await 加载()
+    await 刷新书?.()
+  } catch (e) {
+    await 报错(e)
+  }
+}
+
+/** 拆分：展开一条线的场景列表，从某一块起（含）拆成新线。摘要按需拉一次卡片列表。 */
+const 拆分中 = ref<string | null>(null)
+const 摘要 = ref<Record<string, string>>({})
+const 拆分的线 = computed<Thread | null>(() => threads.value.find((t) => t.id === 拆分中.value) ?? null)
+
+async function 开始拆分(t: Thread): Promise<void> {
+  拆分中.value = 拆分中.value === t.id ? null : t.id
+  if (拆分中.value && Object.keys(摘要.value).length === 0) {
+    try {
+      摘要.value = Object.fromEntries((await listCards(props.name)).map((r) => [r.id, r.summary]))
+    } catch {
+      摘要.value = {}
+    }
+  }
+}
+
+async function 从这里拆(t: Thread, sid: string): Promise<void> {
+  error.value = ''
+  try {
+    await splitThread(props.name, t.id, { from_scene: sid })
+    拆分中.value = null
+    await 加载()
+    await 刷新书?.()
+  } catch (e) {
+    await 报错(e)
+  }
+}
+
 onMounted(() => {
   jobStore.start()
   void 加载()
@@ -172,14 +224,26 @@ onUnmounted(() => {
 
     <section class="block">
       <h2>线列表（{{ threads.length }}）</h2>
+      <div v-if="合并选中.length >= 2" class="merge-bar" data-test="合并条">
+        合并 {{ 合并选中.length }} 条线，保留「{{ 保留的线?.name }}」（{{ 保留的线?.id === data?.main_thread ? '主线' : '先勾的那条' }}），其余的块并进来。
+        <template v-if="!合并确认中">
+          <button data-test="合并" :disabled="jobStore.busy" @click="合并确认中 = true">合并…</button>
+        </template>
+        <template v-else>
+          <span class="warn">并进来的线原来的时间估计会丢掉，要重新跑归线排序才有。</span>
+          <button data-test="确定合并" :disabled="jobStore.busy" @click="合并">确定合并</button>
+          <button @click="合并确认中 = false">算了</button>
+        </template>
+      </div>
       <table v-if="threads.length > 0" class="threads">
         <thead>
           <tr>
-            <th>线名</th><th>世界</th><th>场景数</th><th>完结</th><th>概述</th><th></th>
+            <th></th><th>线名</th><th>世界</th><th>场景数</th><th>完结</th><th>概述</th><th></th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="t in threads" :key="t.id">
+            <td><input v-model="合并选中" type="checkbox" :value="t.id" :data-test="`合并勾选-${t.id}`" title="勾两条以上可以合并" @change="合并确认中 = false" /></td>
             <td>
               <span v-if="data?.main_thread === t.id" class="main-badge" title="主线">★</span>
               <input
@@ -204,10 +268,26 @@ onUnmounted(() => {
               >
                 设为主线
               </button>
+              <button
+                v-if="t.scenes.length > 1"
+                :data-test="`拆分-${t.id}`"
+                :disabled="jobStore.busy"
+                @click="开始拆分(t)"
+              >
+                {{ 拆分中 === t.id ? '收起' : '拆分' }}
+              </button>
             </td>
           </tr>
         </tbody>
       </table>
+      <div v-if="拆分的线" class="split" data-test="拆分面板">
+        <p>从哪一块起拆出新线？这一块和它后面的都拆出去，新线叫「{{ 拆分的线.name }}（拆出）」，双击线名可以改。</p>
+        <div v-for="(sid, i) in 拆分的线.scenes" :key="sid" class="split-row">
+          <span class="sid"><SceneRefs :text="sid" :book="name" /></span>
+          <span class="sum">{{ 摘要[sid] ?? '' }}</span>
+          <button v-if="i > 0" :data-test="`从这里拆-${sid}`" :disabled="jobStore.busy" @click="从这里拆(拆分的线, sid)">从这里拆</button>
+        </div>
+      </div>
     </section>
   </div>
 </template>
@@ -229,6 +309,11 @@ h2{font-size:15px;margin:0 0 8px}
 .target{flex:1;color:var(--ink-2)}
 .reason{flex:1;color:var(--ink-3)}
 .threads{width:100%;border-collapse:collapse;font-size:13px}
+.merge-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;background:var(--accent-soft);border-radius:6px;padding:8px 10px;margin-bottom:8px;font-size:13px}
+.merge-bar .warn{color:var(--amber)}
+.split{margin-top:12px;border:1px solid var(--line-2);border-radius:8px;padding:10px;font-size:13px}
+.split-row{display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--line-2)}
+.split-row .sum{flex:1;color:var(--ink-2)}
 .threads th{text-align:left;color:var(--ink-3);font-weight:400;padding:6px 8px;border-bottom:1px solid var(--line)}
 .threads td{padding:6px 8px;border-bottom:1px solid var(--line-2)}
 .threads .about{color:var(--ink-2);max-width:280px}

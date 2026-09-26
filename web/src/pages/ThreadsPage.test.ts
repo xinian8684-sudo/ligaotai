@@ -177,3 +177,60 @@ describe('ThreadsPage 世界列', () => {
     expect(w.find(`[data-test="世界-${d.threads[1].id}"]`).text()).toBe('W-99')
   })
 })
+
+describe('ThreadsPage 合并 / 拆分', () => {
+  it('合并（没勾主线）：勾两条才出现合并条；保留先勾的那条；要点两下才真合并', async () => {
+    const d = structuredClone(雪月梅) as unknown as ThreadsFile
+    const [a, b] = d.threads.filter((t) => t.id !== d.main_thread)
+    vi.spyOn(api, 'getThreads').mockResolvedValue(d)
+    const merge = vi.spyOn(api, 'mergeThreads').mockResolvedValue({})
+    const w = mount(ThreadsPage, { props: { name: 'guixu' }, global: { stubs } })
+    await flushPromises()
+    await w.find(`[data-test="合并勾选-${b.id}"]`).setValue(true)
+    expect(w.find('[data-test="合并条"]').exists()).toBe(false)
+    await w.find(`[data-test="合并勾选-${a.id}"]`).setValue(true)
+    expect(w.find('[data-test="合并条"]').text()).toContain(`保留「${b.name}」`)
+    await w.find('[data-test="合并"]').trigger('click')
+    expect(merge).not.toHaveBeenCalled()
+    await w.find('[data-test="确定合并"]').trigger('click')
+    await flushPromises()
+    expect(merge).toHaveBeenCalledWith('guixu', { ids: [b.id, a.id] })
+  })
+
+  it('拆分：展开场景列表，第一块不能拆，点某一块调 split', async () => {
+    const d = structuredClone(雪月梅) as unknown as ThreadsFile
+    const t = d.threads[0]
+    vi.spyOn(api, 'getThreads').mockResolvedValue(d)
+    vi.spyOn(api, 'listCards').mockResolvedValue([])
+    const split = vi.spyOn(api, 'splitThread').mockResolvedValue({})
+    const w = mount(ThreadsPage, { props: { name: 'guixu' }, global: { stubs } })
+    await flushPromises()
+    await w.find(`[data-test="拆分-${t.id}"]`).trigger('click')
+    await flushPromises()
+    expect(w.find('[data-test="拆分面板"]').exists()).toBe(true)
+    expect(w.find(`[data-test="从这里拆-${t.scenes[0]}"]`).exists()).toBe(false)
+    await w.find(`[data-test="从这里拆-${t.scenes[2]}"]`).trigger('click')
+    await flushPromises()
+    expect(split).toHaveBeenCalledWith('guixu', t.id, { from_scene: t.scenes[2] })
+    expect(w.find('[data-test="拆分面板"]').exists()).toBe(false)
+  })
+})
+
+describe('ThreadsPage 合并时保留主线', () => {
+  it('勾了主线：不管先勾谁，都保留主线', async () => {
+    const d = structuredClone(雪月梅) as unknown as ThreadsFile
+    const main = d.main_thread!
+    const other = d.threads.find((t) => t.id !== main)!
+    vi.spyOn(api, 'getThreads').mockResolvedValue(d)
+    const merge = vi.spyOn(api, 'mergeThreads').mockResolvedValue({})
+    const w = mount(ThreadsPage, { props: { name: 'guixu' }, global: { stubs } })
+    await flushPromises()
+    await w.find(`[data-test="合并勾选-${other.id}"]`).setValue(true)
+    await w.find(`[data-test="合并勾选-${main}"]`).setValue(true)
+    expect(w.find('[data-test="合并条"]').text()).toContain('（主线）')
+    await w.find('[data-test="合并"]').trigger('click')
+    await w.find('[data-test="确定合并"]').trigger('click')
+    await flushPromises()
+    expect(merge).toHaveBeenCalledWith('guixu', { ids: [main, other.id] })
+  })
+})
