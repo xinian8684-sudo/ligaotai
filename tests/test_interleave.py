@@ -61,3 +61,24 @@ def test_模型只排了一小半就不算():
     assert mostly_there({"order": ["S-0001", "S-0010", "S-0002", "S-0011"]}, TH) is True  # 4/5 = 0.8
     assert mostly_there({"order": ["S-0001", "S-0010", "S-0002"]}, TH) is False  # 3/5
     assert mostly_there({"order": ["S-0001", "S-0001", "S-0001", "S-0001"]}, TH) is False  # 重复不算数
+
+
+def test_窗口_等长切分():
+    from ligaotai.interleave import windows
+    assert [len(w) for w in windows(list("abcdefg"), 3)] == [3, 2, 2]  # ⌈7/3⌉=3 段，7=3+2+2
+    assert windows(list("abc"), 300) == [list("abc")]
+    assert windows([], 3) == []
+    assert sum(windows(list("abcdefghij"), 4), []) == list("abcdefghij")  # 连续、不丢不重
+
+
+def test_时间底稿_主线优先_没时间的跟在同线前一块后面():
+    """时间：S-0001=0、S-0002=2、S-0003 没时间；S-0010=0、S-0011=1。
+    同为 0 时主线优先 → S-0001、S-0010、S-0011(1)、S-0002(2)，S-0003 跟在 S-0002 后面。"""
+    from ligaotai.interleave import time_base
+    gt = {"S-0001": 0, "S-0002": 2, "S-0010": 0, "S-0011": 1}
+    assert time_base(TH, gt, "L-001") == ["S-0001", "S-0010", "S-0011", "S-0002", "S-0003"]
+
+
+def test_窗口里的各线():
+    from ligaotai.interleave import sub_lines
+    assert sub_lines(["S-0010", "S-0001", "S-0002"], TH) == {"L-002": ["S-0010"], "L-001": ["S-0001", "S-0002"]}

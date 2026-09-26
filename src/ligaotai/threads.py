@@ -46,7 +46,9 @@ from .threads_check import (
 )
 from .threads_input import NOTE, ORDERED_KINDS, OUTLINE, Item, prepare, segments, split_by_budget
 from .time_anchor import anchor_times
-from .interleave import check_interleave, clean_interleave, mostly_there, score_interleave
+from .interleave import (
+    check_interleave, clean_interleave, mostly_there, score_interleave, sub_lines, time_base, windows,
+)
 
 DRAFT, CONFIRMED = "draft", "confirmed"
 MISSED = "模型没分配"
@@ -347,30 +349,49 @@ async def stage_align(
 
 
 async def stage_interleave(
-    caller: Caller, threads: list[ThreadDraft], main: str | None, items: dict[str, Item], budget: int
+    caller: Caller, threads: list[ThreadDraft], main: str | None, items: dict[str, Item],
+    offsets: dict[str, float | None], budget: int,
 ) -> list[str]:
-    """全书穿插（见 interleave.py）：各线排好的块合并成一条全书顺序。一条线、超预算、
-    模型给不出像样的结果时返回 []，骨架退回按时间排。"""
+    """全书穿插（见 interleave.py）：先按全书时间排出底稿，切成连续的窗口（每个最多
+    MAX_WINDOW 块、输入不超预算），每个窗口让模型重新穿插。窗口连续，拼回去线内顺序照样保住。
+    某个窗口模型给不出像样的结果，就留这个窗口的底稿顺序。只有一条线时返回 []（按时间排就是线内顺序）。"""
     lines = {t.key: list(t.scenes) for t in threads if t.scenes}
     if len(lines) <= 1:
         return []
-    text = "\n\n".join(
-        "\n".join([f"## {t.key} {_one_line(t.name)}" + ("（主线）" if t.key == main else ""),
-                   *(items[s].line if s in items else s for s in t.scenes)])
-        for t in threads if t.scenes
-    )
-    if len(text) > budget:
-        caller.failed.append({"call": "interleave", "error": "输入太大，跳过全书穿插"})
-        return []
-    caller.plan(1)
-    got = await caller.call(
-        "threads_interleave", {"main": main or "", "threads": text},
-        lambda d: check_interleave(d, lines), "interleave",
-        score=lambda d: score_interleave(d, lines),
-        clean=lambda d: clean_interleave(d, lines) if mostly_there(d, lines) else None,
-        usable=lambda r: r is not None,
-    )
-    return got or []
+    gtime: dict[str, float] = {}
+    for t in threads:
+        off = offsets.get(t.key)
+        if not isinstance(off, (int, float)) or isinstance(off, bool):
+            continue
+        for s in t.scenes:
+            v = _time_of(t.times, s)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
+                gtime[s] = off + v
+    base = time_base(lines, gtime, main)
+    cost = {s: len(items[s].line if s in items else s) + 1 for s in base}
+    wins = [c for w in windows(base) for c in split_by_budget(w, cost, max(budget - 200, 1))]
+    caller.plan(sum(1 for w in wins if len(sub_lines(w, lines)) > 1))
+
+    async def one(k: int, w: list[str]) -> list[str]:
+        wl = sub_lines(w, lines)
+        if len(wl) <= 1:
+            return w
+        text = "\n\n".join(
+            "\n".join([f"## {t.key} {_one_line(t.name)}" + ("（主线）" if t.key == main else ""),
+                       *(items[s].line if s in items else s for s in wl[t.key])])
+            for t in threads if t.key in wl
+        )
+        got = await caller.call(
+            "threads_interleave", {"main": main or "", "threads": text},
+            lambda d: check_interleave(d, wl), "interleave" if len(wins) == 1 else f"interleave/{k}",
+            score=lambda d: score_interleave(d, wl),
+            clean=lambda d: clean_interleave(d, wl) if mostly_there(d, wl) else None,
+            usable=lambda r: r is not None,
+        )
+        return got or w
+
+    parts = await _all(one(k, w) for k, w in enumerate(wins, 1))
+    return [s for p in parts for s in p]
 
 
 async def stage_gaps(
@@ -702,7 +723,7 @@ async def _run_threads(book: Book, client: LLMClient, progress: Progress) -> dic
         main, main_by = choose_main(old, threads, world_mains, [w.key for w in worlds])
         offsets, intersections = await stage_align(caller, threads, main, items, unit, budget)
         offsets = anchor_times(threads, main, offsets, intersections)
-        global_order = await stage_interleave(caller, threads, main, items, budget)
+        global_order = await stage_interleave(caller, threads, main, items, offsets, budget)
         world_dicts = _world_dicts(worlds, old_worlds, locked_world_ids, items, world_outlines, prep.all_ids)
         gap_lists = await _all(
             stage_gaps(caller, w["id"], w["name"], [t for t in threads if t.world == w["id"]],

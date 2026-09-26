@@ -371,8 +371,22 @@ def test_interleave_result_is_saved(seeded):
     assert data["global_order"] == ["S-0003", "S-0002", "S-0001"]
 
 
-def test_interleave_garbage_falls_back_to_empty(seeded):
-    """模型只给了一块（1/3 < 八成）：不算它排的，global_order 留空、记一条失败，骨架退回按时间排。"""
+def test_interleave_garbage_keeps_the_time_base(seeded):
+    """模型只给了一块（1/3 < 八成）：不算它排的，这个窗口留按时间排的底稿、记一条失败。
+    底稿：S-0003（主线 t=0）、S-0002（支线 t=0，同时刻主线优先）、S-0001（主线 t=1）。"""
     summary = run_threads(seeded, client(seeded, lines=_two_lines, interleave=lambda m: '{"order": ["S-0002"]}'))
-    assert result(seeded)["global_order"] == []
+    assert result(seeded)["global_order"] == ["S-0003", "S-0002", "S-0001"]
     assert any(f["call"] == "interleave" for f in summary["failed_calls"])
+
+
+def test_interleave_in_windows(seeded, monkeypatch):
+    """窗口最多 2 块：底稿 S-0003、S-0002、S-0001 切成 [S-0003, S-0002] 和 [S-0001]。
+    第二个窗口只有一条线，不调模型；第一个窗口模型把支线排到前面 → S-0002、S-0003、S-0001。"""
+    import ligaotai.interleave as il
+
+    monkeypatch.setattr(il, "MAX_WINDOW", 2)
+    c = client(seeded, lines=_two_lines, interleave=lambda m: '{"order": ["S-0002", "S-0003"]}')
+    run_threads(seeded, c)
+    assert result(seeded)["global_order"] == ["S-0002", "S-0003", "S-0001"]
+    calls = [x for x in c.backend.calls if "全书穿插" in x["messages"][0]["content"]]
+    assert len(calls) == 1 and "S-0001" not in calls[0]["messages"][1]["content"]
