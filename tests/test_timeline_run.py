@@ -108,7 +108,9 @@ def test_A判成提到的不报_记进dismissed(book):
     run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=h), log_dir=b.logs_dir))
     data = read_json(b.timeline_path)
     assert data["conflicts"] == []
-    assert data["dismissed"] == [{"who": "甲", "scenes": ["S-0002", "S-0004"]}]
+    # 审 F1 第 8 条改完：dismissed 带上 status（现在有「提到」「记录不成立」两种都不报冲突），
+    # 旧断言没有 status 字段（语义变化，见报告）。
+    assert data["dismissed"] == [{"who": "甲", "scenes": ["S-0002", "S-0004"], "status": "提到"}]
     assert data["asked_refs"][0]["happens_in"] is None
 
 

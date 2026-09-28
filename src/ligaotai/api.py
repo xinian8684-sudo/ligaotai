@@ -595,6 +595,8 @@ def create_app(
             return tlr.set_timeline_verdict(b, tid, req.kind)
         except KeyError:
             raise HTTPException(404, "没有这条时间线冲突")
+        except tlr.BrokenTimelineFile as e:
+            raise _读坏了("时间冲突.json", str(e))
         except ValueError as e:
             raise HTTPException(400, str(e))
 
