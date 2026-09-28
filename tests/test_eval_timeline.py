@@ -99,10 +99,13 @@ def test_T3_及格线_4_5过_3_5不过_0处算过():
 
 
 def test_T4_A类冲突不能被C类结果冒充命中_反之亦然():
+    # 特意让「除了 kind 之外」的其它字段都对得上（who / ref），把 kind 这一项本身
+    # 单独隔离出来测——不然拿掉 kind 检查之后，别的字段（比如 C 类结果通常没有 who）
+    # 恰好也不匹配，测试照样是绿的，测不出 kind 检查被删掉了。
     key_a = {"timeline": [{"kind": "A", "who": "岑秀", "name": "岑秀", "chapters": [3, 8]}]}
-    res_a = {"conflicts": [{"kind": "C", "ref": "无关", "scenes": ["S-0003", "S-0008"]}]}
+    res_a = {"conflicts": [{"kind": "C", "who": "岑秀", "ref": "无关", "scenes": ["S-0003", "S-0008"]}]}
     assert recall_timeline(key_a, CH, res_a, cmap={})["A"]["hit"] == 0
 
     key_c = {"timeline": [{"kind": "C", "who": "岑秀", "event": "比箭", "chapters": [5, 9]}]}
-    res_c = {"conflicts": [{"kind": "A", "who": "岑秀", "scenes": ["S-0005", "S-0009"]}]}
+    res_c = {"conflicts": [{"kind": "A", "who": "岑秀", "ref": "岑秀想起那日比箭之事", "scenes": ["S-0005", "S-0009"]}]}
     assert recall_timeline(key_c, CH, res_c, cmap={})["C"]["hit"] == 0
