@@ -54,6 +54,38 @@ def test_故事顺序_压根没被任何线或未定区提到的块单独计数(
     assert untracked == 2  # S-0004、S-0005 压根没被提到
 
 
+def test_故事顺序_已移除的块不排进去(book):
+    from ligaotai.scenes import get_scene, write_scene
+    _seed(book, [("S-0001", [], [], [], "x"), ("S-0002", [], [], [], "y")])
+    sc = get_scene(book, "S-0002")
+    sc.removed = True
+    write_scene(book, sc)
+    _threads(book, [{"id": "L-001", "offset": 0, "scenes": ["S-0001", "S-0002"],
+                     "times": {"S-0001": {"t": 0}, "S-0002": {"t": 1}}}])
+    seq, pos, unplaced, untracked = story_order(book)
+    assert seq == ["S-0001"]
+
+
+def test_故事顺序_版本组非主成员换成当前主版本(book):
+    from helpers import seed_book
+    seed_book(book, [{"id": "S-0001", "text": "旧版本"}, {"id": "S-0002", "text": "新主版本"}],
+              groups=[("S-0002", ["S-0001", "S-0002"])])
+    _threads(book, [{"id": "L-001", "offset": 0, "scenes": ["S-0001"], "times": {"S-0001": {"t": 0}}}])
+    seq, pos, unplaced, untracked = story_order(book)
+    assert seq == ["S-0002"]  # 线里引用的是旧主版本 S-0001，换成当前主版本 S-0002 才不会整组消失
+
+
+def test_故事顺序_版本组主版本字段坏了整组丢(book):
+    from helpers import seed_book
+    seed_book(book, [{"id": "S-0001", "text": "a"}, {"id": "S-0002", "text": "b"}])
+    write_json(book.versions_path, {"params": {}, "groups": [
+        {"id": "G-001", "members": ["S-0001", "S-0002"], "main": None, "main_by": "auto", "pairs": []}]})
+    _threads(book, [{"id": "L-001", "offset": 0, "scenes": ["S-0001", "S-0002"],
+                     "times": {"S-0001": {"t": 0}, "S-0002": {"t": 1}}}])
+    seq, pos, unplaced, untracked = story_order(book)
+    assert seq == []
+
+
 from ligaotai.timeline import is_death
 
 
@@ -63,7 +95,10 @@ def test_哪些fact算死了():
            ("生死", "已去世好幾年"), ("生死", "本月十九日坐化了")]
     no = [("生死", "免死編氓"), ("生死", "被擒"), ("生死", "嚴行監禁"), ("生死", "車囚"),
           ("生死", "丁艱"), ("亲属", "母已亡"), ("身份", "亡命之徒"), ("性格", "视死如归"),
-          ("生死", "幾乎死了"), ("生死", "未死")]
+          ("生死", "幾乎死了"), ("生死", "未死"),
+          ("身份", "军中士卒"), ("身份", "兵卒一名"), ("身份", "狱卒"), ("身份", "獄卒出身"),
+          ("身份", "市井走卒"), ("生死", "打入死囚牢"), ("生死", "畏罪逃亡"),
+          ("生死", "诈死脱身"), ("生死", "詐死脱身"), ("生死", "假死躲过一劫")]
     for a, v in yes:
         assert is_death(a, v), (a, v)
     for a, v in no:
@@ -114,6 +149,25 @@ def test_A嫌疑_死亡场不在故事顺序里就不查():
     pos = {"S-0002": 0}
     cards = _cards({"S-0001": (["甲"], [("甲", "生死", "已死", "q")]), "S-0002": (["甲"], [])})
     assert death_suspects(seq, pos, cards, {}) == ([], 0)
+
+
+def test_persons_of只在pov里的人也算():
+    from ligaotai.timeline import persons_of
+    assert persons_of({"characters": [], "pov": "甲"}, {}) == {"甲"}
+    assert persons_of({"characters": [{"name": "乙"}], "pov": "甲"}, {}) == {"甲", "乙"}
+
+
+def test_A嫌疑_人物名单只在pov里也算():
+    # persons_of 不看 pov 的话，S-0002 的人物名单里就没有「甲」，这条嫌疑会漏掉（补测清单第 7 条）。
+    seq = ["S-0001", "S-0002"]
+    pos = {"S-0001": 0, "S-0002": 1}
+    cards = {
+        "S-0001": {"card": {"characters": [], "pov": "甲",
+                            "facts": [{"subject": "甲", "attribute": "生死", "value": "已死", "quote": "q"}]}},
+        "S-0002": {"card": {"characters": [], "pov": "甲", "facts": []}},
+    }
+    got, capped = death_suspects(seq, pos, cards, {})
+    assert [(x["who"], x["later"]) for x in got] == [("甲", "S-0002")]
 
 
 from ligaotai.timeline import ref_suspects
@@ -181,6 +235,52 @@ def test_C嫌疑_候选最多8个():
     assert len(asks[0]["candidates"]) == 8
 
 
+def test_C嫌疑_候选场景的人物只在pov里也算():
+    # persons_of 不看 pov 的话，S-0002 跟 S-0001 就只剩「乙」1 个共同人物，够不上新的候选门槛
+    # （共同人物≥2 或点名），这条候选会被漏掉（补测清单第 7 条，C 类场景）。
+    seq = ["S-0001", "S-0002", "S-0003"]
+    pos = {s: i for i, s in enumerate(seq)}
+    cards = {
+        "S-0001": {"card": {"characters": [{"name": "乙"}], "pov": "甲", "facts": [],
+                            "refs_elsewhere": ["某事"], "summary": "一"}},
+        "S-0002": {"card": {"characters": [{"name": "乙"}], "pov": "甲", "facts": [],
+                            "refs_elsewhere": [], "summary": "二"}},
+        "S-0003": {"card": {"characters": [{"name": "丙"}], "pov": "", "facts": [],
+                            "refs_elsewhere": [], "summary": "三"}},
+    }
+    asks, no_cand, no_later = ref_suspects(seq, pos, cards, {}, {})
+    assert len(asks) == 1 and asks[0]["candidates"] == ["S-0002"]
+
+
+def test_C嫌疑_距离优先于位置():
+    # S-0008 距回指场（S-0005）3 步，S-0001 距 4 步——S-0001 的位置数字更小，但 S-0008 该排前面；
+    # 去掉「按距离排」、改成直接按位置排的话，S-0001 会排到 S-0008 前面（补测清单：距离不同但位置序相反）。
+    seq = [f"S-{i:04d}" for i in range(10)]
+    pos = {s: i for i, s in enumerate(seq)}
+    line = {s: "L-1" for s in seq}
+    spec = {f"S-{i:04d}": ([], [], str(i)) for i in range(10) if i not in (5, 8, 1)}
+    spec["S-0005"] = (["甲", "乙"], ["某事"], "ref")
+    spec["S-0008"] = (["甲", "乙"], [], "近")
+    spec["S-0001"] = (["甲", "乙"], [], "远但位置数字小")
+    asks, _, _ = ref_suspects(seq, pos, _rcards(spec), {}, line)
+    assert asks[0]["candidates"][:2] == ["S-0008", "S-0001"]
+
+
+def test_C嫌疑_同线优先于距离():
+    # S-0000 跟回指场（S-0005）距离 5、同线；S-0009 距离 4（更近）、不同线——同线的该排前面；
+    # 去掉「同线优先」会让距离更近的 S-0009 排到 S-0000 前面（补测清单：共同人物数相同、线不同）。
+    seq = [f"S-{i:04d}" for i in range(10)]
+    pos = {s: i for i, s in enumerate(seq)}
+    line = {s: "L-A" for s in seq}
+    line["S-0009"] = "L-B"
+    spec = {f"S-{i:04d}": ([], [], str(i)) for i in range(10) if i not in (5, 9, 0)}
+    spec["S-0005"] = (["甲", "乙"], ["某事"], "ref")
+    spec["S-0009"] = (["甲", "乙"], [], "距离更近但不同线")
+    spec["S-0000"] = (["甲", "乙"], [], "距离更远但同线")
+    asks, _, _ = ref_suspects(seq, pos, _rcards(spec), {}, line)
+    assert asks[0]["candidates"][:2] == ["S-0000", "S-0009"]
+
+
 from ligaotai.timeline import name_snippets
 
 
@@ -232,6 +332,39 @@ def test_旧文件坏了当空的():
     assert got["conflicts"][0]["id"] == "T-001" and got["next_id"] == 2
 
 
+def test_id_registry里两轮前消失的签名这轮又出现_沿用原编号():
+    # sig 只在 id_registry 里登记过（对应的那条冲突这轮的 conflicts 列表里已经没有了，
+    # 比如上上轮报过、上一轮没报、这一轮又报出来），重新出现时还是要沿用原编号，不能
+    # 当成全新的重编——这条覆盖率原来没测（补测清单第 4 条）。
+    old_c = _c("A", ["S-0001", "S-0002"], who="甲")
+    old_sig = conflict_sig(old_c)
+    old = {"next_id": 3, "conflicts": [], "id_registry": [{"sig": old_sig, "id": "T-002"}]}
+    got = assemble([old_c], old)
+    assert [(c["id"], c["sig"]) for c in got["conflicts"]] == [("T-002", old_sig)]
+
+
+def test_next_id按id_registry里已用的最大编号往后编_不看老next_id():
+    # 旧 next_id=1，但 id_registry 里已经登记到 T-007（比如作者手改过、或者 next_id 字段
+    # 本身跟不上 registry），新冲突要接着 T-008 编，不能沿用过时的 next_id=1（补测清单第 5 条）。
+    old = {"next_id": 1, "conflicts": [],
+          "id_registry": [{"sig": "sig-不会被匹配到的旧签名", "id": "T-007"}]}
+    new_c = _c("A", ["S-0001", "S-0002"], who="甲")
+    got = assemble([new_c], old)
+    assert got["conflicts"][0]["id"] == "T-008"
+    assert got["next_id"] == 9
+
+
+def test_assemble对重复签名的冲突只留一条_保险去重():
+    # ref_suspects 已经对同场景重复回指去重了；这里测 assemble 自己的第二道保险——万一
+    # 上游哪里没去干净，两条一样签名的冲突不该产出两个编号（补测清单：同一场景重复回指
+    # 生成两条同编号冲突）。
+    c1 = _c("C", ["S-0001", "S-0002"], ref="某事")
+    c2 = _c("C", ["S-0001", "S-0002"], ref="某事")  # 内容一样、签名一样
+    got = assemble([c1, c2], {})
+    assert len(got["conflicts"]) == 1
+    assert got["next_id"] == 2
+
+
 from ligaotai.timeline import input_fingerprint
 
 
@@ -251,3 +384,76 @@ def test_指纹_顺序或卡或规范名变了就变(book):
     rec["card"]["refs_elsewhere"] = ["另一件事"]
     write_json(card_path(book, "S-0001"), rec)
     assert input_fingerprint(book) != f1
+
+
+def _fp_one_scene_book(book):
+    from helpers import seed_book
+    seed_book(book, [{"id": "S-0001", "persons": ["甲"], "text": "x", "summary": "原摘要"}],
+              entities=[("person", "甲", ["甲"])])
+    _threads(book, [{"id": "L-001", "offset": 0, "scenes": ["S-0001"], "times": {"S-0001": {"t": 0}}}])
+
+
+def test_指纹_规范名变了就变(book):
+    _fp_one_scene_book(book)
+    f0 = input_fingerprint(book)
+    from ligaotai.fsutil import read_json
+    ents = read_json(book.entities_path)
+    ents["entities"][0]["canonical"] = "乙"
+    write_json(book.entities_path, ents)
+    assert input_fingerprint(book) != f0
+
+
+def test_指纹_人物名单变了就变(book):
+    _fp_one_scene_book(book)
+    f0 = input_fingerprint(book)
+    from ligaotai.cards import card_path
+    from ligaotai.fsutil import read_json
+    rec = read_json(card_path(book, "S-0001"))
+    rec["card"]["characters"] = [{"name": "甲"}, {"name": "乙"}]
+    write_json(card_path(book, "S-0001"), rec)
+    assert input_fingerprint(book) != f0
+
+
+def test_指纹_pov变了就变(book):
+    _fp_one_scene_book(book)
+    f0 = input_fingerprint(book)
+    from ligaotai.cards import card_path
+    from ligaotai.fsutil import read_json
+    rec = read_json(card_path(book, "S-0001"))
+    rec["card"]["pov"] = "甲"
+    write_json(card_path(book, "S-0001"), rec)
+    assert input_fingerprint(book) != f0
+
+
+def test_指纹_facts变了就变(book):
+    _fp_one_scene_book(book)
+    f0 = input_fingerprint(book)
+    from ligaotai.cards import card_path
+    from ligaotai.fsutil import read_json
+    rec = read_json(card_path(book, "S-0001"))
+    rec["card"]["facts"] = [{"subject": "甲", "attribute": "生死", "value": "已死", "quote": "q"}]
+    write_json(card_path(book, "S-0001"), rec)
+    assert input_fingerprint(book) != f0
+
+
+def test_指纹_summary变了就变(book):
+    _fp_one_scene_book(book)
+    f0 = input_fingerprint(book)
+    from ligaotai.cards import card_path
+    from ligaotai.fsutil import read_json
+    rec = read_json(card_path(book, "S-0001"))
+    rec["card"]["summary"] = "改过的摘要"
+    write_json(card_path(book, "S-0001"), rec)
+    assert input_fingerprint(book) != f0
+
+
+def test_指纹_场景正文哈希变了就变_卡没变也算(book):
+    # 作者直接手改了场景原文（没走重做卡），卡片字段没变，但正文哈希变了——指纹也要跟着变，
+    # 不然这类改动会被漏判成没过期（补测清单：指纹去掉 xxx / 只剩 refs 字段，这里补正文哈希那部分）。
+    _fp_one_scene_book(book)
+    f0 = input_fingerprint(book)
+    from ligaotai.scenes import get_scene, write_scene
+    sc = get_scene(book, "S-0001")
+    sc.hash = "换了个哈希"
+    write_scene(book, sc)
+    assert input_fingerprint(book) != f0
