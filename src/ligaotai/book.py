@@ -125,6 +125,16 @@ class Book:
         return self.root / "矛盾.json"
 
     @property
+    def timeline_path(self) -> Path:
+        """时间线冲突检查的结果（跟 矛盾.json 一样放书的根目录）。"""
+        return self.root / "时间冲突.json"
+
+    @property
+    def timeline_cache_path(self) -> Path:
+        """时间线检查自己的模型调用缓存，不跟归线 / 档案的缓存混。"""
+        return self.root / "时间冲突缓存.json"
+
+    @property
     def map_path(self) -> Path:
         return self.root / "全书地图.md"
 
