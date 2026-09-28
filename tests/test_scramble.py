@@ -556,9 +556,16 @@ from tools.scramble import plant_deaths  # noqa: E402
 
 
 def _talk_chapters(n):
+    # 岑秀只在奇数章出场说话，劉電只在偶数章出场说话（各占约一半章节，都在 M1 新加的
+    # MAIN_CHAR_FRACTION=0.6 门槛以内）；正文不带引号——原来「岑秀道：「好。」」这种写法
+    # 名字后唯一的句末标点就落在别人台词的引号里，M3 修完之后（插入点必须在引号外）这个
+    # 位置永远拿不到合法插入点，这份 fixture 本身就是 M3 要修的那种 bug 的活教材。
     out = []
     for i in range(1, n + 1):
-        out.append(Chapter(i, f"第{i}回", f"這日天氣晴和。岑秀道：「好。」眾人都不做聲。劉電看了一眼。"))
+        if i % 2 == 1:
+            out.append(Chapter(i, f"第{i}回", "這日天氣晴和。岑秀笑道，心情甚好。眾人都不做聲。"))
+        else:
+            out.append(Chapter(i, f"第{i}回", "這日天氣晴和。劉電也笑道，甚是欣慰。眾人都不做聲。"))
     return out
 
 
@@ -571,7 +578,10 @@ def test_A植入_前一章插死亡_后一章他有对话_答案记两章():
     assert p["kind"] == "A" and a < b
     bodies = {c.num: c.body for c in chapters}
     assert f"{p['name']}染病身亡。" in bodies[a]
-    assert f"{p['name']}道" in bodies[b] or f"{p['name']}說" in bodies[b]  # b 章里他有对话
+    # b 章里他有对话：新 fixture（M3 修复后）用的是网文式「名字，……笑道」而不是旧的
+    # 「名字+道」紧贴写法，直接断言 _speaks() 成立才是这条测试真正要保证的东西，
+    # 不该绑死某一种具体写法的字面子串（M1/M3 修复导致的必要断言更新，见报告）。
+    assert _speaks(bodies[b], p["name"])
 
 
 def test_A植入_用过的章节不再用_跳过的章节不用():
@@ -623,5 +633,190 @@ def test_scramble_答案里带timeline(tmp_path):
     # 刚好吃掉事件章而只剩一种），断言收紧成 == ["A", "C"]，比原计划写宽的三选一更能测出东西。
     assert kinds == ["A", "C"]
     assert all(set(p["chapters"]).isdisjoint(key["deleted"]) for p in key["timeline"])
+
+
+# --------------------------------------------------------------------------------------
+# 审 2（F1 之后）修复：B1/M1/M3/S2/S3/S4/S6 + 补测 T5/T6/T8/T9
+# --------------------------------------------------------------------------------------
+
+from tools.scramble import _insertion_point, _in_quote, _appearances  # noqa: E402
+
+
+def test_M1_a和b之间没有他别的出场章_小样例():
+    """②b M1：b 必须是 a 之后这个人第一次再出场的章，中间不能有他别的出场章。"""
+    for seed in range(20):
+        chapters = _talk_chapters(20)
+        got = plant_deaths(chapters, random.Random(seed), n=3, characters=CHARS, used=set())
+        appear = {"岑秀": _appearances(chapters, ["岑秀"]), "劉電": _appearances(chapters, ["劉電"])}
+        for p in got:
+            a, b = p["chapters"]
+            mine = appear[p["who"]]
+            between = [c for c in mine if a < c < b]
+            assert between == [], (seed, p, between)
+
+
+def test_M1_出场章数超过60比例的人不用():
+    """岑秀在 18/20 = 90% 的章节里出场，超过 MAIN_CHAR_FRACTION，不该被用于 A 类植入。"""
+    chapters = _talk_chapters(20)
+    for i in range(1, 19):  # 补插到几乎每章都出场（保留 19、20 两章不出场，够 appear>=2 判定）
+        if chapters[i - 1].num not in (19, 20) and "岑秀" not in chapters[i - 1].body:
+            chapters[i - 1].body += "岑秀笑道，心情甚好。"
+    got = plant_deaths(chapters, random.Random(1), n=5, characters=CHARS, used=set())
+    assert all(p["who"] != "岑秀" for p in got)
+
+
+def test_M1_斗破真文件_A植入a和b之间没有他别的出场章():
+    if not (DOUPO_TXT.exists() and DOUPO_CHARS.exists()):
+        pytest.skip("data/ 不在 CI 里")
+    chapters = parse_chapters(strip_gutenberg(DOUPO_TXT.read_text(encoding="utf-8")))
+    people = json.loads(DOUPO_CHARS.read_text(encoding="utf-8"))
+    for seed in range(10):
+        got = plant_deaths(list(chapters), random.Random(seed), n=5, characters=people, used=set())
+        appear_cache: dict[str, list[int]] = {}
+        for p in got:
+            a, b = p["chapters"]
+            assert a < b
+            if p["who"] not in appear_cache:
+                names = next(pp.get("names") or [pp["canonical"]] for pp in people if pp["canonical"] == p["who"])
+                appear_cache[p["who"]] = _appearances(chapters, [n for n in names if n])
+            between = [c for c in appear_cache[p["who"]] if a < c < b]
+            assert between == [], (seed, p, between)
+
+
+def test_M3_插入点不落在引号里_死亡植入():
+    """b 章原有的唯一名字提及后面紧跟别人的台词引号，a 章（另一处提及）在引号外才能用。
+    多垫两章空白（不提岑秀）把出场比例压到 60% 以内，不然会被 M1 的主角门槛排除。"""
+    quoted = Chapter(1, "第1回", "這日岑秀道：「我很好。」")  # 名字后唯一句末标点在引号内
+    plain = Chapter(2, "第2回", "岑秀神情淡然，心中自有计较。")  # 引号外有合法插入点
+    speak = Chapter(3, "第3回", "岑秀笑道，心中甚喜。")
+    filler1 = Chapter(4, "第4回", "这日风平浪静，无事发生。")
+    filler2 = Chapter(5, "第5回", "又过了几日，仍是平淡。")
+    got = plant_deaths([quoted, plain, speak, filler1, filler2], random.Random(1), n=1,
+                       characters=CHARS, used=set())
+    assert len(got) == 1
+    a = got[0]["chapters"][0]
+    assert a != 1  # 只有引号里那处提及的章节不能被选为死亡植入的 a 章
+    a_body = {1: quoted, 2: plain, 3: speak}[a].body
+    assert not _in_quote(a_body, a_body.find("染病身亡"))
+
+
+def test_M3_插入点必须在引号外_单元测试():
+    body = "他望着岑秀道：「岑秀，你可安好？」岑秀转身离去，不再看他。"
+    cut = _insertion_point(body, "岑秀")
+    assert cut is not None
+    assert not _in_quote(body, cut)
+    # 找到的是最后一次在引号外提到的那句之后（rfind 方向），不是第一次
+    assert body[:cut].rstrip().endswith("不再看他。")
+
+
+def test_M3_只在引号里出现就找不到插入点():
+    assert _insertion_point("他望着岑秀道：「岑秀，你好。」", "岑秀") is None
+
+
+def test_M3_植入的年龄矛盾也不落在引号里():
+    chapters = [
+        Chapter(1, "第1回", "有人问岑秀道：「岑秀，你多大了？」"),  # 唯一的句末标点在引号内，没有合法插入点
+        Chapter(2, "第2回", "岑秀答道，语气平静。"),
+        Chapter(3, "第3回", "岑秀神情自若，未曾多言。"),
+    ]
+    planted = plant_contradictions(chapters, random.Random(1), n=1, characters=CHARS)
+    assert len(planted) == 1
+    assert set(planted[0]["chapters"]) <= {2, 3}  # 引号里那章（1）不该被选中
+    for ch, val in zip(planted[0]["chapters"], planted[0]["values"]):
+        body = next(c.body for c in chapters if c.num == ch)
+        pos = body.find(val)
+        assert pos != -1 and not _in_quote(body, pos)
+
+
+def test_S2_speaks排除所说知道难道一道说不():
+    assert not _speaks("纳兰嫣然所说的话，又能怎样", "纳兰嫣然")
+    assert not _speaks("萧炎肩膀之上，顿时留下一道长痕", "萧炎")
+    assert not _speaks("萧薰儿哥哥难道不知道这些", "萧薰儿")
+    assert not _speaks("萧宁却是知道，无奈叹气", "萧宁")
+    assert not _speaks("加列毕那家伙老奸巨猾说不出话", "加列毕")
+
+
+def test_S2_speaks窗口内有别人名字就不算():
+    text = "萧炎望着萧媚，柔声道：你好。"
+    assert not _speaks(text, "萧炎", other_names=frozenset({"萧媚"}))
+    assert _speaks(text, "萧炎")  # 不传 other_names 时按原逻辑，仍然算
+
+
+def test_S3_植入不落在full或excerpt变体章(tmp_path):
+    chapters = _chapters_with(["岑秀", "劉電", "小梅"], 30)
+    out = tmp_path / "乱稿"
+    key = scramble(chapters, out, seed=4, n_delete=0, n_truncate=3, n_full=4, n_excerpt=3,
+                   alias_chapters=0, aliases=[], n_contradictions=3, characters=CHARS,
+                   n_deaths=2, n_foreknowledge=0)
+    variant_nums = {v["chapter"] for v in key["variants"] if v["kind"] in ("variant_full", "variant_excerpt")}
+    used = {ch for p in key["contradictions"] for ch in p["chapters"]} | \
+           {ch for p in key["timeline"] for ch in p["chapters"]}
+    assert used and not (used & variant_nums)
+
+
+def test_S4_foreknowledge避开会被别名替换的人():
+    chapters = _talk_chapters(20)
+    for c in chapters:
+        c.body += "劉電近日行踪不定。"  # 让「劉電」在每章都出现，事件才有的用
+    events = [{"chapter": 15, "who": "劉電", "event": "比箭"}]
+    got = plant_foreknowledge(chapters, random.Random(1), n=1, events=events, used=set(),
+                              avoid={"劉電"})
+    assert got == []
+
+
+def test_S6_mutate传script时不再自己判繁简():
+    # 单独这一小段文字（不传 script）会被 _script_of 判成简体（无繁体专属字）；
+    # 传 script="trad" 之后必须用繁体的填充句/替换值，不能再自己判。
+    text = "岑秀道：你好。"
+    result = mutate(text, FakeRngFirst([0.5, 0.9]), drop=0.0, modify=1.0, add=0.0, script="trad")
+    assert "說道：" in result and "说道：" not in result
+
+
+def test_S6_scramble里excerpt字形跟全书一致不跟片段自己判(tmp_path):
+    # 全书基本是繁体（劉電名字本身就是繁体专属字），但被选中做 excerpt 的那一章如果本身
+    # 巧合只有通用汉字，旧实现会把它自己判成简体、混入简体填充句；新实现全书统一判一次。
+    chapters = [Chapter(i, f"第{i}回", f"這日岑秀劉電同行，{('岑秀' if i % 2 else '劉電')}神情自若。") for i in range(1, 21)]
+    out = tmp_path / "乱稿"
+    key = scramble(chapters, out, seed=9, n_delete=0, n_truncate=0, n_full=0, n_excerpt=5,
+                   alias_chapters=0, aliases=[])
+    for v in key["variants"]:
+        text, _ = read_text(out / v["file"])
+        assert "众" not in text and "这" not in text and "众人" not in text
+
+
+def test_T5_A植入_a总是早于b_扫多个种子():
+    for seed in range(30):
+        chapters = _talk_chapters(20)
+        got = plant_deaths(chapters, random.Random(seed), n=3, characters=CHARS, used=set())
+        for p in got:
+            assert p["chapters"][0] < p["chapters"][1], (seed, p)
+
+
+def test_T6_C植入_a总是早于b_扫多个种子():
+    for seed in range(30):
+        chapters = _talk_chapters(20)
+        events = [{"chapter": ch, "who": "岑秀", "event": f"事{ch}"} for ch in range(3, 20, 2)]
+        got = plant_foreknowledge(chapters, random.Random(seed), n=3, events=events, used=set())
+        for p in got:
+            assert p["chapters"][0] < p["chapters"][1], (seed, p)
+
+
+def test_T8_C植入更新used集合():
+    chapters = _talk_chapters(8)
+    events = [{"chapter": 6, "who": "岑秀", "event": "甲"}]
+    used = set()
+    got = plant_foreknowledge(chapters, random.Random(1), n=1, events=events, used=used)
+    assert used == {got[0]["chapters"][0], 6}
+
+
+def test_T9_timeline植入不落在被截断的章节(tmp_path):
+    chapters = _talk_chapters(30)
+    out = tmp_path / "乱稿"
+    key = scramble(chapters, out, seed=3, n_delete=0, n_truncate=6, n_full=0, n_excerpt=0,
+                   alias_chapters=0, aliases=[], characters=CHARS, n_deaths=3, n_foreknowledge=2,
+                   events=[{"chapter": ch, "who": "岑秀", "event": f"事{ch}"} for ch in range(5, 30, 3)])
+    truncated_nums = {t["chapter"] for t in key["truncated"]}
+    used_by_timeline = {ch for p in key["timeline"] for ch in p["chapters"]}
+    assert used_by_timeline and not (used_by_timeline & truncated_nums)
 
 

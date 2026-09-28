@@ -130,7 +130,7 @@ def pick_excerpt(heading: str, body: str, rng: random.Random) -> str:
     return f"{heading}\n\n{body}"[a:b].strip()
 
 
-def mutate(text: str, rng: random.Random, drop=0.08, modify=0.08, add=0.04) -> str:
+def mutate(text: str, rng: random.Random, drop=0.08, modify=0.08, add=0.04, script: str | None = None) -> str:
     """按句子随机删、改、加。
 
     删掉一句时不能连它开头的换行一起留下——如果那句本来是缩进诗行（前面是
@@ -139,9 +139,15 @@ def mutate(text: str, rng: random.Random, drop=0.08, modify=0.08, add=0.04) -> s
     痕迹，但记住它开头换行的「强度」（\\n 的个数）；下一句保留时，如果它自己
     开头的换行强度不如被删句子的强，就用被删句子的换行 + 自己的缩进来补上，
     这样两句保留下来的句子之间的换行强度，绝不会超过原文里两者之间本来的强度。
-    """
-    fillers = FILLERS_SIMP if _script_of(text) == "simp" else FILLERS_TRAD
-    subs = SUBS_SIMP if _script_of(text) == "simp" else SUBS_TRAD
+
+    `script`：外部算好的「trad」/「simp」，不给就退回用 `text` 自己判（旧调用方式，
+    单元测试直接传一整段够长的同script文字时够用）。scramble() 传变体章节（尤其是
+    excerpt，1200-2400字的片段）时必须传全书算出来的 script——片段本身可能太短、
+    或者刚好全是通用汉字，`_script_of` 判不准，会把简体片段判成繁体（或反过来），
+    塞进繁体填充句/替换值，混进本不该有的字形（②b S6）。"""
+    script = script or _script_of(text)
+    fillers = FILLERS_SIMP if script == "simp" else FILLERS_TRAD
+    subs = SUBS_SIMP if script == "simp" else SUBS_TRAD
     out: list[str] = []
     pending = ""  # 被删句子里最强的那个「换行前缀」，留给下一个保留的句子
     for s in _SENTENCE.split(text):
@@ -245,9 +251,10 @@ def plant_contradictions(chapters: list[Chapter], rng: random.Random, n: int,
         for c in chapters:
             if c.num in skipped:
                 continue
-            hit = next(((nm, c.body.find(nm)) for nm in names if nm in c.body), None)
+            hit = next(((nm, _insertion_point(c.body, nm)) for nm in names
+                       if nm in c.body and _insertion_point(c.body, nm) is not None), None)
             if hit:
-                spots.append({"chapter": c.num, "name": hit[0], "pos": hit[1]})
+                spots.append({"chapter": c.num, "name": hit[0], "cut": hit[1]})
         if len(spots) >= 2:  # 少于两个章节插不出两处并存的说法，跳过这个人
             usable.append({"subject": ch["canonical"], "names": names, "spots": spots})
 
@@ -287,7 +294,7 @@ def plant_contradictions(chapters: list[Chapter], rng: random.Random, n: int,
         if not got:
             continue
         spot, subject, age = got
-        cut = _sentence_end(c.body, spot["pos"])
+        cut = spot["cut"]
         sentence = f"{spot['name']}年方{_cn_number(age)}{unit}。"
         c.body = c.body[:cut] + sentence + c.body[cut:]
 
@@ -303,12 +310,48 @@ def _sentence_end(body: str, pos: int) -> int:
     return m.end() if m else len(body)
 
 
+_QUOTE_OPEN = "“「"
+_QUOTE_CLOSE = "”」"
+
+
+def _paragraph_start(body: str, pos: int) -> int:
+    nl = body.rfind("\n", 0, pos)
+    return nl + 1
+
+
+def _in_quote(body: str, pos: int) -> bool:
+    """pos 是不是落在本段（上一个换行到 pos）某个还没闭合的引号里面。"“”「」分开数，
+    段内哪一种没配对（开的比闭的多）就算在引号里——插入点前同一段里"和"数目要相等，「」同理。"""
+    seg = body[_paragraph_start(body, pos):pos]
+    return (seg.count("“") - seg.count("”") > 0) or (seg.count("「") - seg.count("」") > 0)
+
+
+def _insertion_point(body: str, name: str) -> int | None:
+    """这一章插入陈述句的位置：这个人最后一次（rfind 方向）在引号外被提到、且那一句的
+    句末也在引号外的地方；一次都找不到（比如这个人在这章只在别人的台词引号里出现过）
+    返回 None（②b M3：植入句不能落进别人台词的引号里）。"""
+    best = None
+    start = 0
+    while True:
+        p = body.find(name, start)
+        if p == -1:
+            return best
+        start = p + 1
+        if _in_quote(body, p):
+            continue
+        cut = _sentence_end(body, p)
+        if _in_quote(body, cut):
+            continue
+        best = cut
+
+
 _SPEAK_WORDS = ("道", "說", "说", "問", "问", "笑道")
 _SPEAK_BOUNDARY = "。！？“”「」"
 _SPEAK_WINDOW = 12
+_SPEAK_FALSE_WORDS = ("所说", "知道", "难道", "一道", "说不")  # ②b S2：这几个不算「说过话」
 
 
-def _speaks(body: str, name: str) -> bool:
+def _speaks(body: str, name: str, other_names: frozenset[str] | None = None) -> bool:
     """粗略判断某人在这段正文里有没有说过话（时间线检查验收用，A 类植入要靠它挑「后一章他
     活着说话」的章节）。
 
@@ -318,68 +361,115 @@ def _speaks(body: str, name: str) -> bool:
     人「说过话」的章节，植不出 A 类冲突（因为 plant_deaths 要求「后一章他有对话」）。
 
     放宽成：名字后 12 个字以内出现「道/说/問/问/說/笑道」，但中间不能跨句末标点或引号——
-    跨过说明已经翻篇到下一句甚至下一个人的话，那不该算这个人说的。"""
+    跨过说明已经翻篇到下一句甚至下一个人的话，那不该算这个人说的。
+
+    ②b S2 两处收紧：① 排除「所说、知道、难道、一道、说不」这几个带「道/说」字但不是
+    「某人说话」的常见词（真实语料扫出来的假阳性：「一道清」「……难道不」「却是知道，」
+    「……说不」）；② `other_names` 给的话，窗口里出现人物名单里别的人名就不算这个人说话——
+    这词大概率是紧跟着的那个人说的，不是 name。"""
     start = 0
     while True:
         p = body.find(name, start)
         if p == -1:
             return False
+        start = p + 1
         after = body[p + len(name): p + len(name) + _SPEAK_WINDOW]
+        if other_names and any(o and o in after for o in other_names):
+            continue
+        prev0 = body[p - 1] if p > 0 else ""
         for i, ch in enumerate(after):
             if ch in _SPEAK_BOUNDARY:
                 break
-            if any(after.startswith(w, i) for w in _SPEAK_WORDS):
+            for w in _SPEAK_WORDS:
+                if not after.startswith(w, i):
+                    continue
+                prev = after[i - 1] if i > 0 else prev0
+                nxt = after[i + len(w)] if i + len(w) < len(after) else ""
+                if any(bad in (prev + w + nxt) for bad in _SPEAK_FALSE_WORDS):
+                    continue
                 return True
-        start = p + 1
+
+
+MAIN_CHAR_FRACTION = 0.6  # 出场章数超过全书这个比例的人不用于 A 类植入（主角，每人只查死后 5
+                          # 场的上限本来就会把他挤爆，植了也大概率抓不到——判据见 timeline.py MAX_LATER）
+
+
+def _appearances(chapters: list[Chapter], names: list[str]) -> list[int]:
+    """这个人（任一叫法）在哪些章节的正文里被提到过，按章节号升序。"""
+    return sorted({c.num for c in chapters for nm in names if nm in c.body})
 
 
 def plant_deaths(chapters: list[Chapter], rng: random.Random, n: int,
                  characters: list[dict] | None, used: set[int],
                  skip: set[int] | None = None, avoid: set[str] | None = None) -> list[dict]:
-    """时间线检查验收用（A 类）：挑一个人，在他出现过的前一章 a 插「某某染病身亡。」，
-    后一章 b 里他有对话（`_speaks`）——这样 b 章他活着说话就跟 a 章的死亡冲突。
+    """时间线检查验收用（A 类）：挑一个人，在他出现过的一章 a 插「某某染病身亡。」，
+    b 是 a 之后他第一次再出场的章（中间没有他别的出场章）、且那章他说话——这样 b 章他
+    活着说话就跟 a 章的死亡冲突，且死后到再出场之间没有别的出场章能垫在中间。
+    找不到就换 a（同一个人试下一对相邻出场章）或换人。
+
+    出场章数超过全书 `MAIN_CHAR_FRACTION` 的人（主角）不用于 A 类植入：主角哪章都在，
+    `death_suspects` 每人只查死后 5 场（MAX_LATER），死后隔了老远才被拉去当「b」的话，
+    大概率不在这 5 场里，植了也抓不到，纯粹陪跑（②b M1）。
+
     used：已经被别的植入占用的章节（会就地加进去），一个章节只参与一处植入。
     skip / avoid：同 plant_contradictions（被截断的章节、会被别名替换的人）。"""
     if n <= 0 or not characters:
         return []
     skipped, avoided = set(skip or ()), set(avoid or ())
+    by_names = {ch["canonical"]: [x for x in (ch.get("names") or [ch["canonical"]]) if x] for ch in characters}
+    total = len(chapters)
     people = []
     for ch in characters:
-        names = [x for x in (ch.get("names") or [ch["canonical"]]) if x]
+        canon = ch["canonical"]
+        names = by_names[canon]
         if avoided and any(a in nm or nm in a for nm in names for a in avoided):
             continue
-        people.append((ch["canonical"], names))
+        appear = _appearances(chapters, names)
+        if len(appear) < 2 or (total and len(appear) / total > MAIN_CHAR_FRACTION):
+            continue
+        other_names = frozenset(nm for c, ns in by_names.items() if c != canon for nm in ns)
+        people.append((canon, names, appear, other_names))
     rng.shuffle(people)
+    by_num = {c.num: c for c in chapters}
     planted = []
-    for canon, names in people:
+    for canon, names, appear, other_names in people:
         if len(planted) >= n:
             break
-        free = [c for c in chapters if c.num not in skipped and c.num not in used]
-        talk = [(c, nm) for c in free for nm in names if _speaks(c.body, nm)]
-        if not talk:
+        options = []  # (a章, b章, 用来插死讯的名字)
+        for a_num, b_num in zip(appear, appear[1:]):
+            if a_num in skipped or a_num in used or b_num in skipped or b_num in used:
+                continue
+            a_ch, b_ch = by_num[a_num], by_num[b_num]
+            nm_speak = next((nm for nm in names if _speaks(b_ch.body, nm, other_names)), None)
+            if nm_speak is None:
+                continue
+            nm_death = next((nm for nm in names if _insertion_point(a_ch.body, nm) is not None), None)
+            if nm_death is None:
+                continue
+            options.append((a_ch, b_ch, nm_death))
+        if not options:
             continue
-        b, _ = rng.choice(talk)
-        before = [(c, nm) for c in free if c.num < b.num for nm in names if nm in c.body]
-        if not before:
-            continue
-        a, nm = rng.choice(before)
-        cut = _sentence_end(a.body, a.body.find(nm))
+        a, b, nm = rng.choice(options)
+        cut = _insertion_point(a.body, nm)
         a.body = a.body[:cut] + f"{nm}染病身亡。" + a.body[cut:]
         used |= {a.num, b.num}
-        planted.append({"kind": "A", "who": canon, "name": nm, "chapters": [a.num, b.num]})
+        planted.append({"kind": "A", "who": canon, "name": nm, "names": names, "chapters": [a.num, b.num]})
     return sorted(planted, key=lambda p: p["chapters"])
 
 
 def plant_foreknowledge(chapters: list[Chapter], rng: random.Random, n: int,
-                        events: list[dict] | None, used: set[int], skip: set[int] | None = None) -> list[dict]:
-    """时间线检查验收用（C 类）：事件清单里每条是「第 b 章 who 做了 event」。挑 b 之前、who 出现过的
-    一章 a，插「{who}想起那日{event}之事。」——a 章里提前知道了 b 章才发生的事。
-    事件清单手写（程序编不出像样的事件），放 data/，不进仓库。"""
+                        events: list[dict] | None, used: set[int], skip: set[int] | None = None,
+                        avoid: set[str] | None = None) -> list[dict]:
+    """时间线检查验收用（C 类）：事件清单里每条是「第 b 章 who 做了 event」。挑 b 之前、who 出现过、
+    插入点在引号外的一章 a，插「{who}想起那日{event}之事。」——a 章里提前知道了 b 章才发生的事。
+    事件清单手写（程序编不出像样的事件），放 data/，不进仓库。
+    avoid：事件的 who 会被别名替换的话换一条（同 plant_contradictions，②b S4）。"""
     if n <= 0 or not events:
         return []
-    skipped = set(skip or ())
+    skipped, avoided = set(skip or ()), set(avoid or ())
     have = {c.num for c in chapters}
-    pool = [e for e in events if e.get("chapter") in have]
+    pool = [e for e in events if e.get("chapter") in have
+           and not (avoided and any(a in e.get("who", "") or e.get("who", "") in a for a in avoided))]
     rng.shuffle(pool)
     planted = []
     for e in pool:
@@ -388,11 +478,12 @@ def plant_foreknowledge(chapters: list[Chapter], rng: random.Random, n: int,
         b = e["chapter"]
         if b in used or b in skipped:
             continue
-        before = [c for c in chapters if c.num < b and c.num not in used and c.num not in skipped and e["who"] in c.body]
+        before = [c for c in chapters if c.num < b and c.num not in used and c.num not in skipped
+                 and _insertion_point(c.body, e["who"]) is not None]
         if not before:
             continue
         a = rng.choice(before)
-        cut = _sentence_end(a.body, a.body.find(e["who"]))
+        cut = _insertion_point(a.body, e["who"])
         a.body = a.body[:cut] + f"{e['who']}想起那日{e['event']}之事。" + a.body[cut:]
         used |= {a.num, b}
         planted.append({"kind": "C", "who": e["who"], "event": e["event"], "chapters": [a.num, b]})
@@ -468,21 +559,23 @@ def scramble(
     kept = [c for c in chapters if c.num not in deleted]
 
     # 矛盾在截断、别名替换之前植入，只挑 kept（会被删掉的章节植了也白植，答案里记的东西
-    # 压根不会出现在任何输出文件里），并且跳过 truncated（9-21 修）。
-    # 先植入、后截断这个顺序本身是有风险的一侧：截断保留前 40%-70%（cut_at_ratio），锚点词
-    # 落在被切掉的后半段就会被吃掉，答案里记了但输出文件里根本没有，召回上限白掉一处。
-    # GHIJ 审查当时报「20 个种子 × 10 处 0 处被吃」，那是运气：9-21 真跑雪月梅生成乱稿时
-    # ch7 的「十五→十九」就被吃掉了（新旧值在乱稿里都是 0 次），合成语料上 20 个种子有 12 个
-    # 出现植入/截断重叠。这里传 truncated 进去从源头排掉。
+    # 压根不会出现在任何输出文件里），并且跳过 truncated（9-21 修）、full/excerpt（②b S3：
+    # 这两类章节除了「original」文件外还会另外生成一份 mutate() 过的变体文件，植入句落在
+    # 这种章节里，两份文件里同一句话字面不一样，会给实体合并/判卷引入跟矛盾扫描无关的变量；
+    # 选最简单的办法——这类章节直接不参与植入）。
+    variant_chapters = set(full) | set(excerpt)
+    skip_plant = set(truncated) | variant_chapters
     contradictions = plant_contradictions(kept, rng, n_contradictions,
-                                           characters=characters, skip=set(truncated),
+                                           characters=characters, skip=skip_plant,
                                            avoid={a["replaces"] for a in aliases})
 
-    # 时间线植入：跟年龄矛盾不抢章节（年龄矛盾占用的章节先记进 used），同样排掉会被截断的章节
+    # 时间线植入：跟年龄矛盾不抢章节（年龄矛盾占用的章节先记进 used），同样排掉会被截断
+    # 或者是变体章节的
     used = {ch for p in contradictions for ch in p["chapters"]}
-    timeline = plant_deaths(kept, rng, n_deaths, characters, used, skip=set(truncated),
+    timeline = plant_deaths(kept, rng, n_deaths, characters, used, skip=skip_plant,
                             avoid={a["replaces"] for a in aliases})
-    timeline += plant_foreknowledge(kept, rng, n_foreknowledge, events, used, skip=set(truncated))
+    timeline += plant_foreknowledge(kept, rng, n_foreknowledge, events, used, skip=skip_plant,
+                                    avoid={a["replaces"] for a in aliases})
 
     # 先把截断做完：别名要挑「截断之后的正文里真的还有这个词」的章节，不然会挑到
     # 词恰好被切掉了的章节，答案里写着有别名、实际打开文件搜不到（空跑）。
@@ -524,15 +617,19 @@ def scramble(
                 "chapter": c.num, "piece": i, "pieces": len(pieces),
                 "kind": "original", "heading_first": i == 1,
             })
+    # 全书的繁简判一次，传给下面所有 mutate() 调用（②b S6）：mutate() 内部不传 script 时
+    # 会自己用当前这段文字判——full 变体还好（整章），excerpt 只有 1200-2400 字、又是从
+    # 中间截的一段，字形判断没有整本书稳，容易判反，把不该有的字形塞进填充句/替换值。
+    book_script = _script_of("".join(c.body for c in kept))
     for num in full:
         heading, body = final[num]
         files.append({
-            "text": f"{heading}\n\n{mutate(body, rng)}", "chapter": num, "piece": 1,
+            "text": f"{heading}\n\n{mutate(body, rng, script=book_script)}", "chapter": num, "piece": 1,
             "pieces": 1, "kind": "variant_full", "heading_first": True,
         })
     for num in excerpt:
         heading, body = final[num]
-        excerpt_text = mutate(pick_excerpt(heading, body, rng), rng, 0.03, 0.03, 0.02)
+        excerpt_text = mutate(pick_excerpt(heading, body, rng), rng, 0.03, 0.03, 0.02, script=book_script)
         files.append({
             "text": excerpt_text, "chapter": num, "piece": 1, "pieces": 1,
             "kind": "variant_excerpt", "heading_first": False,

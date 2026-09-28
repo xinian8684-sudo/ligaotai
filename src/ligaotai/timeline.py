@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 
 from .book import Book
 from .cards import load_cards
@@ -115,16 +116,47 @@ def _named_in_ref(ref: str, alias_to_canon: dict[str, str]) -> set[str]:
     return {c for n, c in alias_to_canon.items() if n and n in ref}
 
 
+_HAN_LO, _HAN_HI = "一", "鿿"
+HIGH_FREQ_FRACTION = 0.3  # 在超过这个比例的（参与检查的）场景里都出现的 bigram，不算重合
+
+
+def _bigrams(text: str) -> set[str]:
+    """文本里相邻两个字都是汉字的二元组集合（只用于比对重合度，不做任何分词）。"""
+    return {text[i:i + 2] for i in range(len(text) - 1)
+            if _HAN_LO <= text[i] <= _HAN_HI and _HAN_LO <= text[i + 1] <= _HAN_HI}
+
+
+def _candidate_text(card: dict) -> str:
+    events = card.get("events") or []
+    return " ".join([str(card.get("summary") or "")] + [str(e) for e in events if isinstance(e, str)])
+
+
+def _scene_bigrams(seq: list[str], cards: dict) -> tuple[dict[str, set[str]], set[str]]:
+    """每个参与检查的场景（summary + events）的 bigram 集合，剔掉本次检查里超过 30% 场景都
+    出现的高频 bigram（现算，不写死词表——书不同、高频虚词组合也不同）。"""
+    raw = {sid: _bigrams(_candidate_text(_card(cards, sid))) for sid in seq}
+    df: Counter[str] = Counter()
+    for bg in raw.values():
+        df.update(bg)
+    thresh = HIGH_FREQ_FRACTION * len(seq)
+    high = {b for b, c in df.items() if c > thresh}
+    return {sid: bg - high for sid, bg in raw.items()}, high
+
+
 def ref_suspects(seq: list[str], pos: dict[str, int], cards: dict, cmap: dict,
                  line_of: dict[str, str]) -> tuple[list[dict], int, int]:
     """(要问模型的回指, 没有候选的回指数, 候选全在前面、不用问的回指数)。
     要问的 = {scene, ref, candidates}。每条回指单独挑候选（不再是同一场所有回指共用一组）：
     候选场景要么人物名单（归一后）里有回指原话点名的人（任一叫法或规范名），要么跟回指所在场
     至少有 2 个共同人物（归一后）——只有 1 个共同人物、又没点名的不算候选，排序先看点没点名，
-    再看共同人物数降序、是否同线（同线优先）、跟回指场的距离（近的优先）、位置，
-    取前 MAX_CANDIDATES 个。同一场里重复的回指原话去重，只问一次。"""
+    再看回指原话跟候选场（summary + events）的汉字二元组重合数（降序，去掉高频 bigram——
+    主角章章都在时「点名」「共同人物」对他没有区分度，这一键专门补上：回指原话里的专名
+    通常只在真正相关的那场的 events 里出现），再看共同人物数降序、是否同线（同线优先）、
+    跟回指场的距离（近的优先）、位置，取前 MAX_CANDIDATES 个。
+    同一场里重复的回指原话去重，只问一次。"""
     people = {s: persons_of(_card(cards, s), cmap) for s in seq}
     alias_to_canon = _person_names_and_canon(cmap)
+    scene_bg, high_bg = _scene_bigrams(seq, cards)
     asks, no_cand, no_later = [], 0, 0
     for sid in seq:
         raw_refs = [r.strip() for r in _card(cards, sid).get("refs_elsewhere") or [] if isinstance(r, str) and r.strip()]
@@ -134,6 +166,7 @@ def ref_suspects(seq: list[str], pos: dict[str, int], cards: dict, cmap: dict,
         mine = people[sid]
         for r in refs:
             named = _named_in_ref(r, alias_to_canon)
+            ref_bg = _bigrams(r) - high_bg
             scored = []
             for o in seq:
                 if o == sid:
@@ -142,7 +175,9 @@ def ref_suspects(seq: list[str], pos: dict[str, int], cards: dict, cmap: dict,
                 hit = bool(named & people[o])
                 if not (hit or k >= 2):
                     continue
-                scored.append((0 if hit else 1, -k, line_of.get(o) != line_of.get(sid), abs(pos[o] - pos[sid]), pos[o], o))
+                overlap = len(ref_bg & scene_bg.get(o, set()))
+                scored.append((0 if hit else 1, -overlap, -k, line_of.get(o) != line_of.get(sid),
+                              abs(pos[o] - pos[sid]), pos[o], o))
             cands = [x[-1] for x in sorted(scored)[:MAX_CANDIDATES]]
             if not cands:
                 no_cand += 1
