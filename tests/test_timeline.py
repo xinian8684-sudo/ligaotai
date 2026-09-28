@@ -197,3 +197,24 @@ def test_编号按签名沿用_新的接着编_裁决跟着签名走_消失的�
 def test_旧文件坏了当空的():
     got = assemble([_c("A", ["S-0001", "S-0002"], who="甲")], {"conflicts": "坏了", "next_id": "x"})
     assert got["conflicts"][0]["id"] == "T-001" and got["next_id"] == 2
+
+
+from ligaotai.timeline import input_fingerprint
+
+
+def test_指纹_顺序或卡或规范名变了就变(book):
+    _seed(book, [("S-0001", ["甲"], ["某事"], [], "x"), ("S-0002", ["甲"], [], [], "y")])
+    _threads(book, [{"id": "L-001", "offset": 0, "scenes": ["S-0001", "S-0002"],
+                     "times": {"S-0001": {"t": 0}, "S-0002": {"t": 1}}}])
+    f0 = input_fingerprint(book)
+    assert input_fingerprint(book) == f0
+    _threads(book, [{"id": "L-001", "offset": 0, "scenes": ["S-0002", "S-0001"],
+                     "times": {"S-0001": {"t": 1}, "S-0002": {"t": 0}}}])
+    f1 = input_fingerprint(book)
+    assert f1 != f0
+    from ligaotai.cards import card_path
+    from ligaotai.fsutil import read_json
+    rec = read_json(card_path(book, "S-0001"))
+    rec["card"]["refs_elsewhere"] = ["另一件事"]
+    write_json(card_path(book, "S-0001"), rec)
+    assert input_fingerprint(book) != f1

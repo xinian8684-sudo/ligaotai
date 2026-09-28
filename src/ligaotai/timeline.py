@@ -6,10 +6,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 from .book import Book
+from .cards import load_cards
 from .skeleton import scene_info
 from .skeleton_order import build_sequence
+from .threads_input import name_map
 from .threads_ops import load_threads
 from .triage import non_main_versions, version_map
 
@@ -175,3 +178,16 @@ def assemble(conflicts: list[dict], old: dict) -> dict:
                     "verdict": verdict if isinstance(verdict, dict) else None})
     return {"conflicts": out, "next_id": next_id,
             "id_registry": [{"sig": s, "id": i} for s, i in sorted(registry.items(), key=lambda kv: kv[1])]}
+
+
+def _relevant(card: dict) -> dict:
+    return {k: card.get(k) for k in ("characters", "pov", "facts", "refs_elsewhere", "summary")}
+
+
+def input_fingerprint(book: Book) -> str:
+    """故事顺序 + 参与场景的卡（只取用得到的字段）+ 实体规范名。任何一样变了，旧结果就过期。"""
+    seq, _, _ = story_order(book)
+    cards = load_cards(book)
+    payload = {"seq": seq, "cards": {s: _relevant(_card(cards, s)) for s in seq},
+               "names": sorted([list(k) + [v] for k, v in name_map(book).items()])}
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
