@@ -1,5 +1,6 @@
 import json
 import random
+from pathlib import Path
 
 import pytest
 from helpers import gen_text, make_chapters, make_verse_chapter
@@ -425,3 +426,123 @@ def test_植入避开会被别名替换掉的人物(tmp_path):
             body = "".join(_read_piece(out / f["path"], f["encoding"])
                            for f in sorted(by_ch[ch], key=lambda x: x["piece"]))
             assert p["subject"] in body, f"第 {ch} 回搜不到主语 {p['subject']}"
+
+
+# --------------------------------------------------------------------------------------
+# 9-28 换书验收（斗破苍穹，简体网文）才发现的三个坑，补在 Task17-19 之前
+# --------------------------------------------------------------------------------------
+
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+DOUPO_TXT = DATA_DIR / "斗破苍穹-前100章.txt"
+DOUPO_CHARS = DATA_DIR / "人物-斗破.json"
+
+
+def test_HEADING_认阿拉伯数字章_小样例():
+    raw = "第1章 起头\n甲乙丙。\n\n第2章 再来\n丁戊己。\n"
+    chapters = parse_chapters(raw)
+    assert [c.heading for c in chapters] == ["第1章 起头", "第2章 再来"]
+
+
+def test_HEADING_认汉字数字章_小样例():
+    raw = "第一章 起头\n甲乙丙。\n\n第二章 再来\n丁戊己。\n"
+    chapters = parse_chapters(raw)
+    assert [c.heading for c in chapters] == ["第一章 起头", "第二章 再来"]
+
+
+def test_HEADING_仍然认回_没有破坏原来的西游记雪月梅语料():
+    raw = "第一回 起头\n甲乙丙。\n\n第二回 再来\n丁戊己。\n"
+    chapters = parse_chapters(raw)
+    assert [c.heading for c in chapters] == ["第一回 起头", "第二回 再来"]
+
+
+def test_HEADING_斗破苍穹真实文件_100章():
+    if not DOUPO_TXT.exists():
+        pytest.skip("data/ 不在 CI 里")
+    raw = strip_gutenberg(DOUPO_TXT.read_text(encoding="utf-8"))
+    chapters = parse_chapters(raw)
+    assert len(chapters) == 100
+    assert chapters[0].heading == "第1章 陨落的天才"
+
+
+def test_mutate_简体输入不混入繁体填充句():
+    """FILLERS/SUBS 原来写死繁体，简体正文会被塞进「眾人都不做聲」这类繁体句子——
+    这正好污染我们要测的「简体稿会不会冒繁体」。"""
+    text = "岑秀道你好。" * 40  # 全是通用汉字，_script_of 判不出繁简，按平局规则落到 simp
+    rng = random.Random(1)
+    result = mutate(text, rng, drop=0.0, modify=0.0, add=1.0)
+    assert "眾" not in result and "聲" not in result and "無" not in result and "這" not in result
+
+
+def test_mutate_繁体输入不混入简体填充句():
+    text = "劉電道你好。" * 40  # 劉 是繁体专属字，_script_of 判成 trad
+    rng = random.Random(1)
+    result = mutate(text, rng, drop=0.0, modify=0.0, add=1.0)
+    assert "众" not in result and "声" not in result and "无" not in result
+
+
+class FakeRngFirst:
+    """random() 按固定序列吐值，choice 永远取第一个元素——逼 mutate 走 modify 分支、
+    且总选中 SUBS 列表里的第一条替换规则，用来核对简繁两套替换值分别对不对。"""
+
+    def __init__(self, values):
+        self.values = list(values)
+        self.i = 0
+
+    def random(self):
+        v = self.values[self.i]
+        self.i += 1
+        return v
+
+    def choice(self, seq):
+        return seq[0]
+
+
+def test_mutate_简体替换值不带繁体字():
+    text = "岑秀道：你好。"  # 通用汉字，判成 simp；SUBS_SIMP[0] = ("道：", "说道：")
+    result = mutate(text, FakeRngFirst([0.5, 0.9]), drop=0.0, modify=1.0, add=0.0)
+    assert "说道：" in result and "說道：" not in result
+
+
+def test_mutate_繁体替换值不带简体字():
+    text = "劉電道：你好。"  # 劉 是繁体专属字，判成 trad；SUBS_TRAD[0] = ("道：", "說道：")
+    result = mutate(text, FakeRngFirst([0.5, 0.9]), drop=0.0, modify=1.0, add=0.0)
+    assert "說道：" in result and "说道：" not in result
+
+
+from tools.scramble import _speaks  # noqa: E402
+
+
+def test_speaks_网文写法_隔着逗号也算():
+    assert _speaks("萧炎微微一笑，道：你好。", "萧炎")
+    assert _speaks("药老淡淡的道。", "药老")
+
+
+def test_speaks_古典白话紧贴写法仍然认():
+    assert _speaks("岑秀道：「好。」", "岑秀")
+
+
+def test_speaks_跨句号不算():
+    assert not _speaks("萧炎走了很远的路。有人道：你好。", "萧炎")
+
+
+def test_speaks_超过12字不算():
+    assert not _speaks("萧炎" + "甲" * 12 + "道。", "萧炎")
+
+
+def test_speaks_没有这个名字():
+    assert not _speaks("这里谁也没提到。", "萧炎")
+
+
+def test_speaks_斗破苍穹真实文本_至少5人各有5章说过话():
+    if not (DOUPO_TXT.exists() and DOUPO_CHARS.exists()):
+        pytest.skip("data/ 不在 CI 里")
+    chapters = parse_chapters(strip_gutenberg(DOUPO_TXT.read_text(encoding="utf-8")))
+    people = json.loads(DOUPO_CHARS.read_text(encoding="utf-8"))
+    counts = {}
+    for p in people:
+        names = [n for n in (p.get("names") or [p["canonical"]]) if n]
+        counts[p["canonical"]] = sum(
+            1 for c in chapters if any(_speaks(c.body, nm) for nm in names)
+        )
+    qualifying = {k: v for k, v in counts.items() if v >= 5}
+    assert len(qualifying) >= 5, counts

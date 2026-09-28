@@ -28,11 +28,15 @@ DEFAULT_ALIASES = [
     {"replaces": "唐僧", "alias": "御弟師父", "canonical": "唐三藏"},
 ]
 FOLDERS = ["", "旧稿", "备份/2019", "备份/2020-重写", "手机导出", "杂"]
-FILLERS = ["他心下暗暗思量。", "一時間無人答話。", "眾人都不做聲。", "這話且按下不題。"]
-SUBS = [("道：", "說道："), ("卻", "却"), ("那", "這"), ("了", "咧")]
+# 繁简两套：mutate() 按待处理文本自己的字形（_script_of）挑一套，不能写死繁体——
+# 简体语料被硬塞一句繁体填充句，会污染「简体稿会不会冒繁体」这条我们本来要测的东西。
+FILLERS_TRAD = ["他心下暗暗思量。", "一時間無人答話。", "眾人都不做聲。", "這話且按下不題。"]
+FILLERS_SIMP = ["他心下暗暗思量。", "一时间无人答话。", "众人都不做声。", "这话且按下不题。"]
+SUBS_TRAD = [("道：", "說道："), ("卻", "却"), ("那", "這"), ("了", "咧")]
+SUBS_SIMP = [("道：", "说道："), ("就", "便"), ("那", "这"), ("了", "咧")]
 T_START, T_END = 1514736000, 1703980800  # 2018-01-01 ~ 2023-12-31
 
-_HEADING = re.compile(r"^[ \t\u3000]*第\S{1,4}回.*$", re.M)
+_HEADING = re.compile(r"^[ \t\u3000]*第\S{1,4}[回章].*$", re.M)
 _PARA_BREAK = re.compile(r"\n(?:[ \t\u3000]*\n)+")
 _LEADING_BLANK = re.compile(r"^(?:[ \t\u3000]*\n)+")
 _SENTENCE = re.compile(r"(?<=[。！？])")
@@ -136,6 +140,8 @@ def mutate(text: str, rng: random.Random, drop=0.08, modify=0.08, add=0.04) -> s
     开头的换行强度不如被删句子的强，就用被删句子的换行 + 自己的缩进来补上，
     这样两句保留下来的句子之间的换行强度，绝不会超过原文里两者之间本来的强度。
     """
+    fillers = FILLERS_SIMP if _script_of(text) == "simp" else FILLERS_TRAD
+    subs = SUBS_SIMP if _script_of(text) == "simp" else SUBS_TRAD
     out: list[str] = []
     pending = ""  # 被删句子里最强的那个「换行前缀」，留给下一个保留的句子
     for s in _SENTENCE.split(text):
@@ -153,10 +159,10 @@ def mutate(text: str, rng: random.Random, drop=0.08, modify=0.08, add=0.04) -> s
             lead = pending + indent
         pending = ""
         if body and r < drop + modify:
-            old, new = rng.choice(SUBS)
-            body = body.replace(old, new, 1) if old in body else body + rng.choice(FILLERS)
+            old, new = rng.choice(subs)
+            body = body.replace(old, new, 1) if old in body else body + rng.choice(fillers)
         elif body and r < drop + modify + add:
-            body = body + rng.choice(FILLERS)
+            body = body + rng.choice(fillers)
         out.append(lead + body)
     return "".join(out)
 
@@ -295,6 +301,37 @@ def _sentence_end(body: str, pos: int) -> int:
     插在句子中间会把原句切坏，插在段落之外又容易被当成孤立行。"""
     m = re.compile(r"[。！？]").search(body, pos)
     return m.end() if m else len(body)
+
+
+_SPEAK_WORDS = ("道", "說", "说", "問", "问", "笑道")
+_SPEAK_BOUNDARY = "。！？“”「」"
+_SPEAK_WINDOW = 12
+
+
+def _speaks(body: str, name: str) -> bool:
+    """粗略判断某人在这段正文里有没有说过话（时间线检查验收用，A 类植入要靠它挑「后一章他
+    活着说话」的章节）。
+
+    古典白话文常是「岑秀道」——说话动词紧贴在名字后面，原计划的 `_speaks` 就是这么写的
+    （名字后面直接跟 道/說/問）。网文不这么写：「萧炎微微一笑，道」「药老淡淡的道」，动词
+    离名字有好几个字、中间常隔着逗号。9-28 换成《斗破苍穹》验收后这条判断太严，找不到几个
+    人「说过话」的章节，植不出 A 类冲突（因为 plant_deaths 要求「后一章他有对话」）。
+
+    放宽成：名字后 12 个字以内出现「道/说/問/问/說/笑道」，但中间不能跨句末标点或引号——
+    跨过说明已经翻篇到下一句甚至下一个人的话，那不该算这个人说的。"""
+    start = 0
+    while True:
+        p = body.find(name, start)
+        if p == -1:
+            return False
+        after = body[p + len(name): p + len(name) + _SPEAK_WINDOW]
+        for i, ch in enumerate(after):
+            if ch in _SPEAK_BOUNDARY:
+                break
+            if any(after.startswith(w, i) for w in _SPEAK_WORDS):
+                return True
+        start = p + 1
+
 
 class NameGen:
     def __init__(self, rng: random.Random):
