@@ -109,14 +109,17 @@ export function buildAxis(points: number[], opts: AxisOptions = {}): Axis | null
   // 浮点累计误差：把最后一块钉到 100
   if (blocks.length > 0) blocks[blocks.length - 1].x1 = 100
 
+  // 单点区块：段画满整块，这个时刻的标记落在块的中点，不贴边（审查 S7）。首尾的单点块也一样，
+  // 轴外的点吸到端点，跟端点画在同一个位置。
+  const 中点 = (blk: AxisBlock) => (blk.x0 + blk.x1) / 2
+  const 首 = blocks[0]
+  const 尾 = blocks[blocks.length - 1]
   function x映射(t: number): number {
-    if (t <= lo) return 0
-    if (t >= hi) return 100
+    if (t <= lo) return 首.t1 === 首.t0 ? 中点(首) : 0
+    if (t >= hi) return 尾.t1 === 尾.t0 ? 中点(尾) : 100
     for (const blk of blocks) {
       if (t >= blk.t0 && t <= blk.t1) {
-        // 单点区块：段画满整块，这个时刻的标记落在块的中点，不贴左沿（审查 S7）。
-        // 两端的 lo/hi 在上面已经钉成 0/100，这一支只管中间的单点区块。
-        if (blk.t1 === blk.t0) return (blk.x0 + blk.x1) / 2
+        if (blk.t1 === blk.t0) return 中点(blk)
         return clamp(blk.x0 + ((t - blk.t0) / (blk.t1 - blk.t0)) * (blk.x1 - blk.x0))
       }
     }

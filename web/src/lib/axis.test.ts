@@ -42,6 +42,20 @@ describe('buildAxis 边界', () => {
     expect(a.x(50)).toBeCloseTo(50, 6)
   })
 
+  it('首尾的单点区块，标记也落在区块中点（不钉在 0 / 100）', () => {
+    // 手算（默认 breakRatio 0.05）：跨度 100，阈值 5；间隙 50/1/49 → 区块 [0,0] [50,51] [100,100]、2 个断口。
+    // 余 = 100 - 2×3 - 3×1 = 91，总跨度 1 → 宽度 1 / 1+91 / 1
+    // → [0,1]、断口、[4,96]、断口、[99,100]。t=0 中点 0.5，t=100 中点 99.5。
+    const a = buildAxis([0, 50, 51, 100])!
+    expect(a.blocks).toHaveLength(3)
+    expect(a.blocks[0].x1).toBeCloseTo(1, 6)
+    expect(a.blocks[2].x0).toBeCloseTo(99, 6)
+    expect(a.x(0)).toBeCloseTo(0.5, 6)
+    expect(a.x(100)).toBeCloseTo(99.5, 6)
+    expect(a.x(-5)).toBeCloseTo(0.5, 6) // 轴外的点吸到最近的端点，跟端点一个位置
+    expect(a.x(50)).toBeCloseTo(4, 6) // 非单点块两端照旧贴边
+  })
+
   it('单个点', () => {
     const a = buildAxis([3])!
     expect(a.blocks).toHaveLength(1)
@@ -75,10 +89,16 @@ describe('buildAxis 边界', () => {
     }
   })
 
-  it('最左的点在 0%，最右的点在 100%', () => {
+  it('最左的点落在第一块里、最右的点落在最后一块里（单点块取中点）', () => {
+    // 原先断言钉死 0 / 100；首尾单点块改成取中点之后（跟中间的单点块一致），西游记最左那个点
+    // （-871.8，自成一块）落在第一块 [0,1] 的中点 0.5。
     const a = buildAxis(全局点(西游记 as unknown as ThreadsFile))!
-    expect(a.x(a.lo)).toBeCloseTo(0, 4)
-    expect(a.x(a.hi)).toBeCloseTo(100, 4)
+    const 首 = a.blocks[0]
+    const 尾 = a.blocks[a.blocks.length - 1]
+    expect(a.x(a.lo)).toBeCloseTo(首.t0 === 首.t1 ? (首.x0 + 首.x1) / 2 : 0, 4)
+    expect(a.x(a.hi)).toBeCloseTo(尾.t0 === 尾.t1 ? (尾.x0 + 尾.x1) / 2 : 100, 4)
+    expect(首.t0 === 首.t1).toBe(true) // 这本书的第一块确实是单点块，上面那条才测到了新行为
+    expect(a.x(a.lo)).toBeCloseTo(0.5, 4)
   })
 })
 
@@ -150,8 +170,9 @@ describe('buildAxis 参数', () => {
     // breakRatio 调到 0.01 才真的切成 40 块（默认 0.05 时阈值 1950 > 间距 1000，一块都不切）
     const 点 = Array.from({ length: 40 }, (_, i) => i * 1000)
     const a = buildAxis(点, { breakRatio: 0.01 })!
-    expect(a.x(点[0])).toBeCloseTo(0, 4)
-    expect(a.x(点[39])).toBeCloseTo(100, 4)
+    // 每块都是单点块：首尾两点落在首尾块的中点（不再钉 0 / 100）
+    expect(a.x(点[0])).toBeCloseTo((a.blocks[0].x0 + a.blocks[0].x1) / 2, 4)
+    expect(a.x(点[39])).toBeCloseTo((a.blocks[a.blocks.length - 1].x0 + 100) / 2, 4)
     // 要么把断口压窄放下了，要么退化；两种都可以，但不能算出超过 100% 的坐标
     for (const p of 点) {
       expect(a.x(p)).toBeGreaterThanOrEqual(-1e-6)
