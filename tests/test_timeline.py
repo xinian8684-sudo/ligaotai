@@ -146,3 +146,17 @@ def test_C嫌疑_候选最多8个():
     spec["S-0001"] = (["甲"], ["某事"], "一")
     asks, _, _ = ref_suspects(seq, pos, _rcards(spec), {}, {})
     assert len(asks[0]["candidates"]) == 8
+
+
+from ligaotai.timeline import name_snippets
+
+
+def test_摘录_按任一叫法找_最多3处_前后带一点上下文_不重叠():
+    text = "開頭。劉公道：你來了。中間很多字" + "。" * 60 + "劉芳笑了。又過了很久" + "。" * 60 + "劉公走了。" + "。" * 60 + "劉公又來。"
+    got = name_snippets(text, ["劉芳", "劉公"], width=6, limit=3)
+    assert len(got) == 3
+    assert "劉公道" in got[0] and "劉芳笑了" in got[1] and "劉公走了" in got[2]
+
+
+def test_摘录_找不到就给开头一段():
+    assert name_snippets("完全沒有這個人的一段話。", ["甲"], width=4, limit=3) == ["完全沒有這個人的一段話。"[:40]]

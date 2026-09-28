@@ -116,3 +116,24 @@ def ref_suspects(seq: list[str], pos: dict[str, int], cards: dict, cmap: dict,
             else:
                 asks.append({"scene": sid, "ref": r, "candidates": cands})
     return asks, no_cand, no_later
+
+
+def name_snippets(text: str, names: list[str], width: int = 40, limit: int = 3) -> list[str]:
+    """正文里提到这个人（任一叫法）的地方，每处取前后 width 字，最多 limit 处，互不重叠。
+    一处都没有（叫法没对上）就给开头 40 字，让模型至少看到这场在讲什么。"""
+    hits = []
+    for n in sorted({n for n in names if n}, key=len, reverse=True):
+        start = 0
+        while (i := text.find(n, start)) >= 0:
+            hits.append((i, i + len(n)))
+            start = i + len(n)
+    out, last_end = [], -1
+    for a, b in sorted(hits):
+        if a < last_end:
+            continue
+        lo, hi = max(0, a - width), min(len(text), b + width)
+        out.append(text[lo:hi].replace("\n", " "))
+        last_end = hi
+        if len(out) >= limit:
+            break
+    return out or [text[:40].replace("\n", " ")]
