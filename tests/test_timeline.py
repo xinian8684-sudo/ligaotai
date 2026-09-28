@@ -267,18 +267,19 @@ def test_C嫌疑_距离优先于位置():
 
 
 def test_C嫌疑_同线优先于距离():
-    # S-0000 跟回指场（S-0005）距离 5、同线；S-0009 距离 4（更近）、不同线——同线的该排前面；
-    # 去掉「同线优先」会让距离更近的 S-0009 排到 S-0000 前面（补测清单：共同人物数相同、线不同）。
+    # S-0009 跟回指场（S-0005）距离 4、同线；S-0002 距离 3（更近）、不同线——同线的该排前面。
+    # S-0009 的位置数字(9)也比 S-0002(2)大，纯按距离排或纯按位置排都会把 S-0002 排前面，
+    # 只有「同线优先」生效才会让 S-0009 排到 S-0002 前面（补测清单：共同人物数相同、线不同）。
     seq = [f"S-{i:04d}" for i in range(10)]
     pos = {s: i for i, s in enumerate(seq)}
     line = {s: "L-A" for s in seq}
-    line["S-0009"] = "L-B"
-    spec = {f"S-{i:04d}": ([], [], str(i)) for i in range(10) if i not in (5, 9, 0)}
+    line["S-0002"] = "L-B"
+    spec = {f"S-{i:04d}": ([], [], str(i)) for i in range(10) if i not in (5, 9, 2)}
     spec["S-0005"] = (["甲", "乙"], ["某事"], "ref")
-    spec["S-0009"] = (["甲", "乙"], [], "距离更近但不同线")
-    spec["S-0000"] = (["甲", "乙"], [], "距离更远但同线")
+    spec["S-0002"] = (["甲", "乙"], [], "距离更近但不同线")
+    spec["S-0009"] = (["甲", "乙"], [], "距离更远但同线")
     asks, _, _ = ref_suspects(seq, pos, _rcards(spec), {}, line)
-    assert asks[0]["candidates"][:2] == ["S-0000", "S-0009"]
+    assert asks[0]["candidates"][:2] == ["S-0009", "S-0002"]
 
 
 from ligaotai.timeline import name_snippets
