@@ -33,10 +33,25 @@ def test_故事顺序按全书穿插_排不进的单独数(book):
         {"id": "L-002", "offset": 0, "scenes": ["S-0003", "S-0004"],
          "times": {"S-0003": {"t": 1}}},  # S-0004 没时间
     ], global_order=["S-0001", "S-0003", "S-0002"])
-    seq, pos, unplaced = story_order(book)
+    seq, pos, unplaced, untracked = story_order(book)
     assert seq == ["S-0001", "S-0003", "S-0002"]
     assert pos == {"S-0001": 0, "S-0003": 1, "S-0002": 2}
     assert unplaced == 1
+    assert untracked == 0  # 4 个块全都在某条线的 scenes 里，没有压根没提到的
+
+
+def test_故事顺序_压根没被任何线或未定区提到的块单独计数(book):
+    """场景文件存在，但既不在任何线的 scenes 里、也不在 unassigned 里（比如挂在世界上的
+    设定笔记、只在 outlines 里的提纲）：不算「排不进时间轴」（unplaced），单独计数。"""
+    _seed(book, [(f"S-000{i}", [], [], [], "x") for i in range(1, 6)])
+    _threads(book, [
+        {"id": "L-001", "offset": 0, "scenes": ["S-0001", "S-0002"],
+         "times": {"S-0001": {"t": 0}, "S-0002": {"t": 1}}},
+    ], unassigned=["S-0003"])
+    seq, pos, unplaced, untracked = story_order(book)
+    assert seq == ["S-0001", "S-0002"]
+    assert unplaced == 1  # S-0003 在 unassigned 里
+    assert untracked == 2  # S-0004、S-0005 压根没被提到
 
 
 from ligaotai.timeline import is_death
@@ -112,6 +127,8 @@ def _rcards(spec):
 
 
 def test_C嫌疑_候选按共同人物数排_同分同线优先_只问候选里有排在后面的():
+    # 审 F1 第 6 条改完：只有 1 个共同人物、又没点名的不算候选了，所以这里只剩 S-0003（2 个共同人物）；
+    # S-0001、S-0004（各 1 个共同人物、回指原话没点名）被过滤掉（旧断言曾是 3 个候选，语义已变）。
     seq = ["S-0001", "S-0002", "S-0003", "S-0004", "S-0005"]
     pos = {s: i for i, s in enumerate(seq)}
     line = {"S-0001": "L-001", "S-0002": "L-001", "S-0003": "L-002", "S-0004": "L-001", "S-0005": "L-002"}
@@ -126,15 +143,31 @@ def test_C嫌疑_候选按共同人物数排_同分同线优先_只问候选里�
     assert len(asks) == 1
     a = asks[0]
     assert (a["scene"], a["ref"]) == ("S-0002", "那日比箭之事")
-    # S-0003 共同人物 2 个排第一；S-0001、S-0004 各 1 个，同线（L-001）都同线，按跟 S-0002 的距离：S-0001、S-0004 都距 1，再按位置
-    assert a["candidates"] == ["S-0003", "S-0001", "S-0004"]
+    assert a["candidates"] == ["S-0003"]
     assert (no_cand, no_later) == (1, 0)
+
+
+def test_C嫌疑_候选按回指原话点名的人优先_哪怕共同人物少():
+    # S-0127 跟回指所在场 S-0002 一个共同人物都没有，但回指原话点了「刘公」（归一到「刘芳」），
+    # S-0127 的人物名单里有他 → 该排第一；S-0003 共同人物 2 个但没点名 → 排后面。
+    # 对应真书 S-0014「劉封君所託三事已完其二」要抓到 S-0127（刘芳托付三事）这个场景。
+    seq = ["S-0001", "S-0002", "S-0003", "S-0127"]
+    pos = {s: i for i, s in enumerate(seq)}
+    cmap = {("person", "刘芳"): "刘芳", ("person", "刘公"): "刘芳"}
+    cards = _rcards({
+        "S-0001": (["甲"], [], "一"),
+        "S-0002": (["甲", "乙"], ["刘公所托三事已完其二"], "二"),
+        "S-0003": (["甲", "乙"], [], "三"),
+        "S-0127": (["刘芳"], [], "刘芳托付三事"),
+    })
+    asks, _, _ = ref_suspects(seq, pos, cards, cmap, {})
+    assert asks[0]["candidates"][0] == "S-0127"
 
 
 def test_C嫌疑_候选全在前面的不问():
     seq = ["S-0001", "S-0002"]
     pos = {"S-0001": 0, "S-0002": 1}
-    cards = _rcards({"S-0001": (["甲"], [], "一"), "S-0002": (["甲"], ["前事"], "二")})
+    cards = _rcards({"S-0001": (["甲", "乙"], [], "一"), "S-0002": (["甲", "乙"], ["前事"], "二")})
     asks, no_cand, no_later = ref_suspects(seq, pos, cards, {}, {})
     assert asks == [] and (no_cand, no_later) == (0, 1)
 
@@ -142,8 +175,8 @@ def test_C嫌疑_候选全在前面的不问():
 def test_C嫌疑_候选最多8个():
     seq = [f"S-{i:04d}" for i in range(1, 13)]
     pos = {s: i for i, s in enumerate(seq)}
-    spec = {s: (["甲"], [], s) for s in seq}
-    spec["S-0001"] = (["甲"], ["某事"], "一")
+    spec = {s: (["甲", "乙"], [], s) for s in seq}
+    spec["S-0001"] = (["甲", "乙"], ["某事"], "一")
     asks, _, _ = ref_suspects(seq, pos, _rcards(spec), {}, {})
     assert len(asks[0]["candidates"]) == 8
 

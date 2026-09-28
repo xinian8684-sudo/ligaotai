@@ -33,7 +33,8 @@ def scene_info(book: Book) -> dict[str, dict]:
     for s in load_scenes(book):
         rec = cards.get(s.id) or {}
         card = rec.get("card") if isinstance(rec.get("card"), dict) else {}
-        out[s.id] = {"chars": s.chars, "summary": str(card.get("summary") or s.heading or ""), "removed": s.removed}
+        out[s.id] = {"chars": s.chars, "summary": str(card.get("summary") or s.heading or ""), "removed": s.removed,
+                    "hash": s.hash}
     return out
 
 

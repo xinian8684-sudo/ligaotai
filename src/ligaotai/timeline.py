@@ -17,16 +17,24 @@ from .threads_ops import load_threads
 from .triage import non_main_versions, version_map
 
 
-def story_order(book: Book) -> tuple[list[str], dict[str, int], int]:
+def story_order(book: Book) -> tuple[list[str], dict[str, int], int, int]:
     """全书故事顺序（跟骨架同一个排法，所有线都参与，不看看板）。
-    返回 (排好的场景编号, 编号 -> 位置, 排不进时间轴的块数)。"""
+    返回 (排好的场景编号, 编号 -> 位置, 排不进时间轴的块数, 完全没进任何线/未定区的块数)。
+
+    第 3 项（unplaced）跟骨架一样：块本来在某条线里，但没时间、没对齐主线，或者在
+    unassigned 里——build_sequence 已经把这些都记出来了。第 4 项是另一种情况：场景文件
+    存在，但压根没被任何线的 scenes、也没被 unassigned 提到（比如挂在世界上的设定笔记、
+    只在 outlines 里的提纲）——这类块不算「排不进」，是压根没参与检查，用单独字段区分，
+    别悄悄漏计（审查：真书 4 个设定笔记原来没算进任何统计）。"""
     threads = load_threads(book)
     vmap = version_map(book)
     info = scene_info(book)
     removed = {sid for sid, x in info.items() if x["removed"]} | (non_main_versions(book) - set(vmap))
     seq, unplaced = build_sequence(threads, {}, removed, vmap)
     ids = [x["id"] for x in seq]
-    return ids, {s: i for i, s in enumerate(ids)}, len(unplaced)
+    tracked = set(ids) | {u["id"] for u in unplaced}
+    untracked = len([sid for sid in info if sid not in removed and sid not in vmap and sid not in tracked])
+    return ids, {s: i for i, s in enumerate(ids)}, len(unplaced), untracked
 
 
 # 死亡词：值里出现就算死了（「亲属」这类属性说的是别人，不看）
@@ -36,7 +44,8 @@ DEATH_WORDS = ("死", "亡", "殁", "歿", "卒", "身故", "病故", "已故", 
 # 值里出现这些就不算（免死、被抓、只是差点死、说的是别的意思）
 NOT_DEATH = ("免死", "未死", "不死", "没死", "沒死", "幾乎", "几乎", "险些", "險些", "差点", "差點",
              "被擒", "监禁", "監禁", "车囚", "車囚", "丁艱", "丁艰", "生还", "生還", "得救",
-             "亡命", "视死", "視死", "死战", "死戰", "死守")
+             "亡命", "视死", "視死", "死战", "死戰", "死守",
+             "士卒", "兵卒", "狱卒", "獄卒", "走卒", "死囚", "逃亡", "诈死", "詐死", "假死")
 DEATH_ATTRS = ("生死", "身份", "其他", "伤病", "結局", "结局")
 
 
@@ -93,27 +102,48 @@ def death_suspects(seq: list[str], pos: dict[str, int], cards: dict, cmap: dict)
 MAX_CANDIDATES = 8  # C 类每条回指最多给模型几个候选场景
 
 
+def _person_names_and_canon(cmap: dict) -> dict[str, str]:
+    """所有 person 类型的叫法、以及规范名本身 -> 规范名，用来判断回指原话里有没有点到谁。"""
+    out = {n: c for (t, n), c in cmap.items() if t == "person"}
+    for c in set(out.values()):
+        out.setdefault(c, c)
+    return out
+
+
+def _named_in_ref(ref: str, alias_to_canon: dict[str, str]) -> set[str]:
+    """回指原话里出现的人物叫法（任一叫法），归一成规范名。"""
+    return {c for n, c in alias_to_canon.items() if n and n in ref}
+
+
 def ref_suspects(seq: list[str], pos: dict[str, int], cards: dict, cmap: dict,
                  line_of: dict[str, str]) -> tuple[list[dict], int, int]:
     """(要问模型的回指, 没有候选的回指数, 候选全在前面、不用问的回指数)。
-    要问的 = {scene, ref, candidates}。候选：跟回指所在场有共同人物的其他场景，
-    按 (共同人物数 降序, 不同线排后, 跟回指场的距离, 位置) 排，取前 MAX_CANDIDATES 个。"""
+    要问的 = {scene, ref, candidates}。每条回指单独挑候选（不再是同一场所有回指共用一组）：
+    候选场景要么人物名单（归一后）里有回指原话点名的人（任一叫法或规范名），要么跟回指所在场
+    至少有 2 个共同人物（归一后）——只有 1 个共同人物、又没点名的不算候选，排序先看点没点名，
+    再看共同人物数降序、是否同线（同线优先）、跟回指场的距离（近的优先）、位置，
+    取前 MAX_CANDIDATES 个。同一场里重复的回指原话去重，只问一次。"""
     people = {s: persons_of(_card(cards, s), cmap) for s in seq}
+    alias_to_canon = _person_names_and_canon(cmap)
     asks, no_cand, no_later = [], 0, 0
     for sid in seq:
-        refs = [r.strip() for r in _card(cards, sid).get("refs_elsewhere") or [] if isinstance(r, str) and r.strip()]
+        raw_refs = [r.strip() for r in _card(cards, sid).get("refs_elsewhere") or [] if isinstance(r, str) and r.strip()]
+        refs = list(dict.fromkeys(raw_refs))
         if not refs:
             continue
         mine = people[sid]
-        scored = []
-        for o in seq:
-            if o == sid:
-                continue
-            k = len(mine & people[o])
-            if k:
-                scored.append((-k, line_of.get(o) != line_of.get(sid), abs(pos[o] - pos[sid]), pos[o], o))
-        cands = [x[-1] for x in sorted(scored)[:MAX_CANDIDATES]]
         for r in refs:
+            named = _named_in_ref(r, alias_to_canon)
+            scored = []
+            for o in seq:
+                if o == sid:
+                    continue
+                k = len(mine & people[o])
+                hit = bool(named & people[o])
+                if not (hit or k >= 2):
+                    continue
+                scored.append((0 if hit else 1, -k, line_of.get(o) != line_of.get(sid), abs(pos[o] - pos[sid]), pos[o], o))
+            cands = [x[-1] for x in sorted(scored)[:MAX_CANDIDATES]]
             if not cands:
                 no_cand += 1
             elif all(pos[c] < pos[sid] for c in cands):
@@ -168,8 +198,12 @@ def assemble(conflicts: list[dict], old: dict) -> dict:
     if used:
         next_id = max(next_id, max(used) + 1)
     out = []
+    seen: set[str] = set()
     for c in conflicts:
         sig = conflict_sig(c)
+        if sig in seen:
+            continue  # 保险：同一签名出两条（比如同一场景的重复回指没被上游去重）只留一条
+        seen.add(sig)
         if sig not in registry:
             registry[sig] = f"T-{next_id:03d}"
             next_id += 1
@@ -185,9 +219,13 @@ def _relevant(card: dict) -> dict:
 
 
 def input_fingerprint(book: Book) -> str:
-    """故事顺序 + 参与场景的卡（只取用得到的字段）+ 实体规范名。任何一样变了，旧结果就过期。"""
-    seq, _, _ = story_order(book)
+    """故事顺序 + 参与场景的卡（只取用得到的字段）+ 参与场景的正文哈希 + 实体规范名。
+    任何一样变了，旧结果就过期。正文哈希用场景文件头信息里现成的 hash 字段（scene_info
+    已经解析过场景文件了），不为了这个再整篇读一遍原文重算。"""
+    seq, _, _, _ = story_order(book)
     cards = load_cards(book)
+    info = scene_info(book)
     payload = {"seq": seq, "cards": {s: _relevant(_card(cards, s)) for s in seq},
+               "text_hashes": {s: info.get(s, {}).get("hash", "") for s in seq},
                "names": sorted([list(k) + [v] for k, v in name_map(book).items()])}
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
