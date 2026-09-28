@@ -28,6 +28,19 @@ beforeEach(() => setActivePinia(createPinia()))
 afterEach(() => vi.restoreAllMocks())
 
 describe('TimelinePanel', () => {
+  it('还在读结果时显示读取中，按钮不能写成「重新检查」（像是查过了没结果）', async () => {
+    let 放行: (v: TimelineFile) => void = () => {}
+    vi.spyOn(api, 'getTimeline').mockImplementation(() => new Promise((r) => { 放行 = r }))
+    const w = mount(TimelinePanel, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    expect(w.find('[data-test="时间线读取中"]').exists()).toBe(true)
+    expect(w.find('[data-test="检查时间线"]').text()).toBe('检查时间线')
+    放行(造())
+    await flushPromises()
+    expect(w.find('[data-test="时间线读取中"]').exists()).toBe(false)
+    expect(w.find('[data-test="检查时间线"]').text()).toBe('重新检查')
+  })
+
   it('没跑过：说明 + 检查按钮', async () => {
     vi.spyOn(api, 'getTimeline').mockResolvedValue({ conflicts: [], never_run: true, stale: false })
     const run = vi.spyOn(api, 'runTimeline').mockResolvedValue(job)

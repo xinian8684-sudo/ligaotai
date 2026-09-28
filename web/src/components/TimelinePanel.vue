@@ -76,9 +76,11 @@ onUnmounted(() => {
   <section class="timeline">
     <ErrorBox :message="error" />
     <div class="bar">
-      <button data-test="检查时间线" :disabled="jobStore.busy" @click="检查">{{ data?.never_run ? '检查时间线' : '重新检查' }}</button>
+      <button data-test="检查时间线" :disabled="jobStore.busy" @click="检查">{{ !data || data.never_run ? '检查时间线' : '重新检查' }}</button>
     </div>
-    <p v-if="data?.never_run" class="empty" data-test="时间线空态">
+    <!-- 结果还没回来时别只露一个「重新检查」，看着像查过了没结果（真浏览器冷启动时读要一两秒） -->
+    <p v-if="!data && !error" class="empty" data-test="时间线读取中">读取中…</p>
+    <p v-else-if="data?.never_run" class="empty" data-test="时间线空态">
       还没检查过。会找两类问题：某人前面已经死了、后面又活着出场；某场提到的事，按故事顺序要到后面才发生。
       要先跑完归线（步骤 6）。查出来的不一定是写错了，也可能是故事顺序排错了，每条你来定。
     </p>
