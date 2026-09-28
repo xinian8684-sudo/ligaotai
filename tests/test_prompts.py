@@ -52,6 +52,8 @@ THREAD_PROMPTS = [
     ("threads_align", {"unit": "年", "main": "L-001", "threads": "t"}, "跨线对齐"),
     ("threads_gaps", {"world": "w", "threads": "t", "refs": "r"}, "找缺口"),
     ("threads_interleave", {"main": "L-001", "threads": "t"}, "全书穿插"),
+    ("timeline_death", {"items": "i"}, "说不准"),
+    ("timeline_refs", {"items": "i"}, "回指"),
 ]
 
 
