@@ -106,19 +106,21 @@ describe('SkeletonPage', () => {
 
   it('导出：显示结果和下载链接', async () => {
     vi.spyOn(api, 'getSkeleton').mockResolvedValue(造骨架())
-    vi.spyOn(api, 'exportBook').mockResolvedValue({ md: '导出/x.md', txt: '导出/x.txt', scenes: 3, holes: 1, missing: 0, chars: 12000, cut: 0 })
+    vi.spyOn(api, 'exportBook').mockResolvedValue({ md: '导出/x.md', txt: '导出/x.txt', docx: '导出/x.docx', epub: '导出/x.epub', scenes: 3, holes: 1, missing: 0, chars: 12000, cut: 0 })
     const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
     await flushPromises()
     await w.find('[data-test="导出"]').trigger('click')
     await flushPromises()
     const r = w.find('[data-test="导出结果"]')
-    expect(r.text()).toContain('导出/x.md')
-    expect(r.find('a[href$="/export/md"]').exists()).toBe(true)
+    expect(r.text()).toContain('已导出到「导出」文件夹')
+    for (const f of ['md', 'txt', 'docx', 'epub']) expect(r.find(`a[href$="/export/${f}"]`).exists()).toBe(true)
+    expect(r.text()).toContain('Word')
+    expect(r.text()).toContain('电子书（.epub）')
   })
 
   it('导出：cut 是「砍掉的线仍被导出」的块数，不能说成没收进书', async () => {
     vi.spyOn(api, 'getSkeleton').mockResolvedValue(造骨架())
-    vi.spyOn(api, 'exportBook').mockResolvedValue({ md: '导出/x.md', txt: '导出/x.txt', scenes: 3, holes: 1, missing: 0, chars: 12000, cut: 2 })
+    vi.spyOn(api, 'exportBook').mockResolvedValue({ md: '导出/x.md', txt: '导出/x.txt', docx: '导出/x.docx', epub: '导出/x.epub', scenes: 3, holes: 1, missing: 0, chars: 12000, cut: 2 })
     const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
     await flushPromises()
     await w.find('[data-test="导出"]').trigger('click')
@@ -392,5 +394,93 @@ describe('SkeletonPage', () => {
     await flushPromises()
     const ta = w.find('[data-test="空洞输入-H-001"]')
     expect(ta.attributes('disabled')).toBeDefined()
+  })
+
+  describe('拖拽', () => {
+    function 挂载() {
+      let 当前 = 造骨架()
+      vi.spyOn(api, 'getSkeleton').mockImplementation(async () => 当前)
+      const put = vi.spyOn(api, 'putSkeleton').mockImplementation(async (_n, sk) => {
+        当前 = sk
+        return sk
+      })
+      const w = mount(SkeletonPage, { props: { name: 'x' }, global: { stubs } })
+      return { w, put }
+    }
+    const dt = () => ({ setData: vi.fn(), effectAllowed: '' })
+    async function 拖(w: ReturnType<typeof mount>, 从: string, 到: string) {
+      await w.find(从).trigger('dragstart', { dataTransfer: dt() })
+      await w.find(到).trigger('dragover', { dataTransfer: dt() })
+      await w.find(到).trigger('drop', { dataTransfer: dt() })
+      await flushPromises()
+    }
+
+    it('章内调顺序：拖到哪一块上就放到它前面', async () => {
+      const { w, put } = 挂载()
+      await flushPromises()
+      await 拖(w, '[data-test="场景-S-0004"]', '[data-test="场景-S-0001"]')
+      expect(put.mock.calls[0][1].volumes[0].chapters[0].items.map((i) => i.id)).toEqual(['S-0004', 'S-0001', 'H-001'])
+    })
+
+    it('拖到「放到本章末尾」', async () => {
+      const { w, put } = 挂载()
+      await flushPromises()
+      await 拖(w, '[data-test="场景-S-0001"]', '[data-test="放到末尾"]')
+      expect(put.mock.calls[0][1].volumes[0].chapters[0].items.map((i) => i.id)).toEqual(['H-001', 'S-0004', 'S-0001'])
+    })
+
+    it('空洞拖到左边另一章的章名上：放到那一章末尾', async () => {
+      const { w, put } = 挂载()
+      await flushPromises()
+      await 拖(w, '[data-test="拖空洞-H-001"]', '[data-test="章-0-1"]')
+      const sk = put.mock.calls[0][1]
+      expect(sk.volumes[0].chapters[0].items.map((i) => i.id)).toEqual(['S-0001', 'S-0004'])
+      expect(sk.volumes[0].chapters[1].items.map((i) => i.id)).toEqual(['S-0005', 'H-001'])
+    })
+
+    it('章拖到另一章上：放到它前面，选中跟着原来那一章走', async () => {
+      const { w, put } = 挂载()
+      await flushPromises()
+      await 拖(w, '[data-test="章-0-1"]', '[data-test="章-0-0"]')
+      expect(put.mock.calls[0][1].volumes[0].chapters.map((c) => c.title)).toEqual(['龙宫', '开篇'])
+      // 原先选中的是「开篇」，现在它在第 2 位，右边还是开篇的条目
+      expect(w.find('[data-test="条目"] h2').text()).toBe('开篇')
+    })
+
+    it('未定位的场景拖进来：放到目标块前面，从未定位里拿掉', async () => {
+      const { w, put } = 挂载()
+      await flushPromises()
+      await 拖(w, '[data-test="未定位-S-0084"]', '[data-test="场景-S-0004"]')
+      const sk = put.mock.calls[0][1]
+      expect(sk.volumes[0].chapters[0].items.map((i) => i.id)).toEqual(['S-0001', 'H-001', 'S-0084', 'S-0004'])
+      expect(sk.unplaced.scenes).toEqual([])
+    })
+
+    it('拖回原地不保存', async () => {
+      const { w, put } = 挂载()
+      await flushPromises()
+      await 拖(w, '[data-test="场景-S-0001"]', '[data-test="场景-S-0001"]')
+      await 拖(w, '[data-test="章-0-0"]', '[data-test="章-0-0"]')
+      expect(put).not.toHaveBeenCalled()
+    })
+
+    it('章不能拖到条目上（不接受就不 preventDefault，也就不会有 drop）', async () => {
+      const { w, put } = 挂载()
+      await flushPromises()
+      await w.find('[data-test="章-0-1"]').trigger('dragstart', { dataTransfer: dt() })
+      const ev = new Event('dragover', { cancelable: true })
+      w.find('[data-test="场景-S-0001"]').element.dispatchEvent(ev)
+      expect(ev.defaultPrevented).toBe(false)
+      expect(put).not.toHaveBeenCalled()
+    })
+
+    it('任务进行中不能拖', async () => {
+      const { w } = 挂载()
+      vi.spyOn(api, 'generateSkeleton').mockResolvedValue(job)
+      await flushPromises()
+      await w.find('[data-test="生成"]').trigger('click')
+      await flushPromises()
+      expect(w.find('[data-test="场景-S-0001"]').attributes('draggable')).toBe('false')
+    })
   })
 })

@@ -114,6 +114,36 @@ describe('ThreadsPage', () => {
     expect(move).toHaveBeenCalledWith('guixu', 'L-001', { ids: ['S-0123'] })
   })
 
+  it('未分配的块拖到线列表某一行上：归入那条线', async () => {
+    const d = structuredClone(雪月梅) as unknown as ThreadsFile
+    d.unassigned = [{ scene: 'S-0123', reason: '没归上' }]
+    vi.spyOn(api, 'getThreads').mockResolvedValue(d)
+    const move = vi.spyOn(api, 'moveScenes').mockResolvedValue({})
+    const w = mount(ThreadsPage, { props: { name: 'guixu' }, global: { stubs } })
+    await flushPromises()
+    const dt = { setData: vi.fn() }
+    await w.find('[data-test="未分配-S-0123"]').trigger('dragstart', { dataTransfer: dt })
+    await w.find('[data-test="线行-L-002"]').trigger('dragover', { dataTransfer: dt })
+    expect(w.find('[data-test="线行-L-002"]').classes()).toContain('drop-on')
+    await w.find('[data-test="线行-L-002"]').trigger('drop', { dataTransfer: dt })
+    await flushPromises()
+    expect(move).toHaveBeenCalledWith('guixu', 'L-002', { ids: ['S-0123'] })
+  })
+
+  it('没在拖块时，别的东西拖过线行不接（不 preventDefault）', async () => {
+    const d = structuredClone(雪月梅) as unknown as ThreadsFile
+    vi.spyOn(api, 'getThreads').mockResolvedValue(d)
+    const move = vi.spyOn(api, 'moveScenes').mockResolvedValue({})
+    const w = mount(ThreadsPage, { props: { name: 'guixu' }, global: { stubs } })
+    await flushPromises()
+    const ev = new Event('dragover', { cancelable: true })
+    w.find('[data-test="线行-L-002"]').element.dispatchEvent(ev)
+    expect(ev.defaultPrevented).toBe(false)
+    await w.find('[data-test="线行-L-002"]').trigger('drop')
+    await flushPromises()
+    expect(move).not.toHaveBeenCalled()
+  })
+
   it('线的完没完取 end.state，不取 status', async () => {
     // status 是「划分确认了没有」不是「故事完了没有」，拿它判完结会全错
     const d = structuredClone(雪月梅) as unknown as ThreadsFile

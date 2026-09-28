@@ -71,6 +71,38 @@ async function 拒绝(p: PendingScene): Promise<void> {
   }
 }
 
+/** 拖拽归入：未分配的块拖到线列表的某一行上＝归入那条线。下拉框 + 按钮照旧能用。 */
+const 拖块 = ref('')
+const 悬停线 = ref('')
+
+function 开始拖块(e: DragEvent, sid: string): void {
+  if (jobStore.busy) {
+    e.preventDefault()
+    return
+  }
+  拖块.value = sid
+  e.dataTransfer?.setData('text/plain', sid) // Firefox 不 setData 不让拖
+}
+
+function 结束拖块(): void {
+  拖块.value = ''
+  悬停线.value = ''
+}
+
+function 经过线(e: DragEvent, tid: string): void {
+  if (!拖块.value) return // 别的东西（比如选中的文字）拖过来不接
+  e.preventDefault()
+  悬停线.value = tid
+}
+
+async function 放到线(tid: string): Promise<void> {
+  const sid = 拖块.value
+  结束拖块()
+  if (!sid) return
+  选线[sid] = tid
+  await 归入(sid)
+}
+
 async function 归入(sid: string): Promise<void> {
   const tid = 选线[sid]
   if (!tid) {
@@ -209,7 +241,10 @@ onUnmounted(() => {
     <section class="block">
       <h2>未分配的块（{{ unassigned.length }}）</h2>
       <p v-if="unassigned.length === 0" class="empty">没有未分配的块。</p>
-      <div v-for="u in unassigned" :key="u.scene" class="unassigned-row">
+      <p v-if="unassigned.length > 0" class="hint">可以把块直接拖到下面线列表的某一行上归入。</p>
+      <div v-for="u in unassigned" :key="u.scene" class="unassigned-row" :data-test="`未分配-${u.scene}`"
+           :draggable="!jobStore.busy" @dragstart="开始拖块($event, u.scene)" @dragend="结束拖块">
+        <span class="grip" title="拖动">⠿</span>
         <span class="scene">{{ u.scene }}</span>
         <span class="reason">{{ u.reason }}</span>
         <select v-model="选线[u.scene]">
@@ -242,7 +277,8 @@ onUnmounted(() => {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="t in threads" :key="t.id">
+          <tr v-for="t in threads" :key="t.id" :data-test="`线行-${t.id}`" :class="{ 'drop-on': 悬停线 === t.id }"
+              @dragover="经过线($event, t.id)" @dragleave="悬停线 = ''" @drop.prevent="放到线(t.id)">
             <td><input v-model="合并选中" type="checkbox" :value="t.id" :data-test="`合并勾选-${t.id}`" title="勾两条以上可以合并" @change="合并确认中 = false" /></td>
             <td>
               <span v-if="data?.main_thread === t.id" class="main-badge" title="主线">★</span>
@@ -298,6 +334,10 @@ h1{font-family:var(--serif);font-size:20px;margin:16px 0}
 h2{font-size:15px;margin:0 0 8px}
 .block{margin-bottom:24px}
 .empty{color:var(--ink-3)}
+.hint{font-size:12px;color:var(--ink-3);margin:0 0 6px}
+.grip{color:var(--ink-3);cursor:grab;user-select:none}
+[draggable="true"]{cursor:grab}
+.drop-on{outline:2px dashed var(--accent);outline-offset:-2px;background:var(--accent-soft)}
 .fail-row{
   display:flex;flex-direction:column;gap:4px;background:var(--red-soft);color:var(--red);
   border-radius:8px;padding:10px 12px;margin-bottom:8px;

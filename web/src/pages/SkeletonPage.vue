@@ -6,6 +6,7 @@ import { ApiError } from '@/api/client'
 import { useJobStore } from '@/stores/job'
 import ErrorBox from '@/components/ErrorBox.vue'
 import SceneRefs from '@/components/SceneRefs.vue'
+import { moveChapter, moveItem, placeUnplaced, type ChapterPos, type ItemPos } from '@/lib/skeletonMoves'
 
 const props = defineProps<{ name: string }>()
 const jobStore = useJobStore()
@@ -203,6 +204,78 @@ async function 放进当前章(sid: string): Promise<void> {
   await 保存(next)
 }
 
+/** 拖拽（spec 7.3）：章拖到别的章上＝放到它前面；场景 / 空洞拖到某一项上＝放到它前面，
+ * 拖到左边的章名上＝放到那一章末尾，拖到条目列表底下的「放到本章末尾」＝放到当前章末尾；
+ * 未定位的场景也能这样拖进来。按钮都还在，拖不了的地方（比如挪到卷末）照旧用按钮。 */
+type 拖的东西 = { kind: 'chapter'; at: ChapterPos } | { kind: 'item'; at: ItemPos } | { kind: 'unplaced'; sid: string }
+const 拖着 = ref<拖的东西 | null>(null)
+const 悬停 = ref('')
+
+function 开始拖(e: DragEvent, what: 拖的东西): void {
+  if (jobStore.busy) {
+    e.preventDefault()
+    return
+  }
+  拖着.value = what
+  e.dataTransfer?.setData('text/plain', what.kind) // Firefox 不 setData 不让拖
+  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
+}
+
+function 结束拖(): void {
+  拖着.value = null
+  悬停.value = ''
+}
+
+/** 能放才 preventDefault（浏览器只在 dragover 被 preventDefault 时才触发 drop）。 */
+function 经过(e: DragEvent, 目标: string, 接受: 拖的东西['kind'][]): void {
+  if (!拖着.value || !接受.includes(拖着.value.kind)) return
+  e.preventDefault()
+  悬停.value = 目标
+}
+
+/** 放到章名上：章→放到这一章前面；场景 / 空洞 / 未定位→放到这一章末尾。 */
+async function 放到章(v: number, c: number): Promise<void> {
+  const d = 拖着.value
+  结束拖()
+  if (!d || !sk.value) return
+  const len = sk.value.volumes[v].chapters[c].items.length
+  if (d.kind === 'chapter') {
+    if (d.at.v === v && d.at.c === c) return
+    // 选中的章跟着走：做个记号，挪完在新结构里找回来
+    const 标记 = 副本()
+    const 选中章 = 标记.volumes[选中.value[0]]?.chapters[选中.value[1]] as unknown as Record<string, unknown> | undefined
+    if (选中章) 选中章.__选中 = true
+    const next = moveChapter(标记, d.at, { v, c })
+    next.volumes.forEach((vol, vi) => vol.chapters.forEach((ch, ci) => {
+      const m = ch as unknown as Record<string, unknown>
+      if (m.__选中) {
+        选中.value = [vi, ci]
+        delete m.__选中
+      }
+    }))
+    await 保存(next)
+  } else if (d.kind === 'item') {
+    if (d.at.v === v && d.at.c === c) return
+    await 保存(moveItem(sk.value, d.at, { v, c, i: len }))
+  } else {
+    await 保存(placeUnplaced(sk.value, d.sid, { v, c, i: len }))
+  }
+}
+
+/** 放到当前章第 i 项上（i 等于项数＝末尾）：放到它前面。 */
+async function 放到项(i: number): Promise<void> {
+  const d = 拖着.value
+  结束拖()
+  if (!d || !sk.value) return
+  const [v, c] = 选中.value
+  if (d.kind === 'item') {
+    if (d.at.v === v && d.at.c === c && (d.at.i === i || d.at.i + 1 === i)) return // 原地
+    await 保存(moveItem(sk.value, d.at, { v, c, i }))
+  } else if (d.kind === 'unplaced') {
+    await 保存(placeUnplaced(sk.value, d.sid, { v, c, i }))
+  }
+}
+
 /** S3：章节备注原来只显示线编号（L-002），带上线名读起来才知道是哪条线。名字从骨架里
  * 已经带着的 thread_name（annotate() 给每个场景项补的，S2）现拼一张编号→名字的表；
  * 砍掉的线全书都没有场景项还留着它的编号，表里查不到，这时就只显示编号（S3 原话）。 */
@@ -272,7 +345,7 @@ onUnmounted(() => {
     <ErrorBox :message="error" />
     <div class="bar">
       <button data-test="生成" :disabled="jobStore.busy" @click="生成()">{{ sk ? '重新生成骨架' : '生成骨架' }}</button>
-      <button v-if="sk" data-test="导出" :disabled="jobStore.busy" @click="导出">导出 md / txt</button>
+      <button v-if="sk" data-test="导出" :disabled="jobStore.busy" @click="导出">导出成书</button>
     </div>
     <div v-if="确认中" class="confirm">
       你改过这份骨架，重新生成会覆盖你的手改（旧版本会备份成 骨架.bak.json）。
@@ -284,8 +357,11 @@ onUnmounted(() => {
       {{ sk.absent.length }} 个场景按现在的线本该在书里，骨架中却找不到：{{ sk.absent.join('、') }}。重新生成骨架会补上。
     </p>
     <div v-if="导出结果" class="export" data-test="导出结果">
-      已导出 {{ 导出结果.md }}、{{ 导出结果.txt }}：{{ 导出结果.chars }} 字、{{ 导出结果.scenes }} 块场景、{{ 导出结果.holes }} 个空洞<template v-if="导出结果.missing">、{{ 导出结果.missing }} 块缺失</template><template v-if="导出结果.cut">。其中 {{ 导出结果.cut }} 块所属的线已经在看板上砍掉了，但还留在骨架里、照样导出了——要去掉请在骨架里删</template>。
-      <a :href="exportUrl(name, 'md')">下载 md</a> · <a :href="exportUrl(name, 'txt')">下载 txt</a>
+      已导出到「导出」文件夹：{{ 导出结果.chars }} 字、{{ 导出结果.scenes }} 块场景、{{ 导出结果.holes }} 个空洞<template v-if="导出结果.missing">、{{ 导出结果.missing }} 块缺失</template><template v-if="导出结果.cut">。其中 {{ 导出结果.cut }} 块所属的线已经在看板上砍掉了，但还留在骨架里、照样导出了——要去掉请在骨架里删</template>。
+      <div class="dl">
+        下载：<a :href="exportUrl(name, 'docx')">Word（.docx）</a> · <a :href="exportUrl(name, 'epub')">电子书（.epub）</a>
+        · <a :href="exportUrl(name, 'md')">Markdown（.md，带场景编号）</a> · <a :href="exportUrl(name, 'txt')">纯文本（.txt）</a>
+      </div>
     </div>
 
     <p v-if="没有" class="empty" data-test="空态">还没有骨架。先在取舍看板上定好去留（没想好的线也会先排进来），再生成。</p>
@@ -296,7 +372,12 @@ onUnmounted(() => {
           <input v-if="改名[key('vol', vi)] !== undefined" v-model="改名[key('vol', vi)]"
                  @keyup.enter="存名字('vol', vi)" @blur="存名字('vol', vi)" />
           <b v-else @dblclick="改名[key('vol', vi)] = v.title">{{ v.title }}</b>
-          <div v-for="(ch, ci) in v.chapters" :key="ci" class="ch" :class="{ on: 选中[0] === vi && 选中[1] === ci }">
+          <div v-for="(ch, ci) in v.chapters" :key="ci" class="ch"
+               :class="{ on: 选中[0] === vi && 选中[1] === ci, 'drop-on': 悬停 === key('ch', vi, ci) }"
+               :data-test="`章-${vi}-${ci}`" :draggable="!jobStore.busy"
+               @dragstart="开始拖($event, { kind: 'chapter', at: { v: vi, c: ci } })" @dragend="结束拖"
+               @dragover="经过($event, key('ch', vi, ci), ['chapter', 'item', 'unplaced'])"
+               @dragleave="悬停 = ''" @drop.prevent="放到章(vi, ci)">
             <input v-if="改名[key('ch', vi, ci)] !== undefined" v-model="改名[key('ch', vi, ci)]"
                    :data-test="`章名输入-${vi}-${ci}`" @keyup.enter="存名字('ch', vi, ci)" @blur="存名字('ch', vi, ci)" />
             <span v-else :data-test="`章名-${vi}-${ci}`" @click="选中 = [vi, ci]" @dblclick="改名[key('ch', vi, ci)] = ch.title">{{ ch.title }}</span>
@@ -313,8 +394,12 @@ onUnmounted(() => {
         <div class="notes">
           <span v-for="(n, i) in 当前章.notes" :key="i" class="tag" :class="n.kind">{{ 备注(n) }}</span>
         </div>
-        <template v-for="it in 当前章.items" :key="it.type + it.id">
-          <div v-if="it.type === 'scene'" class="scene" :class="{ flagged: it.flag }" :data-test="`场景-${it.id}`">
+        <template v-for="(it, ii) in 当前章.items" :key="it.type + it.id">
+          <div v-if="it.type === 'scene'" class="scene" :class="{ flagged: it.flag, 'drop-on': 悬停 === key('it', ii) }"
+               :data-test="`场景-${it.id}`" :draggable="!jobStore.busy"
+               @dragstart="开始拖($event, { kind: 'item', at: { v: 选中[0], c: 选中[1], i: ii } })" @dragend="结束拖"
+               @dragover="经过($event, key('it', ii), ['item', 'unplaced'])" @dragleave="悬停 = ''" @drop.prevent="放到项(ii)">
+            <span class="grip" title="拖动">⠿</span>
             <span class="sid"><SceneRefs :text="it.id" :book="name" /></span>
             <span class="thread">{{ it.thread_name ?? it.thread }}</span>
             <span v-if="it.summary" class="summary">{{ it.summary }}</span>
@@ -324,8 +409,12 @@ onUnmounted(() => {
               <button :data-test="`下移场景-${it.id}`" :disabled="jobStore.busy || 章位置(选中[0], 选中[1]) === 章序.length - 1" @click="移场景(it, 1)">移到下一章</button>
             </span>
           </div>
-          <details v-else class="hole" :data-test="`空洞-${it.id}`" open>
-            <summary>空洞 {{ it.id }}</summary>
+          <details v-else class="hole" :class="{ 'drop-on': 悬停 === key('it', ii) }" :data-test="`空洞-${it.id}`" open
+                   @dragover="经过($event, key('it', ii), ['item', 'unplaced'])" @dragleave="悬停 = ''" @drop.prevent="放到项(ii)">
+            <!-- 只让标题行能拖：整张卡可拖的话，里面的输入框没法用鼠标选字 -->
+            <summary :draggable="!jobStore.busy" :data-test="`拖空洞-${it.id}`"
+                     @dragstart="开始拖($event, { kind: 'item', at: { v: 选中[0], c: 选中[1], i: ii } })" @dragend="结束拖">
+              <span class="grip" title="拖动">⠿</span>空洞 {{ it.id }}</summary>
             <textarea :data-test="`空洞输入-${it.id}`" :disabled="jobStore.busy" :value="it.task"
                       @change="改说明(it, ($event.target as HTMLTextAreaElement).value)"></textarea>
             <span class="ops">
@@ -335,13 +424,20 @@ onUnmounted(() => {
             <button :data-test="`删空洞-${it.id}`" :disabled="jobStore.busy" @click="删空洞(it)">删掉这个空洞</button>
           </details>
         </template>
+        <div v-if="拖着 && 拖着.kind !== 'chapter'" class="drop-end" :class="{ 'drop-on': 悬停 === 'end' }" data-test="放到末尾"
+             @dragover="经过($event, 'end', ['item', 'unplaced'])" @dragleave="悬停 = ''" @drop.prevent="放到项(当前章.items.length)">
+          放到本章末尾
+        </div>
         <button :disabled="jobStore.busy" @click="加空洞">在这里加空洞</button>
       </section>
     </div>
 
     <section v-if="sk && (sk.unplaced.scenes.length || sk.unplaced.holes.length)" class="unplaced" data-test="未定位">
       <h2>未定位</h2>
-      <div v-for="s in sk.unplaced.scenes" :key="s.id" class="scene">
+      <p class="hint">可以直接拖进左边的章名、或右边某一块前面。</p>
+      <div v-for="s in sk.unplaced.scenes" :key="s.id" class="scene" :data-test="`未定位-${s.id}`" :draggable="!jobStore.busy"
+           @dragstart="开始拖($event, { kind: 'unplaced', sid: s.id })" @dragend="结束拖">
+        <span class="grip" title="拖动">⠿</span>
         <span class="sid"><SceneRefs :text="s.id" :book="name" /></span><span class="thread">{{ s.thread_name ?? s.thread ?? '' }}</span>
         <span v-if="s.summary" class="summary">{{ s.summary }}</span>
         <span class="why">{{ 原因[s.why] ?? s.why }}</span>
@@ -359,6 +455,7 @@ h1{font-family:var(--serif);font-size:20px;margin:16px 0}
 .confirm{background:var(--amber-soft);color:var(--ink);padding:8px 10px;border-radius:6px;margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .warn{color:var(--amber);font-size:13px}
 .export{background:var(--green-soft);padding:8px 10px;border-radius:6px;margin-bottom:10px;font-size:13px}
+.export .dl{margin-top:4px}
 .empty{color:var(--ink-3)}
 .layout{display:grid;grid-template-columns:260px minmax(0,1fr);gap:16px;align-items:start}
 .tree{background:var(--panel);border:1px solid var(--line-2);border-radius:8px;padding:10px;font-size:13px}
@@ -385,4 +482,9 @@ h1{font-family:var(--serif);font-size:20px;margin:16px 0}
 .unplaced{margin-top:18px}
 .unplaced h2{font-size:15px}
 .hole-line{font-size:13px;color:var(--ink-2);padding:4px 0}
+.grip{color:var(--ink-3);cursor:grab;user-select:none;margin-right:2px}
+[draggable="true"]{cursor:grab}
+.drop-on{outline:2px dashed var(--accent);outline-offset:-2px;background:var(--accent-soft)}
+.drop-end{border:1px dashed var(--line-2);border-radius:6px;padding:10px;margin:6px 0;color:var(--ink-3);font-size:13px;text-align:center}
+.hint{font-size:12px;color:var(--ink-3);margin:0 0 6px}
 </style>
