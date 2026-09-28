@@ -333,6 +333,43 @@ def _speaks(body: str, name: str) -> bool:
         start = p + 1
 
 
+def plant_deaths(chapters: list[Chapter], rng: random.Random, n: int,
+                 characters: list[dict] | None, used: set[int],
+                 skip: set[int] | None = None, avoid: set[str] | None = None) -> list[dict]:
+    """时间线检查验收用（A 类）：挑一个人，在他出现过的前一章 a 插「某某染病身亡。」，
+    后一章 b 里他有对话（`_speaks`）——这样 b 章他活着说话就跟 a 章的死亡冲突。
+    used：已经被别的植入占用的章节（会就地加进去），一个章节只参与一处植入。
+    skip / avoid：同 plant_contradictions（被截断的章节、会被别名替换的人）。"""
+    if n <= 0 or not characters:
+        return []
+    skipped, avoided = set(skip or ()), set(avoid or ())
+    people = []
+    for ch in characters:
+        names = [x for x in (ch.get("names") or [ch["canonical"]]) if x]
+        if avoided and any(a in nm or nm in a for nm in names for a in avoided):
+            continue
+        people.append((ch["canonical"], names))
+    rng.shuffle(people)
+    planted = []
+    for canon, names in people:
+        if len(planted) >= n:
+            break
+        free = [c for c in chapters if c.num not in skipped and c.num not in used]
+        talk = [(c, nm) for c in free for nm in names if _speaks(c.body, nm)]
+        if not talk:
+            continue
+        b, _ = rng.choice(talk)
+        before = [(c, nm) for c in free if c.num < b.num for nm in names if nm in c.body]
+        if not before:
+            continue
+        a, nm = rng.choice(before)
+        cut = _sentence_end(a.body, a.body.find(nm))
+        a.body = a.body[:cut] + f"{nm}染病身亡。" + a.body[cut:]
+        used |= {a.num, b.num}
+        planted.append({"kind": "A", "who": canon, "name": nm, "chapters": [a.num, b.num]})
+    return sorted(planted, key=lambda p: p["chapters"])
+
+
 class NameGen:
     def __init__(self, rng: random.Random):
         self.rng = rng

@@ -546,3 +546,42 @@ def test_speaks_斗破苍穹真实文本_至少5人各有5章说过话():
         )
     qualifying = {k: v for k, v in counts.items() if v >= 5}
     assert len(qualifying) >= 5, counts
+
+
+# --------------------------------------------------------------------------------------
+# Task 17: 乱稿工具——A 类植入（时间线检查验收）
+# --------------------------------------------------------------------------------------
+
+from tools.scramble import plant_deaths  # noqa: E402
+
+
+def _talk_chapters(n):
+    out = []
+    for i in range(1, n + 1):
+        out.append(Chapter(i, f"第{i}回", f"這日天氣晴和。岑秀道：「好。」眾人都不做聲。劉電看了一眼。"))
+    return out
+
+
+def test_A植入_前一章插死亡_后一章他有对话_答案记两章():
+    chapters = _talk_chapters(8)
+    got = plant_deaths(chapters, random.Random(1), n=1, characters=CHARS, used=set())
+    assert len(got) == 1
+    p = got[0]
+    a, b = p["chapters"]
+    assert p["kind"] == "A" and a < b
+    bodies = {c.num: c.body for c in chapters}
+    assert f"{p['name']}染病身亡。" in bodies[a]
+    assert f"{p['name']}道" in bodies[b] or f"{p['name']}說" in bodies[b]  # b 章里他有对话
+
+
+def test_A植入_用过的章节不再用_跳过的章节不用():
+    chapters = _talk_chapters(8)
+    used = {1, 2, 3}
+    got = plant_deaths(chapters, random.Random(2), n=2, characters=CHARS, used=used, skip={8})
+    for p in got:
+        assert not set(p["chapters"]) & {1, 2, 3, 8}
+    assert len(used) == 3 + 2 * len(got)  # 用过的会记进 used
+
+
+def test_A植入_没人物名单不植():
+    assert plant_deaths(_talk_chapters(4), random.Random(1), n=3, characters=[], used=set()) == []
