@@ -585,3 +585,43 @@ def test_A植入_用过的章节不再用_跳过的章节不用():
 
 def test_A植入_没人物名单不植():
     assert plant_deaths(_talk_chapters(4), random.Random(1), n=3, characters=[], used=set()) == []
+
+
+# --------------------------------------------------------------------------------------
+# Task 18: 乱稿工具——C 类植入 + 接进 scramble / CLI
+# --------------------------------------------------------------------------------------
+
+from tools.scramble import plant_foreknowledge  # noqa: E402
+
+
+def test_C植入_在事件章之前某章插回忆_答案记两章():
+    chapters = _talk_chapters(8)
+    events = [{"chapter": 6, "who": "岑秀", "event": "比箭連中三箭"}]
+    got = plant_foreknowledge(chapters, random.Random(1), n=1, events=events, used=set())
+    p = got[0]
+    a, b = p["chapters"]
+    assert p["kind"] == "C" and a < b == 6
+    assert "岑秀想起那日比箭連中三箭之事。" in {c.num: c.body for c in chapters}[a]
+
+
+def test_C植入_事件章被占用或跳过就换一条():
+    chapters = _talk_chapters(8)
+    events = [{"chapter": 6, "who": "岑秀", "event": "甲"}, {"chapter": 7, "who": "岑秀", "event": "乙"}]
+    got = plant_foreknowledge(chapters, random.Random(1), n=2, events=events, used={6})
+    assert [p["event"] for p in got] == ["乙"]
+
+
+def test_scramble_答案里带timeline(tmp_path):
+    """接进 scramble()：--deaths / --foreknowledge 植入的记在答案的 timeline 里。"""
+    from tools.scramble import scramble
+    chapters = _talk_chapters(20)
+    key = scramble(chapters, tmp_path / "out", 7, aliases=[], n_delete=1, n_truncate=1, n_full=1, n_excerpt=1,
+                   n_deaths=1, n_foreknowledge=1, characters=CHARS,
+                   events=[{"chapter": 15, "who": "岑秀", "event": "比箭"}])
+    kinds = sorted(p["kind"] for p in key["timeline"])
+    # seed=7 这套材料实测两类都能植上（9-28 扫了 seed 0-49，只有少数几个种子因为删章/截断
+    # 刚好吃掉事件章而只剩一种），断言收紧成 == ["A", "C"]，比原计划写宽的三选一更能测出东西。
+    assert kinds == ["A", "C"]
+    assert all(set(p["chapters"]).isdisjoint(key["deleted"]) for p in key["timeline"])
+
+

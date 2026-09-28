@@ -370,6 +370,35 @@ def plant_deaths(chapters: list[Chapter], rng: random.Random, n: int,
     return sorted(planted, key=lambda p: p["chapters"])
 
 
+def plant_foreknowledge(chapters: list[Chapter], rng: random.Random, n: int,
+                        events: list[dict] | None, used: set[int], skip: set[int] | None = None) -> list[dict]:
+    """时间线检查验收用（C 类）：事件清单里每条是「第 b 章 who 做了 event」。挑 b 之前、who 出现过的
+    一章 a，插「{who}想起那日{event}之事。」——a 章里提前知道了 b 章才发生的事。
+    事件清单手写（程序编不出像样的事件），放 data/，不进仓库。"""
+    if n <= 0 or not events:
+        return []
+    skipped = set(skip or ())
+    have = {c.num for c in chapters}
+    pool = [e for e in events if e.get("chapter") in have]
+    rng.shuffle(pool)
+    planted = []
+    for e in pool:
+        if len(planted) >= n:
+            break
+        b = e["chapter"]
+        if b in used or b in skipped:
+            continue
+        before = [c for c in chapters if c.num < b and c.num not in used and c.num not in skipped and e["who"] in c.body]
+        if not before:
+            continue
+        a = rng.choice(before)
+        cut = _sentence_end(a.body, a.body.find(e["who"]))
+        a.body = a.body[:cut] + f"{e['who']}想起那日{e['event']}之事。" + a.body[cut:]
+        used |= {a.num, b}
+        planted.append({"kind": "C", "who": e["who"], "event": e["event"], "chapters": [a.num, b]})
+    return sorted(planted, key=lambda p: p["chapters"])
+
+
 class NameGen:
     def __init__(self, rng: random.Random):
         self.rng = rng
@@ -415,6 +444,9 @@ def scramble(
     alias_chapters: int = 15,
     n_contradictions: int = 0,
     characters: list[dict] | None = None,
+    n_deaths: int = 0,
+    n_foreknowledge: int = 0,
+    events: list[dict] | None = None,
 ) -> dict:
     rng = random.Random(seed)
     source_text = "\n".join(f"{c.heading}\n{c.body}" for c in chapters)
@@ -445,6 +477,12 @@ def scramble(
     contradictions = plant_contradictions(kept, rng, n_contradictions,
                                            characters=characters, skip=set(truncated),
                                            avoid={a["replaces"] for a in aliases})
+
+    # 时间线植入：跟年龄矛盾不抢章节（年龄矛盾占用的章节先记进 used），同样排掉会被截断的章节
+    used = {ch for p in contradictions for ch in p["chapters"]}
+    timeline = plant_deaths(kept, rng, n_deaths, characters, used, skip=set(truncated),
+                            avoid={a["replaces"] for a in aliases})
+    timeline += plant_foreknowledge(kept, rng, n_foreknowledge, events, used, skip=set(truncated))
 
     # 先把截断做完：别名要挑「截断之后的正文里真的还有这个词」的章节，不然会挑到
     # 词恰好被切掉了的章节，答案里写着有别名、实际打开文件搜不到（空跑）。
@@ -529,6 +567,7 @@ def scramble(
         "aliases": alias_log,
         "files": files,
         "contradictions": contradictions,
+        "timeline": timeline,
     }
 
 
@@ -541,6 +580,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--characters", help="JSON 文件：人物名单，每条有 canonical / names；--contradictions 要用它当植入矛盾的主语，不给就一处也不植入")
     ap.add_argument("--contradictions", type=int, default=0,
                      help="植入 N 处人造矛盾（年龄/兵器/外貌类锚点），默认 0 不植入")
+    ap.add_argument("--deaths", type=int, default=0, help="植入 N 处「前一章死、后一章说话」（时间线检查验收用，要 --characters）")
+    ap.add_argument("--foreknowledge", type=int, default=0, help="植入 N 处「提前回忆后面的事」（要 --events）")
+    ap.add_argument("--events", help="JSON 文件：事件清单，每条 chapter / who / event")
     ap.add_argument("--n-delete", type=int, default=5)
     ap.add_argument("--n-truncate", type=int, default=5)
     ap.add_argument("--n-full", type=int, default=10)
@@ -553,15 +595,17 @@ def main(argv: list[str] | None = None) -> None:
     chapters = parse_chapters(strip_gutenberg(raw))
     aliases = json.loads(Path(args.aliases).read_text(encoding="utf-8")) if args.aliases else DEFAULT_ALIASES
     characters = json.loads(Path(args.characters).read_text(encoding="utf-8")) if args.characters else None
+    events = json.loads(Path(args.events).read_text(encoding="utf-8")) if args.events else None
     key = scramble(chapters, out, args.seed, aliases=aliases, n_delete=args.n_delete,
                    n_truncate=args.n_truncate, n_full=args.n_full, n_excerpt=args.n_excerpt,
-                   n_contradictions=args.contradictions, characters=characters)
+                   n_contradictions=args.contradictions, characters=characters,
+                   n_deaths=args.deaths, n_foreknowledge=args.foreknowledge, events=events)
     key_path = out.parent / f"{out.name}-答案.json"
     key_path.write_text(json.dumps(key, ensure_ascii=False, indent=2), encoding="utf-8")
     print(
         f"chapters={len(chapters)} files={len(key['files'])} "
         f"deleted={len(key['deleted'])} variants={len(key['variants'])} "
-        f"contradictions={len(key['contradictions'])}"
+        f"contradictions={len(key['contradictions'])} timeline={len(key['timeline'])}"
     )
 
 
