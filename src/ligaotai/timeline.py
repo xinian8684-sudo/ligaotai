@@ -83,3 +83,36 @@ def death_suspects(seq: list[str], pos: dict[str, int], cards: dict, cmap: dict)
         capped += max(0, len(later) - MAX_LATER)
         out += [{"who": who, "death": dsid, "death_quote": quote, "later": s} for s in later[:MAX_LATER]]
     return out, capped
+
+
+MAX_CANDIDATES = 8  # C 类每条回指最多给模型几个候选场景
+
+
+def ref_suspects(seq: list[str], pos: dict[str, int], cards: dict, cmap: dict,
+                 line_of: dict[str, str]) -> tuple[list[dict], int, int]:
+    """(要问模型的回指, 没有候选的回指数, 候选全在前面、不用问的回指数)。
+    要问的 = {scene, ref, candidates}。候选：跟回指所在场有共同人物的其他场景，
+    按 (共同人物数 降序, 不同线排后, 跟回指场的距离, 位置) 排，取前 MAX_CANDIDATES 个。"""
+    people = {s: persons_of(_card(cards, s), cmap) for s in seq}
+    asks, no_cand, no_later = [], 0, 0
+    for sid in seq:
+        refs = [r.strip() for r in _card(cards, sid).get("refs_elsewhere") or [] if isinstance(r, str) and r.strip()]
+        if not refs:
+            continue
+        mine = people[sid]
+        scored = []
+        for o in seq:
+            if o == sid:
+                continue
+            k = len(mine & people[o])
+            if k:
+                scored.append((-k, line_of.get(o) != line_of.get(sid), abs(pos[o] - pos[sid]), pos[o], o))
+        cands = [x[-1] for x in sorted(scored)[:MAX_CANDIDATES]]
+        for r in refs:
+            if not cands:
+                no_cand += 1
+            elif all(pos[c] < pos[sid] for c in cands):
+                no_later += 1
+            else:
+                asks.append({"scene": sid, "ref": r, "candidates": cands})
+    return asks, no_cand, no_later

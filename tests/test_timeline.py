@@ -99,3 +99,50 @@ def test_A嫌疑_死亡场不在故事顺序里就不查():
     pos = {"S-0002": 0}
     cards = _cards({"S-0001": (["甲"], [("甲", "生死", "已死", "q")]), "S-0002": (["甲"], [])})
     assert death_suspects(seq, pos, cards, {}) == ([], 0)
+
+
+from ligaotai.timeline import ref_suspects
+
+
+def _rcards(spec):
+    """spec: {sid: (persons, refs, summary)}"""
+    return {s: {"id": s, "card": {"characters": [{"name": n} for n in p], "facts": [],
+                                  "refs_elsewhere": list(r), "summary": sm}}
+            for s, (p, r, sm) in spec.items()}
+
+
+def test_C嫌疑_候选按共同人物数排_同分同线优先_只问候选里有排在后面的():
+    seq = ["S-0001", "S-0002", "S-0003", "S-0004", "S-0005"]
+    pos = {s: i for i, s in enumerate(seq)}
+    line = {"S-0001": "L-001", "S-0002": "L-001", "S-0003": "L-002", "S-0004": "L-001", "S-0005": "L-002"}
+    cards = _rcards({
+        "S-0001": (["甲"], [], "一"),
+        "S-0002": (["甲", "乙"], ["那日比箭之事"], "二"),
+        "S-0003": (["甲", "乙"], [], "三"),
+        "S-0004": (["甲"], [], "四"),
+        "S-0005": (["丙"], ["只有丙"], "五"),  # 没有共同人物的候选 → 跳过
+    })
+    asks, no_cand, no_later = ref_suspects(seq, pos, cards, {}, line)
+    assert len(asks) == 1
+    a = asks[0]
+    assert (a["scene"], a["ref"]) == ("S-0002", "那日比箭之事")
+    # S-0003 共同人物 2 个排第一；S-0001、S-0004 各 1 个，同线（L-001）都同线，按跟 S-0002 的距离：S-0001、S-0004 都距 1，再按位置
+    assert a["candidates"] == ["S-0003", "S-0001", "S-0004"]
+    assert (no_cand, no_later) == (1, 0)
+
+
+def test_C嫌疑_候选全在前面的不问():
+    seq = ["S-0001", "S-0002"]
+    pos = {"S-0001": 0, "S-0002": 1}
+    cards = _rcards({"S-0001": (["甲"], [], "一"), "S-0002": (["甲"], ["前事"], "二")})
+    asks, no_cand, no_later = ref_suspects(seq, pos, cards, {}, {})
+    assert asks == [] and (no_cand, no_later) == (0, 1)
+
+
+def test_C嫌疑_候选最多8个():
+    seq = [f"S-{i:04d}" for i in range(1, 13)]
+    pos = {s: i for i, s in enumerate(seq)}
+    spec = {s: (["甲"], [], s) for s in seq}
+    spec["S-0001"] = (["甲"], ["某事"], "一")
+    asks, _, _ = ref_suspects(seq, pos, _rcards(spec), {}, {})
+    assert len(asks[0]["candidates"]) == 8
