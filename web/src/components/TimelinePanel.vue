@@ -83,7 +83,10 @@ onUnmounted(() => {
       要先跑完归线（步骤 6）。查出来的不一定是写错了，也可能是故事顺序排错了，每条你来定。
     </p>
     <template v-else-if="data">
-      <p v-if="data.stale" class="warn" data-test="时间线过期">顺序或场景卡变了，下面的结果可能过时，建议重新检查。</p>
+      <p v-if="data.stale" class="warn" data-test="时间线过期">
+        顺序或场景卡变了，下面的结果可能过时，建议重新检查。
+        <template v-if="data.stale_reason">（{{ data.stale_reason }}）</template>
+      </p>
       <p v-if="data.failed?.length" class="warn">有 {{ data.failed.length }} 批模型没给出结果，那些嫌疑按「说不准」列出来了。</p>
       <p class="stats" data-test="时间线统计">
         待看 {{ 统计.待看 }} · 写错了 {{ 统计.写错 }} · 排错了 {{ 统计.排错 }} · 已忽略 {{ 统计.忽略 }}

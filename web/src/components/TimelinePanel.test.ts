@@ -79,6 +79,13 @@ describe('TimelinePanel', () => {
     expect(w.text()).toContain('1 批模型没给出结果')
   })
 
+  it('过期原因：上游文件读不了时显示 stale_reason', async () => {
+    vi.spyOn(api, 'getTimeline').mockResolvedValue(造({ stale: true, stale_reason: '场景文件读不了：S-0001.md（……）' }))
+    const w = mount(TimelinePanel, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    expect(w.find('[data-test="时间线过期"]').text()).toContain('场景文件读不了：S-0001.md')
+  })
+
   it('任务进行中按钮禁用', async () => {
     vi.spyOn(api, 'getTimeline').mockResolvedValue(造())
     vi.spyOn(api, 'runTimeline').mockResolvedValue(job)

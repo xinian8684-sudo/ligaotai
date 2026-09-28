@@ -451,6 +451,8 @@ export interface TimelineFile {
   conflicts: TimelineConflict[]
   never_run: boolean
   stale: boolean
+  /** 只在 stale 是算指纹时上游文件（归线/场景/实体）读不了才有，说明是哪个文件读不了。 */
+  stale_reason?: string
   stats?: { placed: number; unplaced: number; a_suspects: number; a_capped: number; refs_asked: number; refs_no_candidate: number; refs_all_before: number }
   failed?: { call: string; error: string }[]
 }
