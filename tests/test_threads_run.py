@@ -63,10 +63,10 @@ def test_run_threads_end_to_end(seeded):
     assert data["unassigned"] == [{"scene": "S-0006", "reason": NO_CARD}]
     assert data["pending"] == [] and data["gaps"] == [] and data["intersections"] == []
     assert (data["next_world"], data["next_thread"]) == (2, 2)
-    assert c.usage.calls == 6  # 划世界、划支线、排序 3 遍（threads_order_passes 默认 3）、找缺口；只有一条线，不用对齐
+    assert c.usage.calls == 8  # 划世界、划支线、排序 5 遍（threads_order_passes 默认 5）、找缺口；只有一条线，不用对齐
     assert summary["threads"] == 1 and summary["unassigned"] == 1 and summary["not_written"] is False
     assert seeded.step("threads")["status"] == "done"
-    assert seeded.load()["usage"]["by_step"]["threads"]["calls"] == 6  # 排序排 3 遍
+    assert seeded.load()["usage"]["by_step"]["threads"]["calls"] == 8  # 排序排 5 遍
 
 
 def test_rerun_uses_the_cache(seeded):
@@ -84,7 +84,7 @@ def test_ids_stay_the_same_when_rerun_without_cache(seeded):
     c = client(seeded)
     run_threads(seeded, c)
     data = result(seeded)
-    assert c.usage.calls == 6  # 排序排 3 遍
+    assert c.usage.calls == 8  # 排序排 5 遍
     assert [w["id"] for w in data["worlds"]] == ["W-01"] and [t["id"] for t in data["threads"]] == ["L-001"]
     assert (data["next_world"], data["next_thread"]) == (2, 2)
 
@@ -322,7 +322,7 @@ def test_pause_then_rerun_uses_the_cache(seeded):
         run_threads(seeded, c1, progress)
     c2 = client(seeded)
     run_threads(seeded, c2)
-    assert (c1.usage.calls, c2.usage.calls) == (1, 5)  # 第二次：划支线 + 排序 3 遍 + 找缺口
+    assert (c1.usage.calls, c2.usage.calls) == (1, 7)  # 第二次：划支线 + 排序 5 遍 + 找缺口
 
 
 def test_same_time_intersection_anchors_the_sub_thread(seeded):
