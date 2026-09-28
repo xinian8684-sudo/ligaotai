@@ -426,10 +426,15 @@ def test_C类模型答的候选在回指场之前_不报冲突(book):
 
 
 def test_A类摘录按别名也能在原文里找到(book):
+    # 别名「劉公道」故意放在 40 字以外——不用别名查、退回「开头 40 字」兜底的话，
+    # 巧合也会把它包进去，测不出真的在用别名；这里前面垫够长度，只有真的按别名在
+    # 全文里找才能命中。
     from helpers import seed_book
+    later_text = "話說" + "。".join(f"閒話{i}" for i in range(20)) + "。劉公道：我回來了。"
+    assert len(later_text[:40]) < later_text.index("劉公道")  # 自检：确实排在 40 字之外
     seed_book(book, [
         {"id": "S-0002", "persons": ["劉芳"], "text": "劉芳已死了。"},
-        {"id": "S-0004", "persons": ["劉公"], "text": "劉公道：我回來了。"},
+        {"id": "S-0004", "persons": ["劉公"], "text": later_text},
     ], entities=[("person", "劉芳", ["劉芳", "劉公"])])
     from ligaotai.cards import card_path
     rec = read_json(card_path(book, "S-0002"))
