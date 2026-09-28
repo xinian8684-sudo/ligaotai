@@ -184,3 +184,33 @@ async def _run(book: Book, client: LLMClient, progress: Progress) -> dict:
                   "failed": list(caller.failed)}
         write_json(book.timeline_path, result)
     return {"ok": True, "conflicts": len(result["conflicts"]), "failed": len(caller.failed)}
+
+
+VERDICT_KINDS = ("author_error", "order_error", "ignore")
+
+
+def load_timeline(book: Book) -> dict:
+    """GET 用：结果文件 + never_run + stale（输入指纹对不上）。文件坏了抛 ValueError，接口层报 500。"""
+    if not book.timeline_path.exists():
+        return {"conflicts": [], "never_run": True, "stale": False}
+    data = read_json(book.timeline_path, {})
+    if not isinstance(data, dict):
+        raise ValueError("时间冲突.json 不是一个 json 对象，多半被手改坏了")
+    try:
+        stale = data.get("fingerprint") != tl.input_fingerprint(book)
+    except FileNotFoundError:
+        stale = True  # 归线结果没了
+    return {**data, "never_run": False, "stale": stale}
+
+
+def set_timeline_verdict(book: Book, tid: str, kind: str | None) -> dict:
+    if kind is not None and kind not in VERDICT_KINDS:
+        raise ValueError("裁决只能是：" + " / ".join(VERDICT_KINDS))
+    with FILE_LOCK:
+        data = read_json(book.timeline_path, {})
+        for c in data.get("conflicts") or []:
+            if isinstance(c, dict) and c.get("id") == tid:
+                c["verdict"] = None if kind is None else {"kind": kind, "at": now_iso()}
+                write_json(book.timeline_path, data)
+                return c
+    raise KeyError(tid)

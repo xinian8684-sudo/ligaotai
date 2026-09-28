@@ -1,10 +1,21 @@
 import json
 
+import pytest
+
 from helpers import FakeBackend
 from ligaotai.config import AppConfig
 from ligaotai.fsutil import read_json, write_json
 from ligaotai.llm import LLMClient
-from ligaotai.timeline_run import check_death, check_refs, clean_death, clean_refs, run_timeline
+from ligaotai.timeline_run import (
+    VERDICT_KINDS,
+    check_death,
+    check_refs,
+    clean_death,
+    clean_refs,
+    load_timeline,
+    run_timeline,
+    set_timeline_verdict,
+)
 
 
 def test_A输出检查():
@@ -129,3 +140,32 @@ def test_一批调用失败_记进failed_不崩(book):
     # 失败批次里的 A 嫌疑按「说不准」报出来（宁可多报），不静默丢
     assert [c["kind"] for c in data["conflicts"]] == ["A", "C"]
     assert data["conflicts"][0]["status"] == "说不准"
+
+
+def test_读结果_没跑过返回空_跑过带stale(book):
+    b = _book(book)
+    assert load_timeline(b) == {"conflicts": [], "never_run": True, "stale": False}
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=_handler), log_dir=b.logs_dir))
+    d = load_timeline(b)
+    assert d["stale"] is False and d["never_run"] is False
+    # 故事顺序按时间值排，只改 scenes 的排列不会让顺序变；改一张卡的回指，指纹一定变
+    from ligaotai.cards import card_path
+    rec = read_json(card_path(b, "S-0001"))
+    rec["card"]["refs_elsewhere"] = ["另一件事"]
+    write_json(card_path(b, "S-0001"), rec)
+    assert load_timeline(b)["stale"] is True
+
+
+def test_裁决_设置_改_撤销_没有这条报KeyError_类型不对报ValueError(book):
+    b = _book(book)
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=_handler), log_dir=b.logs_dir))
+    c = set_timeline_verdict(b, "T-001", "author_error")
+    assert c["verdict"]["kind"] == "author_error"
+    assert set_timeline_verdict(b, "T-001", "ignore")["verdict"]["kind"] == "ignore"
+    assert set_timeline_verdict(b, "T-001", None)["verdict"] is None
+    assert read_json(b.timeline_path)["conflicts"][0]["verdict"] is None
+    with pytest.raises(KeyError):
+        set_timeline_verdict(b, "T-099", "ignore")
+    with pytest.raises(ValueError):
+        set_timeline_verdict(b, "T-001", "随便")
+    assert VERDICT_KINDS == ("author_error", "order_error", "ignore")
