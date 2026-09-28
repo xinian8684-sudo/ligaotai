@@ -128,9 +128,64 @@ def export_book(book: Book) -> dict:
     return {"md": rel(md_path), "txt": rel(txt_path), "docx": rel(docx_path), "epub": rel(epub_path), **counts}
 
 
+_SENT_END = set("。！？」』”…）)!?.：:；;﹔—")
+_NO_START = set("。，、；：」』！？）﹔")
+
+
 def _paras(text: str) -> list[str]:
-    """场景正文按行拆成段落，空行丢掉。"""
-    return [ln.strip() for ln in text.splitlines() if ln.strip()]
+    """场景正文拆成段落（docx / epub 用；md / txt 照原文不动）。空行永远是段落分隔。
+
+    稿子常是硬换行的（验收书就是，9-28 截图看到一句话被拆成两段），但折法不一样：西游记按固定
+    宽度折，雪月梅长短行交替（44 字、20 字轮着来）、段首有「　　」缩进，西游记的诗词中间也有
+    「　　」。猜哪条规则适用不靠谱，于是三种分法都算一遍，挑毛病最少的：
+    - 一行一段；
+    - 按宽度接：贴满最长行宽度的行跟下一行接上；
+    - 按缩进接：缩进的行开新段，不缩进的行接到上一段。
+    毛病＝句子被拆开（段尾不是句末标点）＋在句末标点后面硬接（把两段并成了一段）。
+    只数前一种的话「全书并成一段」是满分，所以两头都数。"""
+    raw = text.splitlines()
+    lines = [ln.strip() for ln in raw]
+    lens = sorted(len(ln) for ln in lines if ln)
+    if not lens:
+        return []
+    indented = [bool(ln) and r[:2] in ("　　", "  ") for ln, r in zip(lines, raw)]
+    width = lens[-1]
+
+    def build(joins) -> tuple[int, list[str]]:
+        out: list[str] = []
+        bad = 0
+        joining = False
+        for i, ln in enumerate(lines):
+            if not ln:
+                joining = False
+                continue
+            if out and ln[0] in _NO_START:  # 中文不会拿「。」「，」开一段：隔着空行也接回去
+                out[-1] += ln
+            elif joining and joins(i, ln):
+                prev = out[-1]
+                bad += prev[-1] in _SENT_END
+                gap = " " if prev[-1].isascii() and prev[-1].isalnum() and ln[0].isascii() and ln[0].isalnum() else ""
+                out[-1] = prev + gap + ln
+            else:
+                out.append(ln)
+            joining = True
+        bad += sum(p[-1] not in _SENT_END for p in out[:-1])
+        return bad, out
+
+    options = [build(lambda i, ln: False)]
+    if width >= 16:  # 再短的「宽度」多半只是几行短句
+        options.append(build(lambda i, ln: len(lines[_prev(lines, i)]) >= width * 0.9))
+    if sum(indented) >= 2:
+        options.append(build(lambda i, ln: not indented[i]))
+    return min(options, key=lambda o: o[0])[1]  # 平手取靠前的（越靠前越保守）
+
+
+def _prev(lines: list[str], i: int) -> int:
+    """i 前面最近一个非空行的下标（build 只在「前面接着有行」时才问，一定找得到）。"""
+    j = i - 1
+    while not lines[j]:
+        j -= 1
+    return j
 
 
 def _write_docx(path: Path, title: str, nodes: list[tuple[str, str]]) -> None:

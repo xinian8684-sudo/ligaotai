@@ -100,6 +100,43 @@ def test_导出docx_场景里的换行分成段落(book_with_threads):
     assert texts[texts.index("第一段。"):texts.index("第一段。") + 3] == ["第一段。", "第二段。", "第三段。"]
 
 
+def test_分段_硬换行的正文把折行接回去():
+    """验收书原文是固定宽度硬换行的，一行当一段会把一句话拆成两段（9-28 真书截图看到）。
+    贴满宽度的行跟下一行接上，没贴满的才是段落结尾；标题行短，自成一段。"""
+    from ligaotai.export import _paras
+    w = "甲" * 20
+    text = chr(10).join(["第四回 标题", w, w, "乙乙乙。", w, "丙丙。」"])
+    assert _paras(text) == ["第四回 标题", w + w + "乙乙乙。", w + "丙丙。」"]
+
+
+def test_分段_不是硬换行的正文一行一段():
+    from ligaotai.export import _paras
+    text = chr(10).join(["短的一段。", "另一段长一点点的内容。", "", "第三段。"])
+    assert _paras(text) == ["短的一段。", "另一段长一点点的内容。", "第三段。"]
+
+
+def test_分段_段首有缩进的稿子按缩进分段():
+    """雪月梅那种长短行交替的折行，宽度判断不管用；但段首都有「　　」缩进，按缩进分最稳。"""
+    from ligaotai.export import _paras
+    ind = chr(0x3000) * 2
+    text = chr(10).join(["第一回 标题", "", ind + "卻說為人在世，所以這天、", "地、君、親、師的大恩，", "心，思所報答。",
+                         ind + "第二段開頭，", "接著寫完。"])
+    assert _paras(text) == ["第一回 标题", "卻說為人在世，所以這天、地、君、親、師的大恩，心，思所報答。", "第二段開頭，接著寫完。"]
+
+
+def test_分段_以句读标点开头的行隔着空行也接回上一段():
+    from ligaotai.export import _paras
+    text = chr(10).join(["他說道：「好", "", "。」眾人都笑了。"])
+    assert _paras(text) == ["他說道：「好。」眾人都笑了。"]
+
+
+def test_分段_英文折行接回去时补空格():
+    from ligaotai.export import _paras
+    a = "a" * 39 + "b"
+    text = chr(10).join([a, a, "end."])
+    assert _paras(text) == [a + " " + a + " end."]
+
+
 def _epub(b):
     z = zipfile.ZipFile(export_path(b, "epub"))
     return z, {n: z.read(n).decode("utf-8") for n in z.namelist()}
