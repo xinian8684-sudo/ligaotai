@@ -22,3 +22,24 @@ def story_order(book: Book) -> tuple[list[str], dict[str, int], int]:
     seq, unplaced = build_sequence(threads, {}, removed, vmap)
     ids = [x["id"] for x in seq]
     return ids, {s: i for i, s in enumerate(ids)}, len(unplaced)
+
+
+# 死亡词：值里出现就算死了（「亲属」这类属性说的是别人，不看）
+DEATH_WORDS = ("死", "亡", "殁", "歿", "卒", "身故", "病故", "已故", "归天", "歸天", "逝",
+               "阵亡", "陣亡", "斩", "斬", "枭首", "梟首", "丧命", "喪命", "殒命", "殞命",
+               "去世", "坐化")
+# 值里出现这些就不算（免死、被抓、只是差点死、说的是别的意思）
+NOT_DEATH = ("免死", "未死", "不死", "没死", "沒死", "幾乎", "几乎", "险些", "險些", "差点", "差點",
+             "被擒", "监禁", "監禁", "车囚", "車囚", "丁艱", "丁艰", "生还", "生還", "得救",
+             "亡命", "视死", "視死", "死战", "死戰", "死守")
+DEATH_ATTRS = ("生死", "身份", "其他", "伤病", "結局", "结局")
+
+
+def is_death(attribute: str, value: str) -> bool:
+    """这条 fact 说的是不是「主语死了」。只负责缩小范围：拿不准的放进来，模型后面还要判。"""
+    a, v = (attribute or "").strip(), (value or "").strip()
+    if a not in DEATH_ATTRS or not v:
+        return False
+    if any(w in v for w in NOT_DEATH):
+        return False
+    return any(w in v for w in DEATH_WORDS)
