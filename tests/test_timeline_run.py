@@ -8,6 +8,9 @@ from ligaotai.fsutil import read_json, write_json
 from ligaotai.llm import LLMClient
 from ligaotai.timeline_run import (
     VERDICT_KINDS,
+    BrokenTimelineFile,
+    _group_batches,
+    _line_of,
     check_death,
     check_refs,
     clean_death,
@@ -52,6 +55,26 @@ def test_C输出检查_happens_in只能是这条自己的候选或null():
 def test_C清理_不合法的当null():
     got = clean_refs({"items": [{"id": "C-01", "happens_in": "S-0009", "reason": "r"}]}, {"C-01": ["S-0001"], "C-02": ["S-0002"]})
     assert got == {"C-01": {"happens_in": None, "reason": "r"}, "C-02": {"happens_in": None, "reason": ""}}
+
+
+def test_A模型输出畸形_检查和清理都不抛异常():
+    ids = {"A-01", "A-02"}
+    malformed = {"items": [{"id": "A-01", "status": ["在场"], "reason": 123}, "garbage", None, 42]}
+    probs = check_death(malformed, ids)
+    assert isinstance(probs, list) and probs
+    cleaned = clean_death(malformed, ids)
+    assert cleaned["A-01"]["status"] == "说不准"  # status 不是字符串、不在枚举里，退回默认
+    assert cleaned["A-02"]["status"] == "说不准"  # 没答的
+
+
+def test_C模型输出畸形_检查和清理都不抛异常():
+    cands = {"C-01": ["S-0001"], "C-02": ["S-0002"]}
+    malformed = {"items": [{"id": "C-01", "happens_in": ["S-0001"], "reason": 1}, "garbage", None, 42]}
+    probs = check_refs(malformed, cands)
+    assert isinstance(probs, list) and probs
+    cleaned = clean_refs(malformed, cands)
+    assert cleaned["C-01"]["happens_in"] is None
+    assert cleaned["C-02"]["happens_in"] is None
 
 
 def _book(book):
@@ -171,3 +194,272 @@ def test_裁决_设置_改_撤销_没有这条报KeyError_类型不对报ValueEr
     with pytest.raises(ValueError):
         set_timeline_verdict(b, "T-001", "随便")
     assert VERDICT_KINDS == ("author_error", "order_error", "ignore")
+
+
+# ---------- 审 F1 修复清单：必须修 1-4 ----------
+
+def test_结果文件坏了重跑_先备份再当空(book):
+    b = _book(book)
+    b.timeline_path.write_text("{bad json", encoding="utf-8")
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=_handler), log_dir=b.logs_dir))
+    backups = list(b.root.glob("时间冲突.损坏备份-*.json"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "{bad json"
+    data = read_json(b.timeline_path)
+    assert data["conflicts"][0]["id"] == "T-001"  # 当空处理，没有可沿用的旧编号
+
+
+def test_场景文件缺失_不崩_退回卡片摘要_记进text_missing(book):
+    b = _book(book)
+    from ligaotai.scenes import scene_path
+    scene_path(b, "S-0004").unlink()
+    summary = run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=_handler), log_dir=b.logs_dir))
+    assert summary["ok"] is True
+    data = read_json(b.timeline_path)
+    assert [c["kind"] for c in data["conflicts"]] == ["A", "C"]  # A 类那条冲突照样报出来了
+    assert data["stats"]["text_missing"] >= 1
+
+
+def test_读结果_归线文件坏了_stale带原因(book):
+    b = _book(book)
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=_handler), log_dir=b.logs_dir))
+    b.threads_path.write_text("{bad", encoding="utf-8")
+    d = load_timeline(b)
+    assert d["stale"] is True
+    assert "支线" in d["stale_reason"]
+
+
+def test_读结果_场景文件坏了_stale带原因(book):
+    b = _book(book)
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=_handler), log_dir=b.logs_dir))
+    from ligaotai.scenes import scene_path
+    scene_path(b, "S-0001").write_text("坏的场景文件", encoding="utf-8")
+    d = load_timeline(b)
+    assert d["stale"] is True
+    assert "场景" in d["stale_reason"]
+
+
+def test_读结果_实体文件坏了_stale带原因(book):
+    b = _book(book)
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=_handler), log_dir=b.logs_dir))
+    b.entities_path.write_text("{bad", encoding="utf-8")
+    d = load_timeline(b)
+    assert d["stale"] is True
+    assert "实体" in d["stale_reason"]
+
+
+def test_裁决_时间冲突json坏了报BrokenTimelineFile_不是ValueError(book):
+    b = _book(book)
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=_handler), log_dir=b.logs_dir))
+    b.timeline_path.write_text("{bad", encoding="utf-8")
+    with pytest.raises(BrokenTimelineFile):
+        set_timeline_verdict(b, "T-001", "ignore")
+
+
+def test_裁决_时间冲突json不是字典报BrokenTimelineFile(book):
+    b = _book(book)
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=_handler), log_dir=b.logs_dir))
+    write_json(b.timeline_path, [1])
+    with pytest.raises(BrokenTimelineFile):
+        set_timeline_verdict(b, "T-001", "ignore")
+
+
+def test_裁决_conflicts不是列表报BrokenTimelineFile(book):
+    b = _book(book)
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=_handler), log_dir=b.logs_dir))
+    write_json(b.timeline_path, {"conflicts": "坏了"})
+    with pytest.raises(BrokenTimelineFile):
+        set_timeline_verdict(b, "T-001", "ignore")
+
+
+# ---------- 建议修 7/8/9/10/12/14b ----------
+
+def test_分批不切开同一组_加一条新的只多一批不改老批次():
+    who_a = [{"who": "甲", "n": i} for i in range(3)]
+    who_b = [{"who": "乙", "n": i} for i in range(3)]
+    batches1 = _group_batches(who_a, lambda x: x["who"], 3)
+    assert batches1 == [who_a]
+    batches2 = _group_batches(who_a + who_b, lambda x: x["who"], 3)
+    assert batches2[0] == who_a  # 老批次原封不动，加的人只多出一批（who_a 正好凑满 size=3 才切）
+    assert batches2[1] == who_b
+
+
+def test_分批_单个组超过size也不切开():
+    items = [{"who": "甲", "n": i} for i in range(7)]
+    assert _group_batches(items, lambda x: x["who"], 5) == [items]
+
+
+def test_跑成功没失败_清掉这次没用到的旧缓存(book):
+    # 提前塞一条这次用不到的缓存条目（模拟上一轮留下的），这次全部真跑成功、没有失败，
+    # prune_cache() 该把它清掉。
+    b = _book(book)
+    write_json(b.timeline_cache_path, {"垃圾键": {"data": {}, "problems": []}})
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=_handler), log_dir=b.logs_dir))
+    assert "垃圾键" not in read_json(b.timeline_cache_path)
+
+
+def test_有失败批次不清缓存(book):
+    # 这次有批次真的失败了（A 类那批），prune_cache() 不该调用，垃圾条目原样留着。
+    from ligaotai.llm import LLMError
+    b = _book(book)
+    write_json(b.timeline_cache_path, {"垃圾键": {"data": {}, "problems": []}})
+
+    def h(tier, messages):
+        if "死了" in messages[0]["content"]:
+            return LLMError("坏了")
+        return _handler(tier, messages)
+
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=h), log_dir=b.logs_dir))
+    assert "垃圾键" in read_json(b.timeline_cache_path)
+
+
+def test_A判成记录不成立_不报冲突_记进dismissed带status(book):
+    b = _book(book)
+
+    def h(tier, messages):
+        if "死了" in messages[0]["content"]:
+            return json.dumps({"items": [{"id": "A-01", "status": "记录不成立", "reason": "只是传闻[S-0002]"}]}, ensure_ascii=False)
+        return json.dumps({"items": [{"id": "C-01", "happens_in": None, "reason": "都不是"}]}, ensure_ascii=False)
+
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=h), log_dir=b.logs_dir))
+    data = read_json(b.timeline_path)
+    assert data["conflicts"] == []
+    assert data["dismissed"] == [{"who": "甲", "scenes": ["S-0002", "S-0004"], "status": "记录不成立"}]
+
+
+def test_同场景重复回指原话只生成一条冲突(book):
+    b = _book(book)
+    from ligaotai.cards import card_path
+    rec = read_json(card_path(b, "S-0001"))
+    rec["card"]["refs_elsewhere"] = ["那日比箭之事", "那日比箭之事"]  # 重复
+    write_json(card_path(b, "S-0001"), rec)
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=_handler), log_dir=b.logs_dir))
+    data = read_json(b.timeline_path)
+    assert len([c for c in data["conflicts"] if c["kind"] == "C"]) == 1
+
+
+def test_C批次失败_asked_refs带failed_没有C类冲突(book):
+    from ligaotai.llm import LLMError
+    b = _book(book)
+
+    def h(tier, messages):
+        if "回指" in messages[0]["content"]:
+            return LLMError("坏了")
+        return _handler(tier, messages)
+
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=h), log_dir=b.logs_dir))
+    data = read_json(b.timeline_path)
+    assert [c["kind"] for c in data["conflicts"]] == ["A"]
+    assert data["asked_refs"][0]["failed"] is True
+    assert data["asked_refs"][0]["happens_in"] is None
+
+
+def test_C批次成功_asked_refs的failed是False(book):
+    b = _book(book)
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=_handler), log_dir=b.logs_dir))
+    data = read_json(b.timeline_path)
+    assert data["asked_refs"][0]["failed"] is False
+
+
+def test_C类冲突的quotes是回指原话加发生场摘要(book):
+    b = _book(book)
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=_handler), log_dir=b.logs_dir))
+    data = read_json(b.timeline_path)
+    c = next(c for c in data["conflicts"] if c["kind"] == "C")
+    assert c["quotes"] == ["那日比箭之事", "S-0003 摘要"]
+
+
+def test_候选摘要带上卡片的events(book):
+    b = _book(book)
+    from ligaotai.cards import card_path
+    rec = read_json(card_path(b, "S-0003"))
+    rec["card"]["events"] = ["乙丙约定明日再战"]
+    write_json(card_path(b, "S-0003"), rec)
+    captured = {}
+
+    def h(tier, messages):
+        if "回指" in messages[0]["content"]:
+            captured["user"] = messages[1]["content"]
+        return _handler(tier, messages)
+
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=h), log_dir=b.logs_dir))
+    assert "乙丙约定明日再战" in captured["user"]
+
+
+def test_line_of经过version_map换成当前主版本编号(book):
+    from helpers import seed_book
+    seed_book(book, [{"id": "S-0001", "text": "a"}, {"id": "S-0002", "text": "b"}],
+              groups=[("S-0002", ["S-0001", "S-0002"])])
+    write_json(book.threads_path, {"threads": [{"id": "L-001", "offset": 0, "scenes": ["S-0001"],
+        "times": {"S-0001": {"t": 0}}}], "worlds": [], "main_thread": "L-001", "global_order": [],
+        "unassigned": [], "pending": [], "gaps": [], "intersections": []})
+    # 线里存的是旧主版本 S-0001，line_of 的键要换成当前主版本 S-0002，不然跟 seq 里的编号对不上
+    assert _line_of(book) == {"S-0002": "L-001"}
+
+
+# ---------- 补测清单里跟 run 有关的几处 ----------
+
+def test_C类模型答的候选在回指场之前_不报冲突(book):
+    from helpers import seed_book
+    seed_book(book, [
+        {"id": "S-0000", "persons": ["乙", "丙"], "text": "乙丙很早以前的一场。"},
+        {"id": "S-0001", "persons": ["乙", "丙"], "refs": ["某事"], "text": "乙想起某事。"},
+        {"id": "S-0002", "persons": ["乙", "丙"], "text": "乙丙后来的一场。"},
+    ])
+    write_json(book.threads_path, {"threads": [{"id": "L-001", "offset": 0,
+        "scenes": ["S-0000", "S-0001", "S-0002"],
+        "times": {s: {"t": i} for i, s in enumerate(["S-0000", "S-0001", "S-0002"])}}],
+        "worlds": [], "main_thread": "L-001", "global_order": [], "unassigned": [], "pending": [],
+        "gaps": [], "intersections": []})
+
+    def h(tier, messages):
+        if "回指" in messages[0]["content"]:
+            return json.dumps({"items": [{"id": "C-01", "happens_in": "S-0000", "reason": "选了前面那场[S-0000]"}]},
+                              ensure_ascii=False)
+        raise AssertionError(messages[0]["content"][:30])
+
+    run_timeline(book, LLMClient(AppConfig(), FakeBackend(handler=h), log_dir=book.logs_dir))
+    data = read_json(book.timeline_path)
+    assert data["conflicts"] == []
+    assert data["asked_refs"][0]["candidates"] == ["S-0000", "S-0002"]
+    assert data["asked_refs"][0]["happens_in"] == "S-0000"
+
+
+def test_A类摘录按别名也能在原文里找到(book):
+    from helpers import seed_book
+    seed_book(book, [
+        {"id": "S-0002", "persons": ["劉芳"], "text": "劉芳已死了。"},
+        {"id": "S-0004", "persons": ["劉公"], "text": "劉公道：我回來了。"},
+    ], entities=[("person", "劉芳", ["劉芳", "劉公"])])
+    from ligaotai.cards import card_path
+    rec = read_json(card_path(book, "S-0002"))
+    rec["card"]["facts"] = [{"subject": "劉芳", "attribute": "生死", "value": "已死", "quote": "劉芳已死了"}]
+    write_json(card_path(book, "S-0002"), rec)
+    write_json(book.threads_path, {"threads": [{"id": "L-001", "offset": 0,
+        "scenes": ["S-0002", "S-0004"], "times": {"S-0002": {"t": 0}, "S-0004": {"t": 1}}}],
+        "worlds": [], "main_thread": "L-001", "global_order": [], "unassigned": [], "pending": [],
+        "gaps": [], "intersections": []})
+
+    def h(tier, messages):
+        if "死了" in messages[0]["content"]:
+            return json.dumps({"items": [{"id": "A-01", "status": "在场", "reason": "在说话[S-0004]"}]}, ensure_ascii=False)
+        return json.dumps({"items": []}, ensure_ascii=False)
+
+    run_timeline(book, LLMClient(AppConfig(), FakeBackend(handler=h), log_dir=book.logs_dir))
+    data = read_json(book.timeline_path)
+    assert "劉公道" in data["conflicts"][0]["quotes"][1]
+
+
+def test_stats的七个字段不是写死的0(book):
+    b = _book(book)
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=_handler), log_dir=b.logs_dir))
+    stats = read_json(b.timeline_path)["stats"]
+    assert stats["placed"] == 4
+    assert stats["unplaced"] == 0
+    assert stats["untracked"] == 0
+    assert stats["a_suspects"] == 1
+    assert stats["a_capped"] == 0
+    assert stats["refs_asked"] == 1
+    assert stats["refs_no_candidate"] == 0
+    assert stats["refs_all_before"] == 0
+    assert stats["text_missing"] == 0

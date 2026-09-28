@@ -65,3 +65,37 @@ def test_结果文件坏了报500带文件名(tmp_path):
     b.timeline_path.write_text("[1]", encoding="utf-8")
     r = c.get(f"{BOOK}/timeline")
     assert r.status_code == 500 and "时间冲突.json" in r.json()["detail"]
+
+
+def test_归线或场景或实体文件坏了_GET照常200带stale(tmp_path):
+    c = _client(tmp_path)
+    b = _ready(tmp_path)
+    _wait(c, c.post(f"{BOOK}/timeline/run"))
+
+    b.threads_path.write_text("{bad", encoding="utf-8")
+    d = c.get(f"{BOOK}/timeline")
+    assert d.status_code == 200 and d.json()["stale"] is True and "支线" in d.json()["stale_reason"]
+
+    b.threads_path.write_text(
+        '{"threads": [{"id": "L-001", "offset": 0, "scenes": ["S-0001", "S-0002", "S-0003", "S-0004"], '
+        '"times": {"S-0001": {"t": 0}, "S-0002": {"t": 1}, "S-0003": {"t": 2}, "S-0004": {"t": 3}}}], '
+        '"worlds": [], "main_thread": "L-001", "global_order": [], "unassigned": [], "pending": [], '
+        '"gaps": [], "intersections": []}', encoding="utf-8")  # 修回去，换成场景文件坏
+    from ligaotai.scenes import scene_path
+    scene_path(b, "S-0001").write_text("坏的场景文件", encoding="utf-8")
+    d = c.get(f"{BOOK}/timeline")
+    assert d.status_code == 200 and d.json()["stale"] is True and "场景" in d.json()["stale_reason"]
+
+
+def test_裁决_时间冲突json坏了或不是字典_报500带文件名(tmp_path):
+    c = _client(tmp_path)
+    b = _ready(tmp_path)
+    _wait(c, c.post(f"{BOOK}/timeline/run"))
+
+    b.timeline_path.write_text("{bad", encoding="utf-8")
+    r = c.put(f"{BOOK}/timeline/T-001/verdict", json={"kind": "ignore"})
+    assert r.status_code == 500 and "时间冲突.json" in r.json()["detail"]
+
+    b.timeline_path.write_text("[1]", encoding="utf-8")
+    r = c.put(f"{BOOK}/timeline/T-001/verdict", json={"kind": "ignore"})
+    assert r.status_code == 500 and "时间冲突.json" in r.json()["detail"]
