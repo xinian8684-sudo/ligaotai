@@ -160,3 +160,40 @@ def test_摘录_按任一叫法找_最多3处_前后带一点上下文_不重叠
 
 def test_摘录_找不到就给开头一段():
     assert name_snippets("完全沒有這個人的一段話。", ["甲"], width=4, limit=3) == ["完全沒有這個人的一段話。"[:40]]
+
+
+from ligaotai.timeline import assemble, conflict_sig
+
+
+def _c(kind, scenes, who=None, ref=None):
+    return {"kind": kind, "who": who, "ref": ref, "scenes": scenes, "pos": [0, 1], "quotes": ["a", "b"],
+            "reason": "r", "status": "在场" if kind == "A" else ""}
+
+
+def test_签名只看类型_两场_人名或回指():
+    a = conflict_sig(_c("A", ["S-0001", "S-0002"], who="甲"))
+    assert a == conflict_sig({**_c("A", ["S-0001", "S-0002"], who="甲"), "reason": "别的说法", "pos": [5, 9]})
+    assert a != conflict_sig(_c("A", ["S-0001", "S-0003"], who="甲"))
+    assert a != conflict_sig(_c("C", ["S-0001", "S-0002"], ref="甲"))
+
+
+def test_编号按签名沿用_新的接着编_裁决跟着签名走_消失的丢掉():
+    old = {"next_id": 3, "conflicts": [
+        {**_c("A", ["S-0001", "S-0002"], who="甲"), "id": "T-001",
+         "sig": conflict_sig(_c("A", ["S-0001", "S-0002"], who="甲")),
+         "verdict": {"kind": "order_error", "at": "x"}},
+        {**_c("C", ["S-0003", "S-0004"], ref="某事"), "id": "T-002",
+         "sig": conflict_sig(_c("C", ["S-0003", "S-0004"], ref="某事")),
+         "verdict": {"kind": "ignore", "at": "x"}},
+    ]}
+    new = [_c("C", ["S-0005", "S-0006"], ref="新事"), _c("A", ["S-0001", "S-0002"], who="甲")]
+    got = assemble(new, old)
+    assert [(c["id"], c["verdict"]) for c in got["conflicts"]] == [
+        ("T-003", None), ("T-001", {"kind": "order_error", "at": "x"})]
+    assert got["next_id"] == 4
+    assert {e["sig"]: e["id"] for e in got["id_registry"]}[conflict_sig(_c("C", ["S-0003", "S-0004"], ref="某事"))] == "T-002"
+
+
+def test_旧文件坏了当空的():
+    got = assemble([_c("A", ["S-0001", "S-0002"], who="甲")], {"conflicts": "坏了", "next_id": "x"})
+    assert got["conflicts"][0]["id"] == "T-001" and got["next_id"] == 2

@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 from .book import Book
 from .skeleton import scene_info
 from .skeleton_order import build_sequence
@@ -137,3 +139,39 @@ def name_snippets(text: str, names: list[str], width: int = 40, limit: int = 3) 
         if len(out) >= limit:
             break
     return out or [text[:40].replace("\n", " ")]
+
+
+def conflict_sig(c: dict) -> str:
+    key = "\x1f".join([c.get("kind") or "", c.get("who") or "", c.get("ref") or "", *(c.get("scenes") or [])])
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+
+
+def assemble(conflicts: list[dict], old: dict) -> dict:
+    """拼出 时间冲突.json 的 conflicts / next_id / id_registry。编号按签名沿用，裁决按签名沿用。
+    旧文件是作者可以手改的，坏了当空的，不崩。"""
+    old = old if isinstance(old, dict) else {}
+    prev = {c.get("sig"): c for c in old.get("conflicts") or [] if isinstance(c, dict)} \
+        if isinstance(old.get("conflicts"), list) else {}
+    registry = {e["sig"]: e["id"] for e in old.get("id_registry") or []
+                if isinstance(e, dict) and isinstance(e.get("sig"), str) and isinstance(e.get("id"), str)}
+    for s, c in prev.items():
+        if isinstance(s, str) and isinstance(c.get("id"), str):
+            registry.setdefault(s, c["id"])
+    try:
+        next_id = int(old.get("next_id") or 1)
+    except (TypeError, ValueError):
+        next_id = 1
+    used = [int(v[2:]) for v in registry.values() if v[2:].isdigit()]
+    if used:
+        next_id = max(next_id, max(used) + 1)
+    out = []
+    for c in conflicts:
+        sig = conflict_sig(c)
+        if sig not in registry:
+            registry[sig] = f"T-{next_id:03d}"
+            next_id += 1
+        verdict = (prev.get(sig) or {}).get("verdict")
+        out.append({"id": registry[sig], **c, "sig": sig,
+                    "verdict": verdict if isinstance(verdict, dict) else None})
+    return {"conflicts": out, "next_id": next_id,
+            "id_registry": [{"sig": s, "id": i} for s, i in sorted(registry.items(), key=lambda kv: kv[1])]}
