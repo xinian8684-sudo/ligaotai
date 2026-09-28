@@ -463,3 +463,44 @@ def test_stats的七个字段不是写死的0(book):
     assert stats["refs_no_candidate"] == 0
     assert stats["refs_all_before"] == 0
     assert stats["text_missing"] == 0
+
+
+def test_stats的unplaced_untracked_a_capped_refs字段真的有非零值(book):
+    # 上一条测试的书里这几个字段天然都是 0，硬编码成 0 也照样通过；这里专门造一本
+    # unplaced/untracked/a_capped/refs_no_candidate/refs_all_before 都不为 0 的书。
+    from helpers import seed_book
+    scenes = [{"id": "S-0001", "persons": ["甲"], "text": "甲已死了。"}]
+    scenes += [{"id": f"S-{i:04d}", "persons": ["甲"], "text": "甲道：我回来了。"} for i in range(2, 9)]  # 7 次，超 MAX_LATER=5
+    scenes += [{"id": "S-0009", "persons": ["乙", "丙"], "text": "乙丙的一场。"}]
+    scenes += [{"id": "S-0010", "persons": ["乙", "丙"], "refs": ["某段往事"], "text": "乙丙想起某段往事。"}]  # 候选只有 S-0009，在它之前
+    scenes += [{"id": "S-0011", "persons": ["丁"], "refs": ["没人知道的事"], "text": "丁想起没人知道的事。"}]  # 没有共同人物候选
+    scenes += [{"id": "S-0012", "persons": [], "text": "没有时间的一场。"}]  # 待会不给它时间 → unplaced
+    scenes += [{"id": "S-0013", "persons": [], "text": "压根没被任何线提到的一场。"}]  # → untracked
+    seed_book(book, scenes)
+    from ligaotai.cards import card_path
+    rec = read_json(card_path(book, "S-0001"))
+    rec["card"]["facts"] = [{"subject": "甲", "attribute": "生死", "value": "已死", "quote": "甲已死了"}]
+    write_json(card_path(book, "S-0001"), rec)
+    in_thread = [s["id"] for s in scenes if s["id"] != "S-0013"]
+    times = {sid: {"t": i} for i, sid in enumerate(in_thread) if sid != "S-0012"}
+    write_json(book.threads_path, {"threads": [{"id": "L-001", "offset": 0, "scenes": in_thread, "times": times}],
+        "worlds": [], "main_thread": "L-001", "global_order": [], "unassigned": [], "pending": [],
+        "gaps": [], "intersections": []})
+
+    def h(tier, messages):
+        if "死了" in messages[0]["content"]:
+            items = [{"id": f"A-{i:02d}", "status": "在场", "reason": f"在场[S-{i + 1:04d}]"} for i in range(1, 6)]
+            return json.dumps({"items": items}, ensure_ascii=False)
+        return json.dumps({"items": []}, ensure_ascii=False)  # 这本书的回指都问不到候选，不会真的调到这支
+
+    run_timeline(book, LLMClient(AppConfig(), FakeBackend(handler=h), log_dir=book.logs_dir))
+    stats = read_json(book.timeline_path)["stats"]
+    assert stats["placed"] == 11        # S-0001..S-0011，S-0012 unplaced、S-0013 untracked 都不算
+    assert stats["unplaced"] == 1
+    assert stats["untracked"] == 1
+    assert stats["a_suspects"] == 5     # MAX_LATER=5，7 次后来出现只留最近 5 个
+    assert stats["a_capped"] == 2       # 超掉的 2 个记在这
+    assert stats["refs_asked"] == 0     # 两条回指一条没候选、一条候选全在前面，都没问到模型
+    assert stats["refs_no_candidate"] == 1
+    assert stats["refs_all_before"] == 1
+    assert stats["text_missing"] == 0
