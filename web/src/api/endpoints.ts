@@ -2,8 +2,8 @@ import { del, get, post, put } from './client'
 import type {
   ArchiveIndex, BoardCard, BoardView, BookMeta, BookSummary, CanonFile, CardRecord, CardReq, CardRow,
   ContradictionGroup, ContradictionsFile, EntitiesFile, ExportResult, Followups, ImpactView,
-  Job, PublicConfig, SceneDetail, SceneMeta, Skeleton, StepName, ThreadsFile, VerdictReq,
-  VersionsFile,
+  Job, PublicConfig, SceneDetail, SceneMeta, Skeleton, StepName, ThreadsFile, TimelineConflict,
+  TimelineFile, TimelineVerdictKind, VerdictReq, VersionsFile,
 } from './types'
 
 const b = (name: string) => `/books/${encodeURIComponent(name)}`
@@ -72,6 +72,12 @@ export const getArchiveBody = (name: string, kind: 'thread' | 'world', oid: stri
 export const getArchiveMap = (name: string) => get<{ id: string; body: string }>(`${b(name)}/archive/map`)
 export const getContradictions = (name: string) => get<ContradictionsFile>(`${b(name)}/contradictions`)
 export const rerunArchive = (name: string, body: unknown) => post<unknown>(`${b(name)}/archive/rerun`, body)
+
+// 三期：时间线冲突检查
+export const getTimeline = (name: string) => get<TimelineFile>(`${b(name)}/timeline`)
+export const runTimeline = (name: string) => post<Job>(`${b(name)}/timeline/run`)
+export const putTimelineVerdict = (name: string, tid: string, kind: TimelineVerdictKind | null) =>
+  put<TimelineConflict>(`${b(name)}/timeline/${tid}/verdict`, { kind })
 
 // 二期：裁决
 export const putVerdict = (name: string, cid: string, body: VerdictReq) =>

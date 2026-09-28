@@ -426,3 +426,31 @@ export interface ExportResult {
    */
   chars: number; cut: number
 }
+
+// ---------- 三期：故事时间线冲突检查 ----------
+/** 核对过 src/ligaotai/timeline_run.py 的 set_timeline_verdict：kind 可以是 null（撤销）。 */
+export type TimelineVerdictKind = 'author_error' | 'order_error' | 'ignore'
+/**
+ * 核对过 timeline.py 的 assemble()：真实对象还带一个 sig 字段（拼签名用，界面用不上），
+ * 这里按需要展示的字段声明即可，多出来的运行时字段不影响结构类型。
+ */
+export interface TimelineConflict {
+  id: string
+  kind: 'A' | 'C'
+  who: string | null
+  ref: string | null
+  scenes: [string, string]
+  pos: [number, number]
+  quotes: [string, string]
+  reason: string
+  status: string
+  verdict: { kind: TimelineVerdictKind; at: string } | null
+}
+/** 核对过 timeline_run.py 的 load_timeline() / run_timeline()：stats/failed 只在跑过之后才有。 */
+export interface TimelineFile {
+  conflicts: TimelineConflict[]
+  never_run: boolean
+  stale: boolean
+  stats?: { placed: number; unplaced: number; a_suspects: number; a_capped: number; refs_asked: number; refs_no_candidate: number; refs_all_before: number }
+  failed?: { call: string; error: string }[]
+}
