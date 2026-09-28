@@ -91,12 +91,15 @@ onUnmounted(() => {
       <p class="stats" data-test="时间线统计">
         待看 {{ 统计.待看 }} · 写错了 {{ 统计.写错 }} · 排错了 {{ 统计.排错 }} · 已忽略 {{ 统计.忽略 }}
         <template v-if="data.stats?.unplaced">（另有 {{ data.stats.unplaced }} 块没有故事位置，没查）</template>
+        <template v-if="data.stats?.a_capped">（另有 {{ data.stats.a_capped }} 条因每人只查死后 5 场被截掉）</template>
+        <template v-if="data.stats?.refs_no_candidate">（{{ data.stats.refs_no_candidate }} 条回指找不到候选）</template>
       </p>
       <div class="filters">
         <button :class="{ on: !看全部 }" data-test="只看待看" @click="看全部 = false">只看待看</button>
         <button :class="{ on: 看全部 }" data-test="看全部" @click="看全部 = true">全部</button>
       </div>
-      <p v-if="显示的.length === 0" class="empty">{{ 看全部 ? '没有查出冲突。' : '没有待看的了。' }}</p>
+      <p v-if="(data.conflicts?.length ?? 0) === 0" class="empty" data-test="结果为空">没有查出冲突。</p>
+      <p v-else-if="显示的.length === 0" class="empty" data-test="结果为空">没有待看的了。</p>
       <div v-for="c in 显示的" :key="c.id" class="card" :data-test="`冲突-${c.id}`">
         <div class="head">
           <span class="kind" :class="c.kind">{{ 类型名[c.kind] }}</span>
