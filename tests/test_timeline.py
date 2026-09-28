@@ -53,3 +53,49 @@ def test_哪些fact算死了():
         assert is_death(a, v), (a, v)
     for a, v in no:
         assert not is_death(a, v), (a, v)
+
+
+from ligaotai.timeline import death_suspects
+
+
+def _cards(spec):
+    """spec: {sid: (persons, facts)}，facts: [(subject, attribute, value, quote)]"""
+    return {s: {"id": s, "card": {"characters": [{"name": n} for n in p],
+                                  "facts": [{"subject": a, "attribute": b, "value": c, "quote": q} for a, b, c, q in f],
+                                  "refs_elsewhere": []}}
+            for s, (p, f) in spec.items()}
+
+
+def test_A嫌疑_死后出现在人物名单里_别名归一_取最早的死亡(book):
+    seq = ["S-0001", "S-0002", "S-0003", "S-0004", "S-0005"]
+    pos = {s: i for i, s in enumerate(seq)}
+    cmap = {("person", "劉公"): "劉芳", ("person", "劉芳"): "劉芳"}
+    cards = _cards({
+        "S-0001": (["劉芳"], []),
+        "S-0002": (["劉公"], [("劉公", "生死", "已死", "劉公已死多年")]),
+        "S-0003": (["張三"], []),
+        "S-0004": (["劉芳"], [("劉芳", "生死", "已死", "劉芳死了")]),  # 更晚的死亡记录不另算
+        "S-0005": (["劉公"], []),
+    })
+    got, capped = death_suspects(seq, pos, cards, cmap)
+    assert [(x["who"], x["death"], x["later"]) for x in got] == [
+        ("劉芳", "S-0002", "S-0004"), ("劉芳", "S-0002", "S-0005")]
+    assert got[0]["death_quote"] == "劉公已死多年"
+    assert capped == 0
+
+
+def test_A嫌疑_每人最多取离死亡最近的5场():
+    seq = [f"S-{i:04d}" for i in range(1, 10)]
+    pos = {s: i for i, s in enumerate(seq)}
+    spec = {s: (["甲"], []) for s in seq}
+    spec["S-0001"] = (["甲"], [("甲", "生死", "已死", "甲已死")])
+    got, capped = death_suspects(seq, pos, _cards(spec), {})
+    assert [x["later"] for x in got] == ["S-0002", "S-0003", "S-0004", "S-0005", "S-0006"]
+    assert capped == 3
+
+
+def test_A嫌疑_死亡场不在故事顺序里就不查():
+    seq = ["S-0002"]
+    pos = {"S-0002": 0}
+    cards = _cards({"S-0001": (["甲"], [("甲", "生死", "已死", "q")]), "S-0002": (["甲"], [])})
+    assert death_suspects(seq, pos, cards, {}) == ([], 0)

@@ -43,3 +43,43 @@ def is_death(attribute: str, value: str) -> bool:
     if any(w in v for w in NOT_DEATH):
         return False
     return any(w in v for w in DEATH_WORDS)
+
+
+MAX_LATER = 5  # A 类每人最多查死后多少场（防主角被误判「已死」时嫌疑爆炸）
+
+
+def _canon(name: str, cmap: dict) -> str:
+    n = (name or "").strip()
+    return cmap.get(("person", n), n)
+
+
+def _card(cards: dict, sid: str) -> dict:
+    rec = cards.get(sid) or {}
+    c = rec.get("card") if isinstance(rec, dict) else None
+    return c if isinstance(c, dict) else {}
+
+
+def persons_of(card: dict, cmap: dict) -> set[str]:
+    out = {_canon(c.get("name", ""), cmap) for c in card.get("characters") or [] if isinstance(c, dict)}
+    if card.get("pov"):
+        out.add(_canon(card["pov"], cmap))
+    out.discard("")
+    return out
+
+
+def death_suspects(seq: list[str], pos: dict[str, int], cards: dict, cmap: dict) -> tuple[list[dict], int]:
+    """(嫌疑列表, 因上限截掉的个数)。嫌疑 = {who, death, death_quote, later}，按 (death 位置, later 位置) 排。"""
+    first: dict[str, tuple[int, str, str]] = {}  # who -> (位置, 场景, 引文)
+    for sid in seq:
+        for f in _card(cards, sid).get("facts") or []:
+            if not isinstance(f, dict) or not is_death(f.get("attribute", ""), f.get("value", "")):
+                continue
+            who = _canon(f.get("subject", ""), cmap)
+            if who and who not in first:
+                first[who] = (pos[sid], sid, str(f.get("quote") or f.get("value") or ""))
+    out, capped = [], 0
+    for who, (p, dsid, quote) in sorted(first.items(), key=lambda kv: (kv[1][0], kv[0])):
+        later = [s for s in seq[p + 1:] if who in persons_of(_card(cards, s), cmap)]
+        capped += max(0, len(later) - MAX_LATER)
+        out += [{"who": who, "death": dsid, "death_quote": quote, "later": s} for s in later[:MAX_LATER]]
+    return out, capped
