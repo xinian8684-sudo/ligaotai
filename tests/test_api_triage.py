@@ -234,7 +234,8 @@ def test_生成骨架_读_改_导出_下载(tmp_path):
     assert r.status_code == 200 and r.json()["scenes"] == 5
     d = c.get(f"{BOOK}/export/md")
     assert d.status_code == 200 and "## 改过的章名" in d.content.decode("utf-8")
-    assert c.get(f"{BOOK}/export/docx").status_code == 400
+    assert c.get(f"{BOOK}/export/docx").status_code == 200
+    assert c.get(f"{BOOK}/export/pdf").status_code == 400
 
 
 def test_骨架的错误映射(tmp_path):

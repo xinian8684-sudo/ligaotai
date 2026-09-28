@@ -94,4 +94,4 @@ export const getSkeleton = (name: string) => get<Skeleton>(`${b(name)}/skeleton`
 export const putSkeleton = (name: string, sk: Skeleton) => put<Skeleton>(`${b(name)}/skeleton`, sk)
 export const generateSkeleton = (name: string) => post<Job>(`${b(name)}/skeleton/generate`)
 export const exportBook = (name: string) => post<ExportResult>(`${b(name)}/export`)
-export const exportUrl = (name: string, fmt: 'md' | 'txt') => `/api${b(name)}/export/${fmt}`
+export const exportUrl = (name: string, fmt: 'md' | 'txt' | 'docx' | 'epub') => `/api${b(name)}/export/${fmt}`

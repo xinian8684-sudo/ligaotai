@@ -419,7 +419,7 @@ export interface Skeleton {
   absent?: string[]
 }
 export interface ExportResult {
-  md: string; txt: string; scenes: number; holes: number; missing: number
+  md: string; txt: string; docx: string; epub: string; scenes: number; holes: number; missing: number
   /**
    * 计划原稿漏了这两个字段——核对过 src/ligaotai/export.py 的 export_book()，
    * counts 实际是 {scenes, holes, missing, chars, cut} 五项都会返回。

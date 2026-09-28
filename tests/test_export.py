@@ -1,3 +1,7 @@
+import zipfile
+import xml.etree.ElementTree as ET
+
+import docx
 import pytest
 
 from ligaotai.export import export_book, export_path
@@ -48,8 +52,8 @@ def test_导出md和txt(book_with_threads):
     b = book_with_threads
     write_json(b.skeleton_path, SK)
     r = export_book(b)
-    assert r == {"md": "导出/测试书.md", "txt": "导出/测试书.txt", "scenes": 2, "holes": 1, "missing": 1,
-                 "chars": 22, "cut": 0}
+    assert r == {"md": "导出/测试书.md", "txt": "导出/测试书.txt", "docx": "导出/测试书.docx",
+                 "epub": "导出/测试书.epub", "scenes": 2, "holes": 1, "missing": 1, "chars": 22, "cut": 0}
     assert export_path(b, "md").read_text(encoding="utf-8") == MD
     assert export_path(b, "txt").read_text(encoding="utf-8") == TXT
 
@@ -59,9 +63,88 @@ def test_没有骨架不能导出(book_with_threads):
         export_book(book_with_threads)
 
 
-def test_格式只认md和txt(book_with_threads):
+def test_格式只认四种(book_with_threads):
+    for fmt in ("md", "txt", "docx", "epub"):
+        export_path(book_with_threads, fmt)
     with pytest.raises(ValueError):
-        export_path(book_with_threads, "docx")
+        export_path(book_with_threads, "pdf")
+
+
+def test_导出docx_卷章是标题_空洞和缺失照样标出来(book_with_threads):
+    b = book_with_threads
+    write_json(b.skeleton_path, SK)
+    export_book(b)
+    d = docx.Document(str(export_path(b, "docx")))
+    paras = [(p.style.name, p.text) for p in d.paragraphs if p.text]
+    assert paras == [
+        ("Title", "测试书"),
+        ("Heading 1", "第一卷 起"),
+        ("Heading 2", "开篇"),
+        ("Normal", "S-0001 的正文。"),
+        ("Normal", "【空洞 H-001】在 S-0001 与 S-0003 之间补写： 大闹天宫"),
+        ("Normal", "【缺失场景 S-0099：原稿里已经没有这一块了】"),
+        ("Heading 1", "附：未定位"),
+        ("Normal", "S-0005 的正文。"),
+    ]
+    assert d.core_properties.title == "测试书"
+
+
+def test_导出docx_场景里的换行分成段落(book_with_threads):
+    b = book_with_threads
+    (b.scenes_dir / "S-0001.md").write_text(
+        (b.scenes_dir / "S-0001.md").read_text(encoding="utf-8").replace("S-0001 的正文。", "第一段。" + chr(10) * 2 + "第二段。" + chr(10) + "第三段。"),
+        encoding="utf-8")
+    write_json(b.skeleton_path, SK)
+    export_book(b)
+    texts = [p.text for p in docx.Document(str(export_path(b, "docx"))).paragraphs]
+    assert texts[texts.index("第一段。"):texts.index("第一段。") + 3] == ["第一段。", "第二段。", "第三段。"]
+
+
+def _epub(b):
+    z = zipfile.ZipFile(export_path(b, "epub"))
+    return z, {n: z.read(n).decode("utf-8") for n in z.namelist()}
+
+
+def test_导出epub_结构合规(book_with_threads):
+    b = book_with_threads
+    write_json(b.skeleton_path, SK)
+    export_book(b)
+    z, files = _epub(b)
+    first = z.infolist()[0]
+    # EPUB 规定：mimetype 是第一个文件、不压缩、内容就是这一串
+    assert first.filename == "mimetype" and first.compress_type == zipfile.ZIP_STORED
+    assert files["mimetype"] == "application/epub+zip"
+    assert "OEBPS/content.opf" in files["META-INF/container.xml"]
+    # 所有 xml / xhtml 都得是合法 XML
+    for n, t in files.items():
+        if n.endswith((".xml", ".opf", ".xhtml", ".ncx")):
+            ET.fromstring(t.encode("utf-8"))
+    opf = ET.fromstring(files["OEBPS/content.opf"].encode("utf-8"))
+    ns = {"o": "http://www.idpf.org/2007/opf", "dc": "http://purl.org/dc/elements/1.1/"}
+    assert opf.find(".//dc:title", ns).text == "测试书"
+    assert opf.find(".//dc:language", ns).text == "zh-CN"
+    hrefs = {i.get("id"): i.get("href") for i in opf.findall(".//o:manifest/o:item", ns)}
+    spine = [hrefs[r.get("idref")] for r in opf.findall(".//o:spine/o:itemref", ns)]
+    for h in hrefs.values():  # 清单里列的文件都真的在包里
+        assert f"OEBPS/{h}" in files
+    body = "".join(files[f"OEBPS/{h}"] for h in spine)
+    order = ["第一卷 起", "开篇", "S-0001 的正文。", "【空洞 H-001】", "【缺失场景 S-0099", "附：未定位", "S-0005 的正文。"]
+    at = [body.index(x) for x in order]
+    assert at == sorted(at)  # 阅读顺序跟骨架一致
+    nav = files["OEBPS/nav.xhtml"]
+    assert "第一卷 起" in nav and "开篇" in nav and "附：未定位" in nav
+
+
+def test_导出epub_正文里的尖括号和与号要转义(book_with_threads):
+    b = book_with_threads
+    (b.scenes_dir / "S-0001.md").write_text(
+        (b.scenes_dir / "S-0001.md").read_text(encoding="utf-8").replace("S-0001 的正文。", "他说<好>&走"),
+        encoding="utf-8")
+    write_json(b.skeleton_path, SK)
+    export_book(b)
+    _, files = _epub(b)
+    body = "".join(t for n, t in files.items() if n.endswith(".xhtml"))
+    assert "他说&lt;好&gt;&amp;走" in body
 
 
 def test_场景文件坏了_导出往上抛不当成原稿删了(book_with_threads):
