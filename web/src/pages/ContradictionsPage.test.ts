@@ -251,3 +251,16 @@ describe('ContradictionsPage 出处线名', () => {
     expect(w.text()).not.toContain('还没有归线结果')
   })
 })
+
+describe('ContradictionsPage 分页', () => {
+  it('分页：默认矛盾，点「时间线」切过去', async () => {
+    vi.spyOn(api, 'getContradictions').mockResolvedValue({ groups: [], stats: {} } as never)
+    vi.spyOn(api, 'getTimeline').mockResolvedValue({ conflicts: [], never_run: true, stale: false })
+    const w = mount(ContradictionsPage, { props: { name: 'x' }, global: { stubs } })
+    await flushPromises()
+    expect(w.find('[data-test="时间线空态"]').exists()).toBe(false)
+    await w.find('[data-test="分页-时间线"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-test="时间线空态"]').exists()).toBe(true)
+  })
+})

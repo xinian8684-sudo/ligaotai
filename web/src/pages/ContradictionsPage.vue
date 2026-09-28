@@ -1,15 +1,25 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { getContradictions, getFollowups, getThreads, putVerdict } from '@/api/endpoints'
 import type { ContradictionGroup, ContradictionsFile, Followups, VerdictReq } from '@/api/types'
 import { ApiError } from '@/api/client'
 import { useJobStore } from '@/stores/job'
 import ErrorBox from '@/components/ErrorBox.vue'
 import SceneRefs from '@/components/SceneRefs.vue'
+import TimelinePanel from '@/components/TimelinePanel.vue'
 
 const props = defineProps<{ name: string }>()
 
 const jobStore = useJobStore()
+const route = useRoute()
+const router = useRouter()
+// 本地状态是准的；路由只是顺手记一下（刷新不丢、别的页能链过来）。没挂路由（单测）时照样能切。
+const 分页 = ref<'contra' | 'timeline'>(route?.query.tab === 'timeline' ? 'timeline' : 'contra')
+function 切到(tab: 'contra' | 'timeline'): void {
+  分页.value = tab
+  void router?.replace({ query: { ...route?.query, tab: tab === 'timeline' ? 'timeline' : undefined } })
+}
 
 const data = ref<ContradictionsFile | null>(null)
 const error = ref('')
@@ -124,6 +134,12 @@ onUnmounted(() => {
 <template>
   <div class="page">
     <h1>矛盾 —— 《{{ name }}》</h1>
+    <div class="tabs">
+      <button :class="{ on: 分页 === 'contra' }" data-test="分页-矛盾" @click="切到('contra')">矛盾</button>
+      <button :class="{ on: 分页 === 'timeline' }" data-test="分页-时间线" @click="切到('timeline')">时间线</button>
+    </div>
+    <TimelinePanel v-if="分页 === 'timeline'" :name="name" />
+    <template v-if="分页 === 'contra'">
     <ErrorBox :message="error" />
 
     <p v-if="data && data.groups.length === 0" class="empty" data-test="空态">
@@ -196,12 +212,15 @@ onUnmounted(() => {
         </div>
       </details>
     </template>
+    </template>
   </div>
 </template>
 
 <style scoped>
 .page{padding:24px;max-width:920px}
 h1{font-family:var(--serif);font-size:20px;margin:16px 0}
+.tabs{display:flex;gap:6px;margin-bottom:12px}
+.tabs .on{background:var(--accent-soft);color:var(--accent)}
 .empty{color:var(--ink-3)}
 .skip-note{color:var(--ink-3);font-size:13px;margin-bottom:12px}
 .bucket{margin-bottom:14px;border:1px solid var(--line-2);border-radius:8px;padding:8px 12px}
