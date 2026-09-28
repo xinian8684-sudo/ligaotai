@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))  # 自己所在目录�
 
 from ligaotai.archive import _DECOR, prepare_inputs, refs_in  # noqa: E402
 from ligaotai.book import Book  # noqa: E402
+from ligaotai.cards import load_cards  # noqa: E402
 from ligaotai.config import AppConfig, load_config  # noqa: E402
 from ligaotai.scenes import read_scene, scene_path  # noqa: E402
 
@@ -136,12 +137,16 @@ def check_refs(bodies: dict[str, str], allowed: dict[str, set[str]],
     }
 
 
-def recall(key: dict, chapter_scenes: dict[int, set[str]], result: dict) -> dict:
+def recall(key: dict, chapter_scenes: dict[int, set[str]], result: dict, cards: dict[str, dict] | None = None) -> dict:
     """植入矛盾的召回（spec 9.1）。
 
     一处植入 = 同一个人物在两个不同章节被写成两个不同的年龄（见 `tools/scramble.py`
     的 `plant_contradictions`）。命中要求**两处说法都被同一个组覆盖、且落在两个不同的值上**——
     只引了其中一处，说明扫描没把两处对比起来，那就不算发现了这对矛盾。
+
+    给了 `cards`（场景编号 → 卡文件内容）时，每处没命中的植入再查一遍两边的卡有没有把那句
+    年龄抽成 fact（`extracted`），报告里按「抽取漏了 / 扫描没对上」分开计数。9-21 第二轮
+    召回 8/10 里有 1 分其实扣在抽取头上，不分开会去修错地方。
 
     旧判据只要「属性相同 + 场景编号有交集」，宽得多。9-21 真跑《雪月梅传》时，植入点所在
     场景往往还涉及书里本来就有的别的矛盾，属性一撞就算命中——那种命中证明不了任何事。
@@ -182,8 +187,15 @@ def recall(key: dict, chapter_scenes: dict[int, set[str]], result: dict) -> dict
             if not _same_subject(found):
                 subject_mismatch += 1
         else:
+            if cards is not None:
+                p = {**p, "extracted": [_extracted(cards, want[k], p, k) for k in range(2)]}
             misses.append(p)
+    extra = {}
+    if cards is not None:
+        lost = sum(1 for m in misses if not all(m["extracted"]))
+        extra["miss_causes"] = {"抽取漏了": lost, "扫描没对上": len(misses) - lost}
     return {
+        **extra,
         "planted": len(planted), "hit": hit,
         "recall": round(hit / len(planted), 4) if planted else 0.0,
         "misses": misses,
@@ -194,6 +206,19 @@ def recall(key: dict, chapter_scenes: dict[int, set[str]], result: dict) -> dict
         "unmatched_true": sum(1 for g in groups if g.get("status") == "真矛盾"
                               and g["id"] not in matched_ids),
     }
+
+def _extracted(cards: dict[str, dict], scenes: set[str], p: dict, k: int) -> bool:
+    """植入的第 k 句（「X年方N歲」）有没有被这一章的某张卡抽成 fact：值里有这个数（汉字或
+    阿拉伯数字都认），或者引文里原样有「年方N」。"""
+    cn = p["values"][k]
+    num = str((p.get("ages") or [None, None])[k])
+    for sid in scenes:
+        for f in ((cards.get(sid) or {}).get("card") or {}).get("facts") or []:
+            v, q = str(f.get("value") or ""), str(f.get("quote") or "")
+            if cn in v or (num != "None" and num in v) or f"年方{cn}" in q:
+                return True
+    return False
+
 
 def chapter_to_scenes(book: Book, key: dict, folder_name: str) -> dict[int, set[str]]:
     """章节号 → 场景编号集合。答案文件记的是章节，S- 编号是导入时才分配的，
@@ -459,7 +484,7 @@ def main(argv: list[str] | None = None) -> None:
                 result = json.loads(book.contradictions_path.read_text(encoding="utf-8")) or {}
             except (OSError, ValueError):
                 result = {}
-        rec = recall(key, chapter_scenes, result)
+        rec = recall(key, chapter_scenes, result, cards=load_cards(book))
         report["recall"] = rec
         ok = ok and (rec["planted"] == 0 or rec["recall"] >= RECALL_FLOOR)
 

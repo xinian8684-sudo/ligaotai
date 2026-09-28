@@ -319,6 +319,19 @@ def test_两个值差得够远():
     assert abs(p["ages"][0] - p["ages"][1]) >= 4
 
 
+def test_年龄跟时间方向反着来_前面的章节岁数更大():
+    """9-21 第二轮真跑：前面写 16 岁、后面写 24 岁，模型判「合理变化」是对的——书里时间
+    本来就在往前走，这处白植了。要造真正的矛盾就得让年龄倒退：前面的章节岁数大、后面的小。"""
+    for seed in range(30):
+        chapters = _chapters_with(["岑秀", "劉電"], 10)
+        for p in plant_contradictions(chapters, random.Random(seed), n=2, characters=CHARS):
+            assert p["chapters"][0] < p["chapters"][1]
+            assert p["ages"][0] > p["ages"][1], f"seed={seed} {p}"
+            bodies = {c.num: c.body for c in chapters}
+            for ch, val in zip(p["chapters"], p["values"]):
+                assert f"年方{val}" in bodies[ch]
+
+
 def test_没有人物名单时不硬植入():
     chapters = _chapters_with(["岑秀"], 6)
     assert plant_contradictions(chapters, random.Random(1), n=3, characters=[]) == []

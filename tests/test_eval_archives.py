@@ -152,6 +152,39 @@ def test_主语对不对另外记不影响命中():
     assert res2["hit"] == 1 and res2["subject_mismatch"] == 0
 
 
+def _card(*facts):
+    return {"card": {"facts": [{"subject": s, "attribute": "年龄", "value": v, "quote": q} for s, v, q in facts]}}
+
+
+def test_没命中的植入分清是抽取漏了还是扫描没对上():
+    """9-21 第二轮：召回 8/10 里有 1 分扣在抽取头上（小梅 ch4 那句根本没被抽成 fact），
+    不是矛盾扫描的问题。报告要分开记，不然会去修错地方。"""
+    miss = recall(_key(), CH, {"groups": []}, cards={
+        "S-0005": _card(("岑秀", "十六", "岑秀年方十六歲")),
+        "S-0009": _card(("岑秀", "二十", "岑公子年方二十歲"))})
+    assert miss["hit"] == 0
+    assert miss["misses"][0]["extracted"] == [True, True]
+    assert miss["miss_causes"] == {"抽取漏了": 0, "扫描没对上": 1}
+
+    miss2 = recall(_key(), CH, {"groups": []}, cards={
+        "S-0005": _card(("岑秀", "十六", "岑秀年方十六歲")),
+        "S-0009": _card(("岑秀", "才貌", "岑公子才貌双全"))})
+    assert miss2["misses"][0]["extracted"] == [True, False]
+    assert miss2["miss_causes"] == {"抽取漏了": 1, "扫描没对上": 0}
+
+
+def test_值写成阿拉伯数字或只在引文里也认抽到了():
+    res = recall(_key(), CH, {"groups": []}, cards={
+        "S-0005": _card(("岑秀", "16岁", "岑秀年方十六歲")),
+        "S-0009": _card(("岑公子", "", "岑公子年方二十歲"))})
+    assert res["misses"][0]["extracted"] == [True, True]
+
+
+def test_不给卡片时不做归因():
+    res = recall(_key(), CH, {"groups": []})
+    assert "extracted" not in res["misses"][0] and "miss_causes" not in res
+
+
 def test_旧格式答案硬报错():
     """旧答案文件是 {chapter, old, new}，新判据看的是 {chapters, values}。
     静默算成 0 召回会让人以为是产品不行（I3 的精神：别静默出错数）。"""

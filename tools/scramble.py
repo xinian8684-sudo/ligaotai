@@ -254,16 +254,19 @@ def plant_contradictions(chapters: list[Chapter], rng: random.Random, n: int,
         free = [s for s in person["spots"] if s["chapter"] not in used_chapters]
         if len(free) < 2:
             continue
-        a, b = rng.sample(free, 2)
-        lo = rng.choice(_AGES)
-        far = [v for v in _AGES if abs(v - lo) >= _AGE_GAP]
+        a, b = sorted(rng.sample(free, 2), key=lambda s: s["chapter"])
+        x = rng.choice(_AGES)
+        far = [v for v in _AGES if abs(v - x) >= _AGE_GAP]
         if not far:
             continue
-        hi = rng.choice(far)
+        y = rng.choice(far)
+        # 年龄跟时间方向反着来：前面的章节岁数大、后面的小，造成真正的年龄倒退。
+        # 顺着来（前 16 后 24）书里时间本来就在走，模型判「合理变化」是对的，白植（9-21 第二轮）。
+        older, younger = max(x, y), min(x, y)
         planted.append({
             "subject": person["subject"], "names": person["names"], "attribute": "年龄",
-            "chapters": [a["chapter"], b["chapter"]], "ages": [lo, hi],
-            "values": [_cn_number(lo), _cn_number(hi)],
+            "chapters": [a["chapter"], b["chapter"]], "ages": [older, younger],
+            "values": [_cn_number(older), _cn_number(younger)],
             "_spots": [a, b],
         })
         used_chapters |= {a["chapter"], b["chapter"]}
