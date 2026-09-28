@@ -600,6 +600,81 @@ def test_stage_order_unusable_reply_marks_failed_and_records_caller_failure(book
     assert [f["call"] for f in caller.failed] == ["order-W-01#1"]
 
 
+def order_items5():
+    return {f"S-000{i}": Item(f"S-000{i}", f"f{i}.txt", 0, "正文", f"S-000{i}｜正文｜摘要{i}") for i in range(1, 6)}
+
+
+def _reply(order, t0=0):
+    return json.dumps({"order": order, "times": {s: [t0 + i, "中"] for i, s in enumerate(order)},
+                       "end": {"state": "完结", "note": f"第{t0}遍"}}, ensure_ascii=False)
+
+
+def run_passes(book, replies, passes=3, key="W-01#1"):
+    """按调用先后依次给 replies 里的回复（字符串或异常）。"""
+    it = iter(replies)
+    c = client(book, order=lambda m: next(it))
+    caller = Caller(book, c, lambda *a: None, cache_path=book.threads_cache_path)
+    t = ThreadDraft(key, "W-01", "主线", "说明", scenes=list(order_items5()))
+    missing = asyncio.run(stage_order(caller, t, order_items5(), "年", passes=passes))
+    return t, missing, c, caller
+
+
+def test_排三遍_多数票投掉偶发的错(book):
+    good = ["S-0001", "S-0002", "S-0003", "S-0004", "S-0005"]
+    bad = ["S-0004", "S-0001", "S-0002", "S-0003", "S-0005"]
+    t, missing, c, _ = run_passes(book, [_reply(good, 0), _reply(bad, 100), _reply(good, 200)])
+    assert c.usage.calls == 3 and len(users(c, "线内排序")) == 3
+    assert t.scenes == good and missing == [] and t.order_failed is False
+    # 时间和结局取跟共识最像的那一遍（第 1 遍，完全一致），不是把几遍的数混在一起
+    assert t.times["S-0004"] == {"t": 3, "conf": "中"} and t.end["note"] == "第0遍"
+
+
+def test_每遍的输入顺序不一样_不然三遍就是同一个缓存条目(book):
+    good = ["S-0001", "S-0002", "S-0003", "S-0004", "S-0005"]
+    _, _, c, _ = run_passes(book, [_reply(good)] * 3)
+    us = users(c, "线内排序")
+    assert len(set(us)) == 3
+    assert len(json.loads(book.threads_cache_path.read_text(encoding="utf-8"))) == 3
+
+
+def test_第一遍的输入跟只排一遍时一样_旧缓存还能用(book):
+    good = ["S-0001", "S-0002", "S-0003", "S-0004", "S-0005"]
+    _, _, c1, _ = run_passes(book, [_reply(good)], passes=1)
+    book.threads_cache_path.unlink()
+    _, _, c3, _ = run_passes(book, [_reply(good)] * 3)
+    assert users(c3, "线内排序")[0] == users(c1, "线内排序")[0]
+
+
+def test_有一遍失败_用剩下的_线不算排序失败(book):
+    good = ["S-0001", "S-0002", "S-0003", "S-0004", "S-0005"]
+    seen: list[str] = []  # 几遍并发发出，按「第几种输入」认是第几遍
+
+    def reply(m):
+        u = m[1]["content"]
+        if u not in seen:
+            seen.append(u)
+        return LLMError("坏了") if seen.index(u) == 1 else _reply(good)
+
+    c = client(book, order=reply)
+    caller = Caller(book, c, lambda *a: None, cache_path=book.threads_cache_path)
+    t = ThreadDraft("W-01#1", "W-01", "主线", "说明", scenes=list(order_items5()))
+    asyncio.run(stage_order(caller, t, order_items5(), "年", passes=3))
+    assert t.scenes == good and t.order_failed is False
+    assert [f["call"] for f in caller.failed] == ["order-W-01#1~2"]
+
+
+def test_三遍都失败才算排序失败(book):
+    t, _, _, _ = run_passes(book, [LLMError("坏了")] * 9)
+    assert t.order_failed is True and t.times == {}
+
+
+def test_第几遍的失败记录定编号后也换成正式编号(book):
+    from ligaotai.threads import _remap_order_tags
+    entries = [{"call": "order-W-01#1"}, {"call": "order-W-01#1~2"}, {"call": "order-W-09#1~3"}]
+    _remap_order_tags(entries, {"W-01#1": "L-001"})
+    assert [e["call"] for e in entries] == ["order-L-001", "order-L-001~2", "order-W-09#1~3"]
+
+
 # --- 跨线对齐 + 找缺口 ---
 
 

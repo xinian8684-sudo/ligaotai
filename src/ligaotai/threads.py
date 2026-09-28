@@ -15,6 +15,7 @@ import asyncio
 import copy
 import json
 import math
+import random
 import re
 from dataclasses import dataclass, field
 from typing import Callable
@@ -24,6 +25,7 @@ from .cards import pick_error
 from .fsutil import natural_key, read_json, write_json
 from .llm import LLMClient, LLMError
 from .llm_caller import Caller, _noop, load_cache
+from .order_vote import agreement, consensus
 from .threads_check import (
     check_align,
     check_gaps,
@@ -252,8 +254,14 @@ def segments_text(segs: dict[str, list[str]]) -> str:
     return "\n".join(f"- {p}：{' → '.join(ss)}（同一个文件里紧挨着）" for p, ss in segs.items())
 
 
-async def stage_order(caller: Caller, t: ThreadDraft, items: dict[str, Item], unit: str) -> list[str]:
-    """线内排序（一条线一次）。直接改 t 的 scenes / times / end / order_failed，返回漏掉的块。"""
+async def stage_order(caller: Caller, t: ThreadDraft, items: dict[str, Item], unit: str, passes: int = 1) -> list[str]:
+    """线内排序。直接改 t 的 scenes / times / end / order_failed，返回漏掉的块。
+
+    passes > 1：同一条线排几遍、按多数票合并（`order_vote`）。同样的输入排几遍结果能差很多
+    （9-28 实测一条 27 块的线三遍 τ 0.994 / 0.897 / 0.641），偶发的错投票能投掉。第 1 遍的
+    输入跟只排一遍时一模一样（旧缓存照样命中），往后每遍把片段的列出顺序换一种（固定种子），
+    既让缓存键不同，也免得几遍都被同一个列出顺序带偏。时间和结局取跟共识最像的那一遍，
+    不把几遍的数混着用（各遍的时间刻度不一定一样）。全部失败才算排序失败。"""
     parts = segments(t.scenes, items)
     fallback = [s for p in parts for s in p]
     if len(fallback) <= 1:
@@ -264,28 +272,40 @@ async def stage_order(caller: Caller, t: ThreadDraft, items: dict[str, Item], un
     segs = {f"P-{i:03d}": p for i, p in enumerate((p for p in parts if len(p) > 1), 1)}
     expected = set(fallback)
     name, about = _one_line(t.name), _one_line(t.about)
-    values = {
-        "thread": f"{name}（{about}）" if about else name,
-        "unit": unit or "年",
-        "segments": segments_text(segs),
-        "lines": "\n".join(items[s].line for s in fallback),
-    }
-    caller.plan(1)
-    got = await caller.call(
-        "threads_order",
-        values,
-        lambda d: check_order(d, segs, expected),
-        f"order-{t.key}",
-        score=lambda d: score_order(d, segs, expected),
-        clean=lambda d: clean_order(d, segs, expected, fallback),
-        usable=lambda r: not r["failed"],
-    )
-    if got is None:
+    seed = ",".join(sorted(expected, key=natural_key))
+
+    async def one(k: int):
+        ps = list(parts)
+        if k:
+            random.Random(f"{k}:{seed}").shuffle(ps)
+        values = {
+            "thread": f"{name}（{about}）" if about else name,
+            "unit": unit or "年",
+            "segments": segments_text(segs),
+            "lines": "\n".join(items[s].line for p in ps for s in p),
+        }
+        return await caller.call(
+            "threads_order",
+            values,
+            lambda d: check_order(d, segs, expected),
+            f"order-{t.key}" + (f"~{k + 1}" if k else ""),
+            score=lambda d: score_order(d, segs, expected),
+            clean=lambda d: clean_order(d, segs, expected, fallback),
+            usable=lambda r: not r["failed"],
+        )
+
+    passes = max(1, passes)
+    caller.plan(passes)
+    good = [g for g in await asyncio.gather(*(one(k) for k in range(passes))) if g is not None]
+    if not good:
         t.scenes, t.times, t.order_failed = fallback, {}, True
         t.end = {"state": "待定", "note": ""}
         return []
-    t.scenes, t.times, t.end = got["scenes"], got["times"], got["end"]
-    return got["missing"]
+    order = consensus([g["scenes"] for g in good])
+    best = max(good, key=lambda g: agreement(g["scenes"], order))  # 平局取靠前的一遍
+    t.scenes, t.end = order, best["end"]
+    t.times = {s: v for s, v in best["times"].items() if s in order}
+    return [s for s in fallback if s not in order]
 
 
 # --- 6.4 跨线对齐 / 6.5 找缺口 ---
@@ -664,9 +684,9 @@ def _remap_order_tags(entries: list[dict], tmap: dict[str, str]) -> None:
     for e in entries:
         call = e.get("call")
         if isinstance(call, str) and call.startswith("order-"):
-            key = call[len("order-"):]
+            key, sep, nth = call[len("order-"):].partition("~")  # 「~2」是第几遍
             if key in tmap:
-                e["call"] = f"order-{tmap[key]}"
+                e["call"] = f"order-{tmap[key]}{sep}{nth}"
 
 
 async def _run_threads(book: Book, client: LLMClient, progress: Progress) -> dict:
@@ -705,7 +725,8 @@ async def _run_threads(book: Book, client: LLMClient, progress: Progress) -> dic
             for w in worlds
         )
         new = [t for r in results for t in r.threads]
-        lost = await _all(stage_order(caller, t, items, unit) for t in new)
+        passes = int(book.settings().get("threads_order_passes") or 1)
+        lost = await _all(stage_order(caller, t, items, unit, passes) for t in new)
         missing += [s for r in results for s in r.missing] + [s for m in lost for s in m]
         world_outlines = {w.key: list(r.world_outlines) for w, r in zip(worlds, results)}
         for t in new + locked:

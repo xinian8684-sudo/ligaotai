@@ -64,7 +64,7 @@ def test_threads_flow(ready):
     assert merged["scenes"] == ["S-0003", "S-0001", "S-0002"]
     assert c.put(f"{BOOK}/threads/main", json={"thread": "L-001"}).json()["id"] == "L-001"
     assert c.put(f"{BOOK}/threads/L-001/world", json={"world": "W-01"}).json()["world"] == "W-01"
-    assert c.get(BOOK).json()["usage"]["by_step"]["threads"]["calls"] == 3  # 划世界、划支线、排序
+    assert c.get(BOOK).json()["usage"]["by_step"]["threads"]["calls"] == 5  # 划世界、划支线、排序 3 遍
 
 
 def test_threads_errors(ready):
