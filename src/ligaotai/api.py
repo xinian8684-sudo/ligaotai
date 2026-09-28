@@ -19,6 +19,7 @@ from . import export as exp
 from . import impact as imp
 from . import skeleton as skl
 from . import threads_ops as tops
+from . import timeline_run as tlr
 from . import triage as tri
 from . import verdicts as vd
 from .archive import load_index, run_archive, write_index
@@ -113,6 +114,10 @@ class CardReq(BaseModel):
     col: str
     merge_into: str | None = None
     note: str | None = None
+
+
+class TimelineVerdictReq(BaseModel):
+    kind: str | None = None
 
 
 def _读坏了(what: str, detail: str) -> HTTPException:
@@ -565,6 +570,33 @@ def create_app(
         require_idle()
         b = get_book(name)
         return verdict_op(lambda: vd.set_verdict(b, cid, req.kind, req.value, req.note))
+
+    @app.post("/api/books/{name}/timeline/run", status_code=202)
+    def timeline_run(name: str) -> dict:
+        b = get_book(name)
+        if b.step("threads")["status"] != "done":
+            raise HTTPException(409, "请先完成归线（步骤 6），时间线检查要用它排出来的故事顺序")
+        client = make_client(b)
+        return submit(b, "timeline", lambda p: tlr.run_timeline(b, client, p), track_step=False)
+
+    @app.get("/api/books/{name}/timeline")
+    def timeline_get(name: str) -> dict:
+        b = get_book(name)
+        try:
+            return tlr.load_timeline(b)
+        except ValueError as e:
+            raise _读坏了("时间冲突.json", str(e))
+
+    @app.put("/api/books/{name}/timeline/{tid}/verdict")
+    def timeline_verdict(name: str, tid: str, req: TimelineVerdictReq) -> dict:
+        require_idle()
+        b = get_book(name)
+        try:
+            return tlr.set_timeline_verdict(b, tid, req.kind)
+        except KeyError:
+            raise HTTPException(404, "没有这条时间线冲突")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
 
     @app.get("/api/books/{name}/canon")
     def canon(name: str) -> dict:
