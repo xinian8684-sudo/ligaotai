@@ -570,6 +570,78 @@ def clean_order(data: dict, segs: dict[str, list[str]], expected: set[str], fall
     }
 
 
+# --- 6.3 长线分卷（10-01：一条线太长时先定卷、归卷，再卷内排序） ---
+
+
+def _volumes(data, lo: int, hi: int) -> _Report:
+    r = _Report()
+    vols = _obj(data).get("volumes")
+    if not isinstance(vols, list) or not vols:
+        r.add("缺少 volumes 列表", LOST)
+        return r
+    if not lo <= len(vols) <= hi:
+        r.add(f"卷数要在 {lo} 到 {hi} 之间，你给了 {len(vols)} 卷", FIX * abs(len(vols) - min(max(len(vols), lo), hi)) + FIX)
+    titles = [text(_obj(v).get("title")) for v in vols]
+    if any(not x for x in titles):
+        r.add("每一卷都要有 title（几个字的短标题）", FIX)
+    dup = [x for x in dict.fromkeys(titles) if x and titles.count(x) > 1]
+    if dup:
+        r.add("这些卷的标题重复了，每卷要不一样：" + "、".join(dup[:10]), FIX * len(dup))
+    return r
+
+
+def check_volumes(data: dict, lo: int, hi: int) -> list[str]:
+    return _volumes(data, lo, hi).problems
+
+
+def score_volumes(data: dict, lo: int, hi: int) -> int:
+    return _volumes(data, lo, hi).bad
+
+
+def clean_volumes(data: dict) -> list[dict]:
+    """按模型给的先后编号 V-01、V-02……（编号由程序给，不让模型编）。标题空的跳过。"""
+    out = []
+    for v in _list(_obj(data).get("volumes")):
+        title = text(_obj(v).get("title"))
+        if title:
+            out.append({"id": f"V-{len(out) + 1:02d}", "title": title, "about": text(_obj(v).get("about"))})
+    return out
+
+
+def _assign(data, expected: set[str], vol_ids: set[str]) -> _Report:
+    r = _Report()
+    raw = _obj(data).get("assign")
+    if not isinstance(raw, dict):
+        r.add("缺少 assign（场景编号 → 卷编号）", LOST * len(expected) + LOST)
+        return r
+    sids, vids = _Ids(expected), _Ids(vol_ids)
+    listed = [sids.one(k) for k in raw]
+    _coverage(r, listed, expected, "场景")
+    bad = sorted({text(v) for v in raw.values() if vids.one(v) not in vol_ids})
+    if bad:
+        r.add("这些卷编号不在给你的卷里：" + _listing(bad), FIX * len(bad))
+    return r
+
+
+def check_assign(data: dict, expected: set[str], vol_ids: set[str]) -> list[str]:
+    return _assign(data, expected, vol_ids).problems
+
+
+def score_assign(data: dict, expected: set[str], vol_ids: set[str]) -> int:
+    return _assign(data, expected, vol_ids).bad
+
+
+def clean_assign(data: dict, expected: set[str], vol_ids: set[str]) -> dict[str, str]:
+    """场景 → 卷：只留场景编号、卷编号都对得上的；同一场景写两次留第一次。"""
+    sids, vids = _Ids(expected), _Ids(vol_ids)
+    out: dict[str, str] = {}
+    for k, v in _obj(_obj(data).get("assign")).items():
+        s, vol = sids.one(k), vids.one(v)
+        if s in expected and vol in vol_ids:
+            out.setdefault(s, vol)
+    return out
+
+
 # --- 6.4 跨线对齐 ---
 
 

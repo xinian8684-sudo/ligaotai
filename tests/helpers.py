@@ -215,7 +215,8 @@ def listed_scenes(messages) -> list[str]:
     return _LISTED.findall(messages[1]["content"])
 
 
-def threads_handler(worlds=None, lines=None, order=None, align=None, gaps=None, fallback=None, interleave=None):
+def threads_handler(worlds=None, lines=None, order=None, align=None, gaps=None, fallback=None, interleave=None,
+                    volumes=None, assign=None):
     """步骤 6 各次调用的假回复。每个参数是 fn(messages) -> 回复（字符串 / Reply / 异常实例）；不给就用默认：
     全部归一个世界「世界一」、正文碎片全归一条主线（提纲挂上去）、按列出的顺序排、偏移都是 0、没有缺口。
     认不出的提示词交给 fallback（比如 fake_ai_handler()），没有 fallback 就报错。
@@ -256,7 +257,18 @@ def threads_handler(worlds=None, lines=None, order=None, align=None, gaps=None, 
     def d_interleave(m):  # 按输入里各线依次排：线接线，本来就是一种合法的合并
         return json.dumps({"order": listed_scenes(m)})
 
+    def d_volumes(m):  # 长线定卷：固定两卷
+        return json.dumps({"volumes": [{"title": "卷一", "about": "前半"}, {"title": "卷二", "about": "后半"}]},
+                          ensure_ascii=False)
+
+    def d_assign(m):  # 长线归卷：列出的块前一半归 V-01、后一半归 V-02
+        ids = listed_scenes(m)
+        half = (len(ids) + 1) // 2
+        return json.dumps({"assign": {s: ("V-01" if i < half else "V-02") for i, s in enumerate(ids)}})
+
     table = [
+        ("长线定卷", volumes or d_volumes),
+        ("长线归卷", assign or d_assign),
         ("划分世界", worlds or d_worlds),
         ("划分支线", lines or d_lines),
         ("线内排序", order or d_order),

@@ -28,6 +28,12 @@ from .llm_caller import Caller, _noop, load_cache
 from .order_vote import agreement, consensus
 from .threads_check import (
     check_align,
+    check_assign,
+    check_volumes,
+    clean_assign,
+    clean_volumes,
+    score_assign,
+    score_volumes,
     check_gaps,
     check_lines,
     check_order,
@@ -307,6 +313,108 @@ async def stage_order(caller: Caller, t: ThreadDraft, items: dict[str, Item], un
     t.scenes, t.end = order, best["end"]
     t.times = {s: v for s, v in best["times"].items() if s in order}
     return [s for s in fallback if s not in order]
+
+
+VOLUME_TARGET = 150  # 长线分卷：每卷大约几块（前 100 章验收书主线 82 块，5 遍投票排得很好）
+
+
+def _sample_to_budget(ids: list[str], cost: dict[str, int], budget: int) -> list[str]:
+    """总长放不下就等距抽样（从第一块开始），抽到放得下为止。"""
+    total = sum(cost[i] for i in ids)
+    if total <= budget or not ids:
+        return ids
+    step = math.ceil(total / budget)
+    while True:
+        picked = ids[::step]
+        if sum(cost[i] for i in picked) <= budget or step >= len(ids):
+            return picked
+        step += 1
+
+
+async def order_thread(
+    caller: Caller, t: ThreadDraft, items: dict[str, Item], unit: str, passes: int = 1,
+    *, max_order: int | None = None, budget: int = 600000, max_blocks: int | None = None,
+) -> list[str]:
+    """线内排序的入口：块数不超过 max_order 照旧一次排（stage_order）；超过就先定卷、归卷，
+    再每卷各排一次（spec 2026-10-01-ligaotai-long-thread-order-design.md）。10-01 全本斗破
+    主线 2891 块一次排，回复写不下，5 遍全失败。返回漏掉的块。"""
+    parts = segments(t.scenes, items)
+    fallback = [s for p in parts for s in p]
+    if max_order is None or len(fallback) <= max_order:
+        return await stage_order(caller, t, items, unit, passes)
+
+    name, about = _one_line(t.name), _one_line(t.about)
+    label = f"{name}（{about}）" if about else name
+    n = math.ceil(len(fallback) / VOLUME_TARGET)
+    lo, hi = max(2, n // 2), max(2, n * 2)
+    cost = {s: len(items[s].line) + 1 for s in fallback}
+    shown = _sample_to_budget(fallback, cost, max(budget - 2000, 1))
+    caller.plan(1)
+    vols = await caller.call(
+        "threads_volumes",
+        {"thread": label, "count": f"大约 {n} 卷（{lo} 到 {hi} 卷之间）。",
+         "lines": "\n".join(items[s].line for s in shown)},
+        lambda d: check_volumes(d, lo, hi), f"volumes-{t.key}",
+        score=lambda d: score_volumes(d, lo, hi), clean=clean_volumes,
+        usable=lambda r: len(r) >= 2,
+    )
+    if vols is None:
+        t.scenes, t.times, t.order_failed = fallback, {}, True
+        t.end = {"state": "待定", "note": ""}
+        return []
+    vol_ids = {v["id"] for v in vols}
+    vol_text = "\n".join(f"- {v['id']} {v['title']}：{v['about']}" for v in vols)
+    batches = split_by_budget(fallback, cost, max(budget - len(vol_text) - 2000, 1), max_blocks)
+    caller.plan(len(batches))
+
+    async def assign(k: int, batch: list[str]) -> dict[str, str]:
+        exp = set(batch)
+        got = await caller.call(
+            "threads_volume_assign",
+            {"thread": label, "volumes": vol_text, "lines": "\n".join(items[s].line for s in batch)},
+            lambda d: check_assign(d, exp, vol_ids), f"volassign-{t.key}-{k}",
+            score=lambda d: score_assign(d, exp, vol_ids),
+            clean=lambda d: clean_assign(d, exp, vol_ids),
+        )
+        return got or {}
+
+    vol_of: dict[str, str] = {}
+    for got in await _all(assign(k, b) for k, b in enumerate(batches, 1)):
+        vol_of.update(got)
+    order_of_vol = {v["id"]: i for i, v in enumerate(vols)}
+    missing: list[str] = []
+    for p in parts:  # 片段不拆：按片段里多数块的卷（平局取靠前的卷）；一块都没标上就算漏掉
+        votes = [vol_of[s] for s in p if s in vol_of]
+        if not votes:
+            missing += p
+            continue
+        pick = min(set(votes), key=lambda v: (-votes.count(v), order_of_vol[v]))
+        for s in p:
+            vol_of[s] = pick
+
+    subs = [ThreadDraft(f"{t.key}·{v['id']}", t.world, f"{name}·{v['title']}", v["about"],
+                        [s for s in fallback if vol_of.get(s) == v["id"]]) for v in vols]
+    subs = [sub for sub in subs if sub.scenes]
+    lost = await _all(stage_order(caller, sub, items, unit, passes) for sub in subs)
+    missing += [s for m in lost for s in m]
+
+    scenes: list[str] = []
+    times: dict = {}
+    offset = 0.0
+    for sub in subs:  # 卷内时间从卷头算起：第 k 卷整体挪到前面各卷最大时间之后
+        scenes += sub.scenes
+        nums = [v["t"] for v in sub.times.values() if isinstance(v, dict) and isinstance(v.get("t"), (int, float))]
+        for s, v in sub.times.items():
+            if isinstance(v, dict) and isinstance(v.get("t"), (int, float)):
+                times[s] = {**v, "t": v["t"] + offset}
+            else:
+                times[s] = v
+        if nums:
+            offset += max(nums)
+    t.scenes, t.times = scenes, times
+    t.end = subs[-1].end if subs else {"state": "待定", "note": ""}
+    t.order_failed = any(sub.order_failed for sub in subs)
+    return missing
 
 
 # --- 6.4 跨线对齐 / 6.5 找缺口 ---
@@ -686,8 +794,9 @@ def _remap_order_tags(entries: list[dict], tmap: dict[str, str]) -> None:
         call = e.get("call")
         if isinstance(call, str) and call.startswith("order-"):
             key, sep, nth = call[len("order-"):].partition("~")  # 「~2」是第几遍
+            key, dot, vol = key.partition("·")  # 长线分卷时卷内排序的调用名带「·V-03」
             if key in tmap:
-                e["call"] = f"order-{tmap[key]}{sep}{nth}"
+                e["call"] = f"order-{tmap[key]}{dot}{vol}{sep}{nth}"
 
 
 async def _run_threads(book: Book, client: LLMClient, progress: Progress) -> dict:
@@ -729,7 +838,9 @@ async def _run_threads(book: Book, client: LLMClient, progress: Progress) -> dic
         )
         new = [t for r in results for t in r.threads]
         passes = int(book.settings().get("threads_order_passes") or 1)
-        lost = await _all(stage_order(caller, t, items, unit, passes) for t in new)
+        order_max = book.settings().get("threads_order_max_blocks")
+        lost = await _all(order_thread(caller, t, items, unit, passes, max_order=order_max, budget=budget,
+                                       max_blocks=max_blocks) for t in new)
         missing += [s for r in results for s in r.missing] + [s for m in lost for s in m]
         world_outlines = {w.key: list(r.world_outlines) for w, r in zip(worlds, results)}
         for t in new + locked:

@@ -993,3 +993,127 @@ def test_choose_main():
     assert choose_main(normalize({"main_thread": "L-009", "main_by": "author"}), threads, {"W-02": "L-003"}, order) == ("L-003", "auto")
     assert choose_main(normalize(None), threads, {"W-02": "L-404"}, order) == ("L-002", "auto")
     assert choose_main(normalize(None), [], {}, []) == (None, "auto")
+
+
+# --- 长线分卷排序（10-01：全本斗破主线 2891 块一次排，5 遍全失败） ---
+
+from ligaotai.threads import order_thread  # noqa: E402
+from ligaotai.threads_check import (  # noqa: E402
+    check_assign,
+    check_volumes,
+    clean_assign,
+    clean_volumes,
+)
+
+
+def far_items(n, same_file=()):
+    """n 块，各在不同文件（没有片段）；same_file 里的编号放进同一个文件、位置紧挨（成片段）。"""
+    out = {}
+    pos = 0
+    for i in range(1, n + 1):
+        sid = f"S-{i:04d}"
+        if sid in same_file:
+            out[sid] = Item(sid, "seg.txt", pos, "正文", f"{sid}｜正文｜摘要{sid}")
+            pos += 1
+        else:
+            out[sid] = Item(sid, f"f{i:04d}.txt", 0, "正文", f"{sid}｜正文｜摘要{sid}")
+    return out
+
+
+def long_of(book, items, max_order=4, budget=10**6, max_blocks=400, **handlers):
+    c = client(book, **handlers)
+    caller = Caller(book, c, lambda *a: None, cache_path=book.threads_cache_path)
+    t = ThreadDraft("W-01#1", "W-01", "主线", "说明", scenes=list(items))
+    missing = asyncio.run(order_thread(caller, t, items, "年", 1, max_order=max_order, budget=budget,
+                                       max_blocks=max_blocks))
+    return t, missing, c
+
+
+def test_order_thread_short_line_orders_once(book):
+    t, missing, c = long_of(book, far_items(4), max_order=4)
+    assert users(c, "长线定卷") == [] and len(users(c, "线内排序")) == 1
+    assert len(t.scenes) == 4 and missing == []
+
+
+def test_order_thread_long_line_volumes_then_order_each(book):
+    items = far_items(6)
+    t, missing, c = long_of(book, items, max_order=4)
+    assert len(users(c, "长线定卷")) == 1 and len(users(c, "长线归卷")) == 1
+    orders = users(c, "线内排序")
+    assert len(orders) == 2  # 每卷一次
+    assert "S-0001｜" in orders[0] and "S-0004｜" not in orders[0]  # 第一卷只给它自己的块
+    assert t.scenes == [f"S-{i:04d}" for i in range(1, 7)] and missing == [] and t.order_failed is False
+    # 卷内时间从卷头算起（默认假回复 0,1,2），拼起来第二卷整体挪到第一卷最大时间之后
+    assert [t.times[s]["t"] for s in t.scenes] == [0, 1, 2, 2, 3, 4]
+    assert t.end == {"state": "待定", "note": "测试"}
+
+
+def test_order_thread_volume_prompt_count_and_sampling(book):
+    items = far_items(6)
+    t, _, c = long_of(book, items, max_order=4, budget=60)  # 每行约 22 字：60 字只放得下两三行
+    vol_user = users(c, "长线定卷")[0]
+    listed = [s for s in items if f"{s}｜" in vol_user]
+    assert 1 <= len(listed) < 6  # 等距抽样
+    assert "S-0001｜" in vol_user  # 从头开始抽
+
+
+def test_order_thread_segment_stays_in_one_volume(book):
+    # S-0003、S-0004 在同一文件紧挨着（片段）；默认归卷把它们分进两卷时要拉回同一卷（平局取靠前）
+    items = far_items(6, same_file=("S-0003", "S-0004"))
+
+    def assign(m):
+        return json.dumps({"assign": {"S-0001": "V-01", "S-0002": "V-01", "S-0003": "V-01", "S-0004": "V-02",
+                                      "S-0005": "V-02", "S-0006": "V-02"}})
+
+    t, missing, c = long_of(book, items, assign=assign)
+    first = users(c, "线内排序")[0]
+    assert "S-0003｜" in first and "S-0004｜" in first
+    assert missing == []
+
+
+def test_order_thread_unassigned_block_follows_segment_or_is_missing(book):
+    items = far_items(6, same_file=("S-0002", "S-0003"))
+
+    def assign(m):  # S-0003 没标（片段同伴 S-0002 标了 V-01）、S-0006 没标也没有同伴
+        return json.dumps({"assign": {"S-0001": "V-01", "S-0002": "V-01", "S-0004": "V-02", "S-0005": "V-02"}})
+
+    t, missing, _ = long_of(book, items, assign=assign)
+    assert missing == ["S-0006"]
+    assert "S-0003" in t.scenes and "S-0006" not in t.scenes
+
+
+def test_order_thread_volumes_failed_falls_back(book):
+    t, missing, _ = long_of(book, far_items(6), volumes=lambda m: LLMError("坏了"))
+    assert t.order_failed is True and missing == [] and len(t.scenes) == 6 and t.times == {}
+
+
+def test_order_thread_one_volume_order_failed(book):
+    def order(m):
+        if "S-0001｜" in m[1]["content"]:
+            return LLMError("坏了")
+        ids = listed_scenes(m)
+        return json.dumps({"order": ids, "times": {s: [i, "高"] for i, s in enumerate(ids)},
+                           "end": {"state": "完结", "note": "收尾"}}, ensure_ascii=False)
+
+    t, missing, _ = long_of(book, far_items(6), order=order)
+    assert t.order_failed is True and len(t.scenes) == 6 and missing == []
+    assert t.scenes[:3] == ["S-0001", "S-0002", "S-0003"]  # 失败的卷按原稿位置
+    assert t.end["state"] == "完结"
+
+
+def test_check_volumes():
+    ok = {"volumes": [{"title": "甲", "about": "a"}, {"title": "乙", "about": "b"}]}
+    assert check_volumes(ok, 2, 4) == []
+    assert any("卷" in p for p in check_volumes({"volumes": [{"title": "甲"}]}, 2, 4))  # 太少
+    assert check_volumes({"volumes": [{"title": "甲"}, {"title": "甲"}]}, 2, 4)  # 重名
+    assert check_volumes({"volumes": [{"title": ""}, {"title": "乙"}]}, 2, 4)  # 空标题
+    assert check_volumes({}, 2, 4)
+    assert clean_volumes(ok) == [{"id": "V-01", "title": "甲", "about": "a"}, {"id": "V-02", "title": "乙", "about": "b"}]
+
+
+def test_check_assign():
+    exp, vols = {"S-0001", "S-0002"}, {"V-01", "V-02"}
+    assert check_assign({"assign": {"S-0001": "V-01", "S-0002": "V-02"}}, exp, vols) == []
+    probs = check_assign({"assign": {"S-0001": "V-09", "S-0003": "V-01"}}, exp, vols)
+    assert any("V-09" in p for p in probs) and any("S-0003" in p for p in probs) and any("S-0002" in p for p in probs)
+    assert clean_assign({"assign": {"S-0001": "V-09", "S-0002": "v-02", "S-0003": "V-01"}}, exp, vols) == {"S-0002": "V-02"}

@@ -55,6 +55,8 @@ THREAD_PROMPTS = [
     ("timeline_death", {"items": "i"}, "说不准"),
     ("timeline_refs", {"items": "i"}, "回指"),
     ("timeline_index", {"index": "x", "refs": "r"}, "目录"),
+    ("threads_volumes", {"thread": "t", "count": "c", "lines": "l"}, "长线定卷"),
+    ("threads_volume_assign", {"thread": "t", "volumes": "v", "lines": "l"}, "长线归卷"),
 ]
 
 

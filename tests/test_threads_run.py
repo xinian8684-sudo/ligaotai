@@ -390,3 +390,16 @@ def test_interleave_in_windows(seeded, monkeypatch):
     assert result(seeded)["global_order"] == ["S-0002", "S-0003", "S-0001"]
     calls = [x for x in c.backend.calls if "全书穿插" in x["messages"][0]["content"]]
     assert len(calls) == 1 and "S-0001" not in calls[0]["messages"][1]["content"]
+
+
+def test_run_threads_long_line_goes_through_volumes(seeded):
+    """线的块数超过 threads_order_max_blocks 就先定卷、归卷再卷内排（10-01 长书）。卷内排序失败时
+    失败清单里的调用名带卷号，线的临时键也照样换成正式编号。"""
+    seeded.update(lambda d: d.setdefault("settings", {}).update({"threads_order_max_blocks": 2, "threads_order_passes": 1}))
+    c = client(seeded, order=lambda m: LLMError("坏了"))
+    summary = run_threads(seeded, c)
+    [t] = result(seeded)["threads"]
+    assert sorted(t["scenes"]) == ["S-0001", "S-0002", "S-0003"] and t["order_failed"] is True
+    sys_msgs = [x["messages"][0]["content"] for x in c.backend.calls]
+    assert sum("长线定卷" in m for m in sys_msgs) == 1 and sum("长线归卷" in m for m in sys_msgs) == 1
+    assert any(f["call"].startswith("order-L-001·V-") for f in summary["failed_calls"])
