@@ -72,9 +72,23 @@ def test_C输出检查_happens_in只能是这条自己的候选或null():
     assert any("C-02" in p for p in probs)
 
 
-def test_C清理_不合法的当null():
+def test_C清理_不合法的去掉_统一成列表():
+    # 10-01 起 happens_in 是列表（候选里所有说得通的场）；模型照旧答单个编号或 null 也收，统一成列表。
     got = clean_refs({"items": [{"id": "C-01", "happens_in": "S-0009", "reason": "r"}]}, {"C-01": ["S-0001"], "C-02": ["S-0002"]})
-    assert got == {"C-01": {"happens_in": None, "reason": "r"}, "C-02": {"happens_in": None, "reason": ""}}
+    assert got == {"C-01": {"happens_in": [], "reason": "r"}, "C-02": {"happens_in": [], "reason": ""}}
+    got = clean_refs({"items": [{"id": "C-01", "happens_in": ["S-0002", "S-0009", "S-0001", "S-0002"], "reason": "r"},
+                                {"id": "C-02", "happens_in": None, "reason": "无"}]},
+                     {"C-01": ["S-0001", "S-0002"], "C-02": ["S-0002"]})
+    assert got["C-01"]["happens_in"] == ["S-0002", "S-0001"] and got["C-02"]["happens_in"] == []
+
+
+def test_C输出检查_列表里每个都得是这条自己的候选():
+    cands = {"C-01": ["S-0001", "S-0002"]}
+    assert check_refs({"items": [{"id": "C-01", "happens_in": ["S-0001", "S-0002"], "reason": "[S-0001]"}]}, cands) == []
+    assert check_refs({"items": [{"id": "C-01", "happens_in": [], "reason": "都不是"}]}, cands) == []
+    probs = check_refs({"items": [{"id": "C-01", "happens_in": ["S-0001", "S-0007"], "reason": "x"}]}, cands)
+    assert any("C-01" in p and "S-0007" in p for p in probs)
+    assert check_refs({"items": [{"id": "C-01", "happens_in": [1], "reason": "x"}]}, cands)
 
 
 def test_A模型输出畸形_检查和清理都不抛异常():
@@ -93,8 +107,8 @@ def test_C模型输出畸形_检查和清理都不抛异常():
     probs = check_refs(malformed, cands)
     assert isinstance(probs, list) and probs
     cleaned = clean_refs(malformed, cands)
-    assert cleaned["C-01"]["happens_in"] is None
-    assert cleaned["C-02"]["happens_in"] is None
+    assert cleaned["C-01"]["happens_in"] == ["S-0001"]  # 列表本身合法（reason 坏了只影响 reason）
+    assert cleaned["C-02"]["happens_in"] == []
 
 
 def _book(book):
@@ -154,7 +168,7 @@ def test_A判成提到的不报_记进dismissed(book):
     # 审 F1 第 8 条改完：dismissed 带上 status（现在有「提到」「记录不成立」两种都不报冲突），
     # 旧断言没有 status 字段（语义变化，见报告）。
     assert data["dismissed"] == [{"who": "甲", "scenes": ["S-0002", "S-0004"], "status": "提到"}]
-    assert data["asked_refs"][0]["happens_in"] is None
+    assert data["asked_refs"][0]["happens_in"] == []
 
 
 def test_重跑沿用编号和裁决(book):
@@ -371,7 +385,7 @@ def test_C批次失败_asked_refs带failed_没有C类冲突(book):
     data = read_json(b.timeline_path)
     assert [c["kind"] for c in data["conflicts"]] == ["A"]
     assert data["asked_refs"][0]["failed"] is True
-    assert data["asked_refs"][0]["happens_in"] is None
+    assert data["asked_refs"][0]["happens_in"] == []
 
 
 def test_C批次成功_asked_refs的failed是False(book):
@@ -442,7 +456,7 @@ def test_C类模型答的候选在回指场之前_不报冲突(book):
     data = read_json(book.timeline_path)
     assert data["conflicts"] == []
     assert data["asked_refs"][0]["candidates"] == ["S-0000", "S-0002"]
-    assert data["asked_refs"][0]["happens_in"] == "S-0000"
+    assert data["asked_refs"][0]["happens_in"] == ["S-0000"]
 
 
 def test_A类摘录按别名也能在原文里找到(book):
@@ -648,3 +662,46 @@ def test_目录调用失败_退回字面候选_照样判_记进failed(book):
     data = read_json(b.timeline_path)
     assert [c["kind"] for c in data["conflicts"]] == ["A", "C"]
     assert s["failed"] >= 1 and data["failed"]
+
+
+
+# ---------- happens_in 改列表：同类事发生过多次，有一次在前面就不报（10-01） ----------
+
+def _two_book(book):
+    """S-0002 回指「那次拍卖」；S-0001（前面）和 S-0003（后面）都是拍卖会。"""
+    from helpers import seed_book
+    seed_book(book, [
+        {"id": "S-0001", "persons": ["乙", "丙"], "text": "乙丙去拍卖会。"},
+        {"id": "S-0002", "persons": ["乙", "丙"], "refs": ["那次拍卖"], "text": "乙想起那次拍卖。"},
+        {"id": "S-0003", "persons": ["乙", "丙"], "text": "乙丙又去拍卖会。"},
+        {"id": "S-0004", "persons": ["乙", "丙"], "text": "乙丙第三次去拍卖会。"},
+    ])
+    seq = ["S-0001", "S-0002", "S-0003", "S-0004"]
+    write_json(book.threads_path, {"threads": [{"id": "L-001", "offset": 0, "scenes": seq,
+        "times": {s: {"t": i} for i, s in enumerate(seq)}}],
+        "worlds": [], "main_thread": "L-001", "global_order": [], "unassigned": [], "pending": [],
+        "gaps": [], "intersections": []})
+    return book
+
+
+def _refs_answer(hs):
+    def h(tier, messages):
+        if "回指" in messages[0]["content"]:
+            return json.dumps({"items": [{"id": "C-01", "happens_in": hs, "reason": "拍卖[S-0001]"}]})
+        raise AssertionError(messages[0]["content"][:30])
+    return h
+
+
+def test_C多个说得通的场里有一个在前面_不报(book):
+    b = _two_book(book)
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=_refs_answer(["S-0003", "S-0001"])), log_dir=b.logs_dir))
+    data = read_json(b.timeline_path)
+    assert data["conflicts"] == []
+    assert data["asked_refs"][0]["happens_in"] == ["S-0003", "S-0001"]
+
+
+def test_C说得通的场全在后面_报最早那一场(book):
+    b = _two_book(book)
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=_refs_answer(["S-0004", "S-0003"])), log_dir=b.logs_dir))
+    data = read_json(b.timeline_path)
+    assert [(c["kind"], c["scenes"]) for c in data["conflicts"]] == [("C", ["S-0002", "S-0003"])]

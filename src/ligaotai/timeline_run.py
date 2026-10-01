@@ -67,15 +67,31 @@ def clean_death(data, ids: set[str]) -> dict[str, dict]:
     return out
 
 
+def _as_list(h) -> list | None:
+    """happens_in 收列表；模型照旧答单个编号或 null 也收（统一成列表）。别的形状返回 None。"""
+    if h is None:
+        return []
+    if isinstance(h, str):
+        return [h]
+    if isinstance(h, list) and all(isinstance(v, str) for v in h):
+        return h
+    return None
+
+
 def check_refs(data, cands: dict[str, list[str]]) -> list[str]:
     items = _items(data)
     if items is None:
         return ['输出要是 {"items": [...]} 的形状']
     problems, got = _common(items, set(cands))
     for x in got:
-        h = x.get("happens_in")
-        if h is not None and h not in cands[x["id"]]:
-            problems.append(f"{x['id']} 的 happens_in 只能是它自己的候选之一或者 null：" + "、".join(cands[x["id"]]))
+        hs = _as_list(x.get("happens_in"))
+        if hs is None:
+            problems.append(f"{x['id']} 的 happens_in 要是场景编号的列表，一个都不是就填 []")
+        else:
+            bad = [h for h in hs if h not in cands[x["id"]]]
+            if bad:
+                problems.append(f"{x['id']} 的 happens_in 只能填它自己的候选（" + "、".join(cands[x["id"]])
+                                + "），不能填：" + "、".join(bad[:5]))
         if not isinstance(x.get("reason"), str):
             problems.append(f"{x['id']} 的 reason 要是一句话（字符串）")
     return problems[:8]
@@ -85,11 +101,11 @@ def clean_refs(data, cands: dict[str, list[str]]) -> dict[str, dict]:
     out = {}
     for x in _items(data) or []:
         if isinstance(x, dict) and x.get("id") in cands and x["id"] not in out:
-            h = x.get("happens_in")
-            out[x["id"]] = {"happens_in": h if h in cands[x["id"]] else None,
+            hs = _as_list(x.get("happens_in")) or []
+            out[x["id"]] = {"happens_in": [h for h in dict.fromkeys(hs) if h in cands[x["id"]]],
                             "reason": x["reason"].strip() if isinstance(x.get("reason"), str) else ""}
     for i in sorted(set(cands) - set(out)):
-        out[i] = {"happens_in": None, "reason": ""}
+        out[i] = {"happens_in": [], "reason": ""}
     return out
 
 
@@ -290,7 +306,7 @@ async def _run(book: Book, client: LLMClient, progress: Progress) -> dict:
         got = await caller.call("timeline_refs", {"items": text}, lambda d: check_refs(d, cands), f"refs/{k}",
                                 clean=lambda d: clean_refs(d, cands))
         call_failed = got is None
-        judged = got or {i: {"happens_in": None, "reason": "这一批调用失败，没拿到判断"} for i in cands}
+        judged = got or {i: {"happens_in": [], "reason": "这一批调用失败，没拿到判断"} for i in cands}
         return [{**a, **judged[f"C-{i:02d}"], "failed": call_failed} for i, a in enumerate(batch, 1)]
 
     a_res = [x for r in await asyncio.gather(*(one_a(k, b) for k, b in enumerate(a_batches))) for x in r]
@@ -311,7 +327,11 @@ async def _run(book: Book, client: LLMClient, progress: Progress) -> dict:
                           "quotes": [s["death_quote"], later_quote],
                           "reason": s["reason"], "status": s["status"]})
     for a in c_res:
-        h = a["happens_in"]
+        # 同一类事发生过多次（两次拍卖会、测验和复测），模型列出所有说得通的场：有一次排在回指
+        # 之前，就说明「之前发生过」，不报；全在后面才报，报最早那一场（10-01 斗破 12 条误报
+        # 大多是候选里本来有更早那次、单选规则逼模型挑了后面那次）
+        hs = a["happens_in"]
+        h = min(hs, key=lambda x: pos[x]) if hs else None
         if h is not None and pos[h] > pos[a["scene"]]:
             conflicts.append({"kind": "C", "who": None, "ref": a["ref"], "scenes": [a["scene"], h],
                               "pos": [pos[a["scene"]], pos[h]], "quotes": [a["ref"], _summary(cards, h)],
