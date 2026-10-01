@@ -463,6 +463,7 @@ def plant_foreknowledge(chapters: list[Chapter], rng: random.Random, n: int,
     """时间线检查验收用（C 类）：事件清单里每条是「第 b 章 who 做了 event」。挑 b 之前、who 出现过、
     插入点在引号外的一章 a，插「{who}想起那日{event}之事。」——a 章里提前知道了 b 章才发生的事。
     事件清单手写（程序编不出像样的事件），放 data/，不进仓库。
+    事件跨几章的写 span: [首章, 末章]（chapter 写首章），原样记进答案，判卷时范围里哪章都算。
     avoid：事件的 who 会被别名替换的话换一条（同 plant_contradictions，②b S4）。"""
     if n <= 0 or not events:
         return []
@@ -486,7 +487,8 @@ def plant_foreknowledge(chapters: list[Chapter], rng: random.Random, n: int,
         cut = _insertion_point(a.body, e["who"])
         a.body = a.body[:cut] + f"{e['who']}想起那日{e['event']}之事。" + a.body[cut:]
         used |= {a.num, b}
-        planted.append({"kind": "C", "who": e["who"], "event": e["event"], "chapters": [a.num, b]})
+        planted.append({"kind": "C", "who": e["who"], "event": e["event"], "chapters": [a.num, b],
+                        "span": list(e.get("span") or [b, b])})
     return sorted(planted, key=lambda p: p["chapters"])
 
 

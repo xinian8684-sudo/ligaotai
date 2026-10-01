@@ -13,6 +13,21 @@ def test_两类都命中():
     assert (r["A"]["hit"], r["A"]["planted"], r["C"]["hit"], r["C"]["planted"]) == (1, 1, 1, 1)
 
 
+def test_C事件跨几章_范围里哪章都算命中_范围外不算():
+    ch = {5: {"S-0005"}, 9: {"S-0009"}, 10: {"S-0010"}, 11: {"S-0011"}}
+    key = {"timeline": [{"kind": "C", "who": "岑秀", "event": "比箭", "chapters": [5, 9], "span": [9, 10]}]}
+
+    def hit(sid):
+        res = {"conflicts": [{"kind": "C", "ref": "想起比箭", "scenes": ["S-0005", sid]}]}
+        return recall_timeline(key, ch, res, cmap={})["C"]["hit"]
+
+    assert (hit("S-0009"), hit("S-0010"), hit("S-0011")) == (1, 1, 0)
+    # 归因也按范围：候选里有范围内的场就不是「候选里没有事件那一场」
+    r = recall_timeline(key, ch, {"conflicts": [], "dismissed": [], "asked_refs": [
+        {"scene": "S-0005", "ref": "想起比箭", "candidates": ["S-0010"], "happens_in": None}]}, cmap={}, cards={})
+    assert r["C"]["misses"][0]["cause"] == "模型判错了场"
+
+
 def test_A人名要归一_场景要落在对的章():
     res = {"conflicts": [{"kind": "A", "who": "岑公子", "scenes": ["S-0003", "S-0009"]}]}
     assert recall_timeline(KEY, CH, res, cmap={("person", "岑公子"): "岑秀"})["A"]["hit"] == 0  # 后一场章不对

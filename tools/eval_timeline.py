@@ -47,7 +47,10 @@ def recall_timeline(key: dict, chapter_scenes: dict[int, set[str]], result: dict
         ps = [p for p in planted if p["kind"] == kind]
         hit, misses = 0, []
         for p in ps:
-            a_sc, b_sc = (chapter_scenes.get(ch, set()) for ch in p["chapters"])
+            a_sc = chapter_scenes.get(p["chapters"][0], set())
+            # C 类的事件可能跨几章（答案里的 span），范围里哪章的场都算；A 类和旧答案就是那一章
+            lo, hi = p.get("span") or [p["chapters"][1]] * 2
+            b_sc = set().union(*(chapter_scenes.get(ch, set()) for ch in range(lo, hi + 1)))
             if kind == "A":
                 who_set = _who_variants(p, cmap)
                 ok = any(c.get("kind") == "A" and c["scenes"][0] in a_sc and c["scenes"][1] in b_sc

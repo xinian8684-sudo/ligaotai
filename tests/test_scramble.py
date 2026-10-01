@@ -614,6 +614,18 @@ def test_C植入_在事件章之前某章插回忆_答案记两章():
     assert "岑秀想起那日比箭連中三箭之事。" in {c.num: c.body for c in chapters}[a]
 
 
+def test_C植入_事件跨几章_答案记范围_没给范围就是单章():
+    # 10-01：一件事常常跨好几章（斗破「去拍卖场」20–24 章），答案只记一章会把模型挑对的别章判错。
+    chapters = _talk_chapters(8)
+    events = [{"chapter": 5, "span": [5, 7], "who": "岑秀", "event": "比箭"}]
+    p = plant_foreknowledge(chapters, random.Random(1), n=1, events=events, used=set())[0]
+    assert p["span"] == [5, 7] and p["chapters"][0] < 5
+    chapters = _talk_chapters(8)
+    p = plant_foreknowledge(chapters, random.Random(1), n=1, events=[{"chapter": 6, "who": "岑秀", "event": "甲"}],
+                            used=set())[0]
+    assert p["span"] == [6, 6]
+
+
 def test_C植入_事件章被占用或跳过就换一条():
     chapters = _talk_chapters(8)
     events = [{"chapter": 6, "who": "岑秀", "event": "甲"}, {"chapter": 7, "who": "岑秀", "event": "乙"}]
