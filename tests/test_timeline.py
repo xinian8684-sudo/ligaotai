@@ -379,7 +379,7 @@ def test_目录一行_编号加摘要截短_空白压掉():
     cards = _rcards({"S-0001": ([], [], "萧炎\n冲击  斗者" + "字" * 200)})
     line = index_line(cards, "S-0001")
     assert line.startswith("[S-0001] 萧炎 冲击 斗者")
-    assert len(line) == len("[S-0001] ") + 60
+    assert len(line) == len("[S-0001] ") + 100
 
 
 def test_目录分段():

@@ -202,7 +202,7 @@ def ref_items(seq: list[str], cards: dict) -> list[tuple[str, str]]:
     return out
 
 
-INDEX_LINE = 60  # 目录里每场摘要留多少字：够认出这场发生了什么，全书目录又不至于太长
+INDEX_LINE = 100  # 目录里每场摘要留多少字：60 字时斗破 S-0088 的「最终成功突破」被截掉，模型认不出这场是晋级斗者
 
 
 def index_line(cards: dict, sid: str) -> str:
