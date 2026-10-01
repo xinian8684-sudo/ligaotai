@@ -210,10 +210,10 @@ def test_caller_usable_error_is_a_failure(book):
 # --- 划世界 ---
 
 
-def worlds_of(book, items, known=(), unit="", budget=10**6, **handlers):
+def worlds_of(book, items, known=(), unit="", budget=10**6, max_blocks=None, **handlers):
     c = client(book, **handlers)
     caller = Caller(book, c, lambda *a: None, cache_path=book.threads_cache_path)
-    got = asyncio.run(stage_worlds(caller, list(items.values()), list(known), unit, budget))
+    got = asyncio.run(stage_worlds(caller, list(items.values()), list(known), unit, budget, max_blocks=max_blocks))
     return got, c, caller
 
 
@@ -250,6 +250,20 @@ def test_stage_worlds_chunks_carry_earlier_worlds(book):
     assert c.usage.calls == 3
     assert [(w.key, w.scenes) for w in worlds] == [("N1", ["S-0001", "S-0002", "S-0003"])]
     assert "已经定为「年」" in c.backend.calls[1]["messages"][0]["content"]
+
+
+def test_stage_worlds_chunks_by_block_count(book):
+    """字数预算很宽，块数封顶 2：3 块分 2 批，第二批带着第一批建的世界。"""
+    def reply(m):
+        ids = listed_scenes(m)
+        if "N1 世界一" in m[1]["content"]:
+            return json.dumps({"worlds": [{"id": "N1", "scenes": ids}]})
+        return json.dumps({"time_unit": "年", "worlds": [{"name": "世界一", "reason": "r", "scenes": ids}]}, ensure_ascii=False)
+
+    items = items_of("S-0001", "S-0002", "S-0003")
+    (worlds, missing, _), c, _ = worlds_of(book, items, max_blocks=2, worlds=reply)
+    assert c.usage.calls == 2
+    assert [(w.key, w.scenes) for w in worlds] == [("N1", ["S-0001", "S-0002", "S-0003"])]
 
 
 def test_stage_worlds_chunk_reuses_name_of_earlier_new_world(book):
@@ -306,10 +320,10 @@ def test_stage_worlds_nothing_free(book):
 # --- 划支线 ---
 
 
-def lines_of(book, world, items, locked=(), budget=10**6, **handlers):
+def lines_of(book, world, items, locked=(), budget=10**6, max_blocks=None, **handlers):
     c = client(book, **handlers)
     caller = Caller(book, c, lambda *a: None, cache_path=book.threads_cache_path)
-    return asyncio.run(stage_lines(caller, world, items, list(locked), budget)), c, caller
+    return asyncio.run(stage_lines(caller, world, items, list(locked), budget, max_blocks=max_blocks)), c, caller
 
 
 def test_stage_lines_default(book):
@@ -355,6 +369,20 @@ def test_stage_lines_chunks_carry_new_threads(book):
     res, c, _ = lines_of(book, world, items, budget=20, lines=reply)
     assert c.usage.calls == 2
     assert [(t.key, t.scenes) for t in res.threads] == [("W-01#1", ["S-0001", "S-0002"])]
+
+
+def test_stage_lines_chunks_by_block_count(book):
+    def reply(m):
+        ids = listed_scenes(m)
+        if "W-01#1" in m[1]["content"]:
+            return json.dumps({"threads": [{"id": "W-01#1", "main": True, "scenes": ids}]})
+        return json.dumps({"threads": [{"name": "甲", "main": True, "scenes": ids}]}, ensure_ascii=False)
+
+    items = items_of("S-0001", "S-0002", "S-0003")
+    world = WorldDraft("W-01", "人间", scenes=list(items))
+    res, c, _ = lines_of(book, world, items, max_blocks=2, lines=reply)
+    assert c.usage.calls == 2
+    assert [(t.key, t.scenes) for t in res.threads] == [("W-01#1", ["S-0001", "S-0002", "S-0003"])]
 
 
 def test_stage_lines_failed_call(book):

@@ -149,13 +149,15 @@ def segments(ids: list[str], items: dict[str, Item]) -> list[list[str]]:
     return out
 
 
-def split_by_budget(ids: list[str], cost: dict[str, int], budget: int) -> list[list[str]]:
-    """按顺序切成几段，每段的 cost 之和不超过 budget；单个就超过 budget 的自成一段。"""
+def split_by_budget(ids: list[str], cost: dict[str, int], budget: int,
+                    max_count: int | None = None) -> list[list[str]]:
+    """按顺序切成几段，每段的 cost 之和不超过 budget；单个就超过 budget 的自成一段。
+    max_count：每段最多几个（要模型逐个列编号的调用，字数没超、块数太多也会写不全）。"""
     chunks: list[list[str]] = []
     total = 0
     for i in ids:
         c = cost[i]
-        if chunks and total + c <= budget:
+        if chunks and total + c <= budget and (max_count is None or len(chunks[-1]) < max_count):
             chunks[-1].append(i)
             total += c
         else:

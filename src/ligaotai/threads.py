@@ -86,7 +86,8 @@ def known_worlds_text(worlds: list[WorldDraft]) -> str:
 
 
 async def stage_worlds(
-    caller: Caller, free: list[Item], known: list[WorldDraft], unit: str, budget: int
+    caller: Caller, free: list[Item], known: list[WorldDraft], unit: str, budget: int,
+    *, max_blocks: int | None = None,
 ) -> tuple[list[WorldDraft], list[str], str]:
     """划世界。known：已确认的世界（锁定，新块可以归进去）。返回 (全部世界, 漏掉的块, 时间单位)。
     新世界跟已有的世界（含前面几段新建的 N 键世界）同名时，检查会报、清理会归进那个世界。"""
@@ -94,7 +95,7 @@ async def stage_worlds(
     if not free:
         return worlds, [], unit
     line_of = {it.id: it.line for it in free}
-    chunks = split_by_budget(list(line_of), {i: len(v) + 1 for i, v in line_of.items()}, budget)
+    chunks = split_by_budget(list(line_of), {i: len(v) + 1 for i, v in line_of.items()}, budget, max_blocks)
     caller.plan(len(chunks))
     missing: list[str] = []
     failed = 0
@@ -183,7 +184,7 @@ class LinesResult:
 
 async def stage_lines(
     caller: Caller, world: WorldDraft, items: dict[str, Item], locked: list[ThreadDraft], budget: int,
-    *, main: str | None = None,
+    *, main: str | None = None, max_blocks: int | None = None,
 ) -> LinesResult:
     """划支线（一个世界一次，太大就分段）。locked：这个世界里已确认的线。
     main：调用方已知的这个世界的全书主线的键（T14 组装时传旧文件里的全书主线）；不在 locked 里就忽略。"""
@@ -193,7 +194,7 @@ async def stage_lines(
         return res
     locked_keys = {t.key for t in locked}
     known_main = main if main in locked_keys else None
-    chunks = split_by_budget(ids, {s: len(items[s].line) + 1 for s in ids}, budget)
+    chunks = split_by_budget(ids, {s: len(items[s].line) + 1 for s in ids}, budget, max_blocks)
     caller.plan(len(chunks))
     for no, chunk in enumerate(chunks, 1):
         ref = locked + res.threads
@@ -693,6 +694,7 @@ async def _run_threads(book: Book, client: LLMClient, progress: Progress) -> dic
     prep = prepare(book)
     items = prep.items
     budget = book.settings()["threads_max_input_tokens"]
+    max_blocks = book.settings().get("threads_max_blocks_per_call")
     snapshot = read_json(book.threads_path, None)
     old = normalize(snapshot)
 
@@ -716,12 +718,13 @@ async def _run_threads(book: Book, client: LLMClient, progress: Progress) -> dic
     caller = Caller(book, client, progress, cache_path=book.threads_cache_path, tag_prefix="threads")
     try:
         known = [WorldDraft(w["id"], text(w.get("name")), text(w.get("reason"))) for w in locked_worlds]
-        worlds, missing, unit = await stage_worlds(caller, free, known, unit, budget)
+        worlds, missing, unit = await stage_worlds(caller, free, known, unit, budget, max_blocks=max_blocks)
         wmap, next_world = assign_world_ids(old, worlds, locked=locked_world_ids)
         for w in worlds:
             w.key = wmap[w.key]
         results = await _all(
-            stage_lines(caller, w, items, [t for t in locked if t.world == w.key], budget, main=old["main_thread"])
+            stage_lines(caller, w, items, [t for t in locked if t.world == w.key], budget, main=old["main_thread"],
+                        max_blocks=max_blocks)
             for w in worlds
         )
         new = [t for r in results for t in r.threads]

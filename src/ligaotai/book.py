@@ -33,6 +33,7 @@ DEFAULT_SETTINGS = {
     "dedup_min_shingles": 100,   # 太短的块（约 100 字以下）不参与查重
     "dedup_common_df": 200,      # 出现在超过这么多块里的字串当套话，不计数（真实文本 21~200 块之间几乎没有套话，调大避免误伤 21+ 份重复场景）
     "threads_max_input_tokens": 600000,  # 归线一次调用的输入上限（按 1 个字符 1 个 token 估，偏保守），超过就分段
+    "threads_max_blocks_per_call": 400,  # 划世界 / 划线一次最多给几块：要模型逐块列编号，10-01 全本斗破一批 2780 块时模型写成「S-0001 至 S-2781 中除……外的全部」
     "threads_order_passes": 5,  # 线内排序每条线排几遍、按多数票合并（偶发的排错能投掉；1 = 只排一遍）。9-28 实测 3 遍不够稳、5 遍够
     "skeleton_max_input_tokens": 600000,  # 骨架分章一次调用的输入上限（跟归线同一估法），超过就按窗口分批
     "contradictions_batch_tokens": 30000,  # 矛盾扫描一批的输入上限（按 1 字符 1 token 估）

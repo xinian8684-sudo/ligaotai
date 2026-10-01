@@ -176,6 +176,14 @@ def test_split_by_budget():
     assert split_by_budget([], cost, 10) == []
 
 
+def test_split_by_budget_max_count():
+    # 10-01 全本斗破：划世界一批 2780 块，模型把编号写成「S-0001 至 S-2781 中除……外的全部」。
+    # 字数没超，块数太多——一批的块数也要封顶。
+    cost = {k: 1 for k in "abcdefg"}
+    assert split_by_budget(list(cost), cost, 100, max_count=3) == [["a", "b", "c"], ["d", "e", "f"], ["g"]]
+    assert split_by_budget(["a", "b"], {"a": 6, "b": 6}, 10, max_count=5) == [["a"], ["b"]]  # 字数照旧先管
+
+
 def test_split_by_budget_exactly_at_budget_stays_together():
     assert split_by_budget(["a", "b"], {"a": 5, "b": 5}, 10) == [["a", "b"]]
     assert split_by_budget(["a", "b"], {"a": 5, "b": 6}, 10) == [["a"], ["b"]]
