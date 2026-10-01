@@ -48,9 +48,14 @@ def recall_timeline(key: dict, chapter_scenes: dict[int, set[str]], result: dict
         hit, misses = 0, []
         for p in ps:
             a_sc = chapter_scenes.get(p["chapters"][0], set())
-            # C 类的事件可能跨几章（答案里的 span），范围里哪章的场都算；A 类和旧答案就是那一章
-            lo, hi = p.get("span") or [p["chapters"][1]] * 2
-            b_sc = set().union(*(chapter_scenes.get(ch, set()) for ch in range(lo, hi + 1)))
+            # C 类的事件可能跨几章（答案里的 span），A 类死后他说过话的章都算（speaks_in），
+            # 范围里哪章的场都算；旧答案没这两个字段就是那一章
+            if kind == "A":
+                b_chs = p.get("speaks_in") or [p["chapters"][1]]
+            else:
+                lo, hi = p.get("span") or [p["chapters"][1]] * 2
+                b_chs = range(lo, hi + 1)
+            b_sc = set().union(*(chapter_scenes.get(ch, set()) for ch in b_chs))
             if kind == "A":
                 who_set = _who_variants(p, cmap)
                 ok = any(c.get("kind") == "A" and c["scenes"][0] in a_sc and c["scenes"][1] in b_sc

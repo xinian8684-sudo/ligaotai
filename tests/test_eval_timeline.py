@@ -28,6 +28,17 @@ def test_C事件跨几章_范围里哪章都算命中_范围外不算():
     assert r["C"]["misses"][0]["cause"] == "模型判错了场"
 
 
+def test_A死后任一说话章都算命中_不在里面的不算():
+    ch = {3: {"S-0003"}, 8: {"S-0008"}, 10: {"S-0010"}, 11: {"S-0011"}}
+    key = {"timeline": [{"kind": "A", "who": "岑秀", "name": "岑秀", "chapters": [3, 8], "speaks_in": [8, 10]}]}
+
+    def hit(sid):
+        res = {"conflicts": [{"kind": "A", "who": "岑秀", "scenes": ["S-0003", sid]}]}
+        return recall_timeline(key, ch, res, cmap={})["A"]["hit"]
+
+    assert (hit("S-0008"), hit("S-0010"), hit("S-0011")) == (1, 1, 0)
+
+
 def test_A人名要归一_场景要落在对的章():
     res = {"conflicts": [{"kind": "A", "who": "岑公子", "scenes": ["S-0003", "S-0009"]}]}
     assert recall_timeline(KEY, CH, res, cmap={("person", "岑公子"): "岑秀"})["A"]["hit"] == 0  # 后一场章不对

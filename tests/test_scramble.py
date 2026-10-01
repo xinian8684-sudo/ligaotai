@@ -584,6 +584,17 @@ def test_A植入_前一章插死亡_后一章他有对话_答案记两章():
     assert _speaks(bodies[b], p["name"])
 
 
+def test_A植入_答案记下死后他还说过话的所有章():
+    # 10-01：人死了以后任何一场再出场说话都是冲突，判卷不该只认紧挨着的那一章。
+    # 岑秀在奇数章说话：在第 a 章死，答案的 speaks_in 就是 a 之后所有奇数章（跳过的章不算）。
+    chapters = _talk_chapters(9)
+    got = plant_deaths(chapters, random.Random(1), n=1, characters=CHARS, used=set(), skip={9})
+    p = got[0]
+    a = p["chapters"][0]
+    want = [n for n in range(a + 1, 9) if (n % 2 == 1) == (p["who"] == "岑秀")]
+    assert p["speaks_in"] == want and p["chapters"][1] in want
+
+
 def test_A植入_用过的章节不再用_跳过的章节不用():
     chapters = _talk_chapters(8)
     used = {1, 2, 3}

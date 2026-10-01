@@ -453,7 +453,11 @@ def plant_deaths(chapters: list[Chapter], rng: random.Random, n: int,
         cut = _insertion_point(a.body, nm)
         a.body = a.body[:cut] + f"{nm}染病身亡。" + a.body[cut:]
         used |= {a.num, b.num}
-        planted.append({"kind": "A", "who": canon, "name": nm, "names": names, "chapters": [a.num, b.num]})
+        # 死后任何一章他再开口都是冲突，判卷不该只认 b（10-01）：照正文算，不看模型
+        speaks_in = [c.num for c in chapters if c.num > a.num and c.num not in skipped
+                     and any(_speaks(c.body, x, other_names) for x in names)]
+        planted.append({"kind": "A", "who": canon, "name": nm, "names": names, "chapters": [a.num, b.num],
+                        "speaks_in": speaks_in})
     return sorted(planted, key=lambda p: p["chapters"])
 
 
