@@ -195,11 +195,42 @@ def _death_text(i: int, s: dict, snippets: list[str]) -> str:
                       f"  后面那场 [{s['later']}]：" + " …… ".join(snippets)])
 
 
-def _ref_text(i: int, a: dict, cards: dict) -> str:
-    lines = [f"C-{i:02d} 回指所在场 [{a['scene']}]：{_summary(cards, a['scene'])}",
-             f"  回指原话：{a['ref']}", "  候选："]
-    lines += [f"    [{c}] {_summary(cards, c)}" for c in a["candidates"]]
-    return "\n".join(lines)
+SCENE_TEXT_LIMIT = 3000  # 回指所在场的原文最多给多少字（切分上限 5000，斗破中位 1176、最长 4300）
+_SENT_END = "。！？!?\n"
+
+
+def ref_context(text: str, refs: list[str], limit: int = SCENE_TEXT_LIMIT) -> str:
+    """回指所在场给模型看的原文：不超过 limit 就整段；太长就以跟回指原话（汉字二元组）最像的
+    那句为中心截 limit 字。卡片里的回指是改写过的，定不准原文哪一句，所以不只给那一句。"""
+    if len(text) <= limit:
+        return text
+    want = set().union(*(tl._bigrams(r) for r in refs)) if refs else set()
+    best, best_score, start = 0, -1, 0
+    for i, ch in enumerate(text):
+        if ch in _SENT_END or i == len(text) - 1:
+            score = len(want & tl._bigrams(text[start:i + 1]))
+            if score > best_score:
+                best, best_score = (start + i) // 2, score
+            start = i + 1
+    lo = max(0, min(best - limit // 2, len(text) - limit))
+    return text[lo:lo + limit]
+
+
+def _refs_block(book: Book, cards: dict, batch: list[dict], missing: set[str]) -> str:
+    """一批回指的判断材料：按回指所在场分组，每场给一次原文（10-01：只给卡片摘要和改写过的
+    回指原话，模型分不清这是将来的事、本场正在发生的事，还是往事），下面列这场的各条回指和
+    它们的候选（候选照旧给摘要）。"""
+    parts: list[str] = []
+    cur = None
+    for i, a in enumerate(batch, 1):
+        if a["scene"] != cur:
+            cur = a["scene"]
+            refs = [x["ref"] for x in batch if x["scene"] == cur]
+            parts.append(f"回指所在场 [{cur}] 原文：\n{ref_context(_safe_scene_text(book, cards, cur, missing), refs)}")
+        lines = [f"C-{i:02d} 回指原话：{a['ref']}", "  候选："]
+        lines += [f"    [{c}] {_summary(cards, c)}" for c in a["candidates"]]
+        parts.append("\n".join(lines))
+    return "\n\n".join(parts)
 
 
 def _read_old_timeline(book: Book) -> dict:
@@ -302,7 +333,7 @@ async def _run(book: Book, client: LLMClient, progress: Progress) -> dict:
 
     async def one_c(k: int, batch: list[dict]) -> list[dict]:
         cands = {f"C-{i:02d}": a["candidates"] for i, a in enumerate(batch, 1)}
-        text = "\n\n".join(_ref_text(i, a, cards) for i, a in enumerate(batch, 1))
+        text = _refs_block(book, cards, batch, missing_scenes)
         got = await caller.call("timeline_refs", {"items": text}, lambda d: check_refs(d, cands), f"refs/{k}",
                                 clean=lambda d: clean_refs(d, cands))
         call_failed = got is None

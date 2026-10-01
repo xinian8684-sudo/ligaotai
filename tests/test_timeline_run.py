@@ -705,3 +705,61 @@ def test_C说得通的场全在后面_报最早那一场(book):
     run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=_refs_answer(["S-0004", "S-0003"])), log_dir=b.logs_dir))
     data = read_json(b.timeline_path)
     assert [(c["kind"], c["scenes"]) for c in data["conflicts"]] == [("C", ["S-0002", "S-0003"])]
+
+
+# ---------- 判断时给回指所在场的原文（10-01）：模型只看卡片里压缩过的一句，分不清将来 / 本场 / 往事 ----------
+
+from ligaotai.timeline_run import SCENE_TEXT_LIMIT, _refs_block, ref_context  # noqa: E402
+
+
+def test_回指场原文_不长就整段():
+    assert ref_context("甲乙丙。丁戊。", ["丁戊"], limit=100) == "甲乙丙。丁戊。"
+
+
+def test_回指场原文_太长就以最像回指的那句为中心截():
+    text = "无关的话。" * 400 + "他想起一年后的成人仪式。" + "别的话。" * 400
+    got = ref_context(text, ["成人仪式"], limit=300)
+    assert len(got) == 300 and "一年后的成人仪式" in got
+    assert not text.startswith(got)  # 不是从开头截的
+
+
+def test_判断材料_同一场的几条回指只给一次原文_候选照旧给摘要(book):
+    from helpers import seed_book
+    from ligaotai.cards import load_cards
+    seed_book(book, [
+        {"id": "S-0001", "persons": ["乙"], "refs": ["甲事", "乙事"], "text": "乙想起甲事，又想起乙事。"},
+        {"id": "S-0002", "persons": ["乙"], "text": "乙做了甲事。"},
+    ])
+    cards = load_cards(book)
+    batch = [{"scene": "S-0001", "ref": "甲事", "candidates": ["S-0002"]},
+             {"scene": "S-0001", "ref": "乙事", "candidates": ["S-0002"]}]
+    text = _refs_block(book, cards, batch, set())
+    assert text.count("乙想起甲事，又想起乙事。") == 1
+    assert "C-01 回指原话：甲事" in text and "C-02 回指原话：乙事" in text
+    assert "[S-0002] S-0002 摘要" in text
+
+
+def test_判断材料_原文缺了退回摘要(book):
+    from helpers import seed_book
+    from ligaotai.cards import load_cards
+    from ligaotai.scenes import scene_path
+    seed_book(book, [{"id": "S-0001", "persons": ["乙"], "refs": ["甲事"], "text": "乙想起甲事。"},
+                     {"id": "S-0002", "persons": ["乙"], "text": "乙做了甲事。"}])
+    scene_path(book, "S-0001").unlink()
+    missing = set()
+    text = _refs_block(book, load_cards(book), [{"scene": "S-0001", "ref": "甲事", "candidates": ["S-0002"]}], missing)
+    assert "S-0001 摘要" in text and missing == {"S-0001"}
+
+
+def test_跑的时候模型看得到回指场原文(book):
+    b = _book(book)
+    seen = {}
+
+    def h(tier, messages):
+        if "回指" in messages[0]["content"]:
+            seen["user"] = messages[1]["content"]
+        return _handler(tier, messages)
+
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=h), log_dir=b.logs_dir))
+    assert "乙想起那日比箭之事。" in seen["user"]
+    assert SCENE_TEXT_LIMIT >= 3000
