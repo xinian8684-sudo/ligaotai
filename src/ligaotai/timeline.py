@@ -144,7 +144,8 @@ def _scene_bigrams(seq: list[str], cards: dict) -> tuple[dict[str, set[str]], se
 
 
 def ref_suspects(seq: list[str], pos: dict[str, int], cards: dict, cmap: dict,
-                 line_of: dict[str, str]) -> tuple[list[dict], int, int]:
+                 line_of: dict[str, str], picks: dict[tuple[str, str], list[str]] | None = None,
+                 ) -> tuple[list[dict], int, int]:
     """(要问模型的回指, 没有候选的回指数, 候选全在前面、不用问的回指数)。
     要问的 = {scene, ref, candidates}。每条回指单独挑候选（不再是同一场所有回指共用一组）：
     候选场景要么人物名单（归一后）里有回指原话点名的人（任一叫法或规范名），要么跟回指所在场
@@ -153,7 +154,10 @@ def ref_suspects(seq: list[str], pos: dict[str, int], cards: dict, cmap: dict,
     主角章章都在时「点名」「共同人物」对他没有区分度，这一键专门补上：回指原话里的专名
     通常只在真正相关的那场的 events 里出现），再看共同人物数降序、是否同线（同线优先）、
     跟回指场的距离（近的优先）、位置，取前 MAX_CANDIDATES 个。
-    同一场里重复的回指原话去重，只问一次。"""
+    同一场里重复的回指原话去重，只问一次。
+    picks：{(回指所在场, 回指原话): 模型从全书目录里挑的场}。挑中的排在最前、不受上面门槛限制，
+    剩下的位置再按上面的规则补满——10-01 斗破真卡上字面候选只有 2/5 能把事件那场排进前 8
+    （「晋级斗者」对「冲击斗者……突破成功」字面几乎不重合），意思上的对应只能靠模型。"""
     people = {s: persons_of(_card(cards, s), cmap) for s in seq}
     alias_to_canon = _person_names_and_canon(cmap)
     scene_bg, high_bg = _scene_bigrams(seq, cards)
@@ -167,9 +171,10 @@ def ref_suspects(seq: list[str], pos: dict[str, int], cards: dict, cmap: dict,
         for r in refs:
             named = _named_in_ref(r, alias_to_canon)
             ref_bg = _bigrams(r) - high_bg
+            picked = [p for p in dict.fromkeys((picks or {}).get((sid, r)) or []) if p in pos and p != sid]
             scored = []
             for o in seq:
-                if o == sid:
+                if o == sid or o in picked:
                     continue
                 k = len(mine & people[o])
                 hit = bool(named & people[o])
@@ -178,7 +183,7 @@ def ref_suspects(seq: list[str], pos: dict[str, int], cards: dict, cmap: dict,
                 overlap = len(ref_bg & scene_bg.get(o, set()))
                 scored.append((0 if hit else 1, -overlap, -k, line_of.get(o) != line_of.get(sid),
                               abs(pos[o] - pos[sid]), pos[o], o))
-            cands = [x[-1] for x in sorted(scored)[:MAX_CANDIDATES]]
+            cands = (picked + [x[-1] for x in sorted(scored)])[:MAX_CANDIDATES]
             if not cands:
                 no_cand += 1
             elif all(pos[c] < pos[sid] for c in cands):
@@ -186,6 +191,27 @@ def ref_suspects(seq: list[str], pos: dict[str, int], cards: dict, cmap: dict,
             else:
                 asks.append({"scene": sid, "ref": r, "candidates": cands})
     return asks, no_cand, no_later
+
+
+def ref_items(seq: list[str], cards: dict) -> list[tuple[str, str]]:
+    """全书的回指（所在场, 原话），按故事顺序；同一场里重复的原话只留一条，空的跳过。"""
+    out = []
+    for sid in seq:
+        raw = [r.strip() for r in _card(cards, sid).get("refs_elsewhere") or [] if isinstance(r, str) and r.strip()]
+        out += [(sid, r) for r in dict.fromkeys(raw)]
+    return out
+
+
+INDEX_LINE = 60  # 目录里每场摘要留多少字：够认出这场发生了什么，全书目录又不至于太长
+
+
+def index_line(cards: dict, sid: str) -> str:
+    text = " ".join(str(_card(cards, sid).get("summary") or "").split())
+    return f"[{sid}] {text[:INDEX_LINE]}"
+
+
+def index_chunks(seq: list[str], size: int) -> list[list[str]]:
+    return [seq[i:i + size] for i in range(0, len(seq), size)]
 
 
 def name_snippets(text: str, names: list[str], width: int = 40, limit: int = 3) -> list[str]:

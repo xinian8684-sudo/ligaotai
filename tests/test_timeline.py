@@ -322,6 +322,72 @@ def test_C嫌疑_同线优先于距离():
     assert asks[0]["candidates"][:2] == ["S-0009", "S-0002"]
 
 
+def test_C嫌疑_目录挑中的排最前_不受门槛限制():
+    # 10-01 斗破真卡：回指「那日得到焚决之事」没点名，事件那场（S-0060）跟回指场只有 1 个共同
+    # 人物，字面门槛把它挡在外面。模型从目录里挑中了它，就该排第一，不管门槛和词面重合。
+    seq = ["S-0001", "S-0002", "S-0003", "S-0004"]
+    pos = {s: i for i, s in enumerate(seq)}
+    cards = _rcards({
+        "S-0001": (["甲", "乙"], ["那日得到焚决之事"], "一"),
+        "S-0002": (["甲", "乙"], [], "二"),
+        "S-0003": (["甲", "乙"], [], "三"),
+        "S-0004": (["甲"], [], "晋升，药老告知功法名为焚决"),
+    })
+    asks, _, _ = ref_suspects(seq, pos, cards, {}, {}, picks={("S-0001", "那日得到焚决之事"): ["S-0004"]})
+    assert asks[0]["candidates"] == ["S-0004", "S-0002", "S-0003"]
+
+
+def test_C嫌疑_目录挑中的去掉回指场自己和不认识的编号_不重复():
+    seq = ["S-0001", "S-0002", "S-0003"]
+    pos = {s: i for i, s in enumerate(seq)}
+    cards = _rcards({"S-0001": (["甲", "乙"], ["某事"], "一"), "S-0002": (["甲", "乙"], [], "二"),
+                     "S-0003": (["丙"], [], "三")})
+    picks = {("S-0001", "某事"): ["S-0001", "S-9999", "S-0003", "S-0003"]}
+    asks, _, _ = ref_suspects(seq, pos, cards, {}, {}, picks=picks)
+    assert asks[0]["candidates"] == ["S-0003", "S-0002"]
+
+
+def test_C嫌疑_目录挑中的让原来没候选的回指也有候选():
+    seq = ["S-0001", "S-0002"]
+    pos = {s: i for i, s in enumerate(seq)}
+    cards = _rcards({"S-0001": (["甲"], ["某事"], "一"), "S-0002": (["丙"], [], "二")})
+    asks, no_cand, _ = ref_suspects(seq, pos, cards, {}, {})
+    assert asks == [] and no_cand == 1
+    asks, no_cand, _ = ref_suspects(seq, pos, cards, {}, {}, picks={("S-0001", "某事"): ["S-0002"]})
+    assert [a["candidates"] for a in asks] == [["S-0002"]] and no_cand == 0
+
+
+def test_C嫌疑_目录挑中的加上字面候选总数还是最多8个():
+    seq = [f"S-{i:04d}" for i in range(1, 13)]
+    pos = {s: i for i, s in enumerate(seq)}
+    spec = {s: (["甲", "乙"], [], s) for s in seq}
+    spec["S-0001"] = (["甲", "乙"], ["某事"], "一")
+    asks, _, _ = ref_suspects(seq, pos, _rcards(spec), {}, {}, picks={("S-0001", "某事"): ["S-0012", "S-0011"]})
+    c = asks[0]["candidates"]
+    assert len(c) == 8 and c[:2] == ["S-0012", "S-0011"] and len(set(c)) == 8
+
+
+from ligaotai.timeline import index_chunks, index_line, ref_items
+
+
+def test_回指清单_按故事顺序_同场去重_空的跳过():
+    cards = _rcards({"S-0002": (["甲"], ["甲事", "甲事", " ", "乙事"], "二"), "S-0001": (["甲"], ["丙事"], "一")})
+    assert ref_items(["S-0001", "S-0002", "S-0003"], cards) == [("S-0001", "丙事"), ("S-0002", "甲事"), ("S-0002", "乙事")]
+
+
+def test_目录一行_编号加摘要截短_空白压掉():
+    cards = _rcards({"S-0001": ([], [], "萧炎\n冲击  斗者" + "字" * 200)})
+    line = index_line(cards, "S-0001")
+    assert line.startswith("[S-0001] 萧炎 冲击 斗者")
+    assert len(line) == len("[S-0001] ") + 60
+
+
+def test_目录分段():
+    seq = [f"S-{i:04d}" for i in range(7)]
+    assert index_chunks(seq, 3) == [seq[0:3], seq[3:6], seq[6:7]]
+    assert index_chunks([], 3) == []
+
+
 from ligaotai.timeline import name_snippets
 
 

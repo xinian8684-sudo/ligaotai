@@ -1,12 +1,11 @@
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
-from helpers import FakeBackend
 
 from ligaotai.api import create_app
 from ligaotai.book import create_book, open_book
 from ligaotai.config import library_path, load_config
-from test_timeline_run import _book as _seed_timeline_book, _handler
+from test_timeline_run import FakeBackend, _book as _seed_timeline_book, _handler
 
 BOOK = "/api/books/" + quote("测试书")
 

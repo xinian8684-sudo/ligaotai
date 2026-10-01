@@ -93,8 +93,42 @@ def clean_refs(data, cands: dict[str, list[str]]) -> dict[str, dict]:
     return out
 
 
+INDEX_MAX_PICKS = 2  # 查目录时每条回指在一段目录里最多挑几场
+
+
+def check_index(data, ids: set[str], chunk: set[str]) -> list[str]:
+    items = _items(data)
+    if items is None:
+        return ['输出要是 {"items": [...]} 的形状']
+    problems, got = _common(items, ids)
+    for x in got:
+        sc = x.get("scenes")
+        if not isinstance(sc, list) or not all(isinstance(v, str) for v in sc):
+            problems.append(f"{x['id']} 的 scenes 要是场景编号的列表，没有就填 []")
+            continue
+        if len(sc) > INDEX_MAX_PICKS:
+            problems.append(f"{x['id']} 的 scenes 最多 {INDEX_MAX_PICKS} 个")
+        bad = [v for v in sc if v not in chunk]
+        if bad:
+            problems.append(f"{x['id']} 填了目录里没有的编号：" + "、".join(bad[:5]))
+    return problems[:8]
+
+
+def clean_index(data, ids: set[str], chunk: set[str]) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for x in _items(data) or []:
+        if isinstance(x, dict) and x.get("id") in ids and x["id"] not in out:
+            sc = x.get("scenes") if isinstance(x.get("scenes"), list) else []
+            out[x["id"]] = [v for v in dict.fromkeys(sc) if isinstance(v, str) and v in chunk][:INDEX_MAX_PICKS]
+    for i in sorted(ids - set(out)):
+        out[i] = []
+    return out
+
+
 A_BATCH = 20  # A 类一批几条
 C_BATCH = 10  # C 类一批几条（每条带 8 个候选摘要，比 A 长）
+INDEX_CHUNK = 300  # 目录一段放几场（每场一行约 70 字，300 场两万来字）；书再长就分段问
+INDEX_REF_BATCH = 40  # 查目录一次问几条回指
 SUMMARY_LIMIT = 200  # 候选摘要总长上限（summary + events），够看清场里发生了什么，别无限长
 
 
@@ -193,6 +227,33 @@ def _line_of(book: Book) -> dict[str, str]:
     return out
 
 
+async def _index_picks(caller: Caller, seq: list[str], cards: dict) -> dict[tuple[str, str], list[str]]:
+    """先让模型拿着全书目录（每场一行摘要）给每条回指挑事情发生的场，挑中的进候选最前面。
+    书长就把目录分段，每段把回指分批问一遍，各段挑的按段的先后合起来。某一批失败了，
+    那一批的回指在那一段就当没挑（记进 failed），还有字面候选兜底。"""
+    refs = tl.ref_items(seq, cards)
+    chunks = tl.index_chunks(seq, INDEX_CHUNK)
+    batches = [refs[i:i + INDEX_REF_BATCH] for i in range(0, len(refs), INDEX_REF_BATCH)]
+    caller.plan(len(chunks) * len(batches))
+
+    async def one(k: int, chunk: list[str], batch: list[tuple[str, str]]) -> dict[tuple[str, str], list[str]]:
+        ids = {f"R-{i:02d}" for i in range(1, len(batch) + 1)}
+        cset = set(chunk)
+        values = {"index": "\n".join(tl.index_line(cards, s) for s in chunk),
+                  "refs": "\n".join(f"R-{i:02d} [{sid}] {r}" for i, (sid, r) in enumerate(batch, 1))}
+        got = await caller.call("timeline_index", values, lambda d: check_index(d, ids, cset), f"index/{k}",
+                                clean=lambda d: clean_index(d, ids, cset))
+        return {key: (got or {}).get(f"R-{i:02d}") or [] for i, key in enumerate(batch, 1)}
+
+    jobs = [(ci, bi, chunk, batch) for ci, chunk in enumerate(chunks) for bi, batch in enumerate(batches)]
+    results = await asyncio.gather(*(one(n, chunk, batch) for n, (_, _, chunk, batch) in enumerate(jobs)))
+    picks: dict[tuple[str, str], list[str]] = {}
+    for got in results:  # jobs 按段的先后排，合起来就是段序
+        for key, sc in got.items():
+            picks.setdefault(key, []).extend(sc)
+    return picks
+
+
 async def _run(book: Book, client: LLMClient, progress: Progress) -> dict:
     fp = tl.input_fingerprint(book)
     seq, pos, n_unplaced, n_untracked = tl.story_order(book)
@@ -200,10 +261,11 @@ async def _run(book: Book, client: LLMClient, progress: Progress) -> dict:
     cmap = name_map(book)
     line_of = _line_of(book)
     deaths, capped = tl.death_suspects(seq, pos, cards, cmap)
-    asks, no_cand, all_before = tl.ref_suspects(seq, pos, cards, cmap, line_of)
     missing_scenes: set[str] = set()
 
     caller = Caller(book, client, progress, cache_path=book.timeline_cache_path, tag_prefix="timeline")
+    picks = await _index_picks(caller, seq, cards)
+    asks, no_cand, all_before = tl.ref_suspects(seq, pos, cards, cmap, line_of, picks=picks)
     a_batches = _group_batches(deaths, lambda s: s["who"], A_BATCH)
     c_batches = _group_batches(asks, lambda a: a["scene"], C_BATCH)
     caller.plan(len(a_batches) + len(c_batches))

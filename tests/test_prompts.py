@@ -54,6 +54,7 @@ THREAD_PROMPTS = [
     ("threads_interleave", {"main": "L-001", "threads": "t"}, "全书穿插"),
     ("timeline_death", {"items": "i"}, "说不准"),
     ("timeline_refs", {"items": "i"}, "回指"),
+    ("timeline_index", {"index": "x", "refs": "r"}, "目录"),
 ]
 
 

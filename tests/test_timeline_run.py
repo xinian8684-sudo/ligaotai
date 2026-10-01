@@ -1,12 +1,15 @@
 import json
+import re
 
 import pytest
 
-from helpers import FakeBackend
+from helpers import FakeBackend as _FakeBackend
 from ligaotai.config import AppConfig
 from ligaotai.fsutil import read_json, write_json
 from ligaotai.llm import LLMClient
 from ligaotai.timeline_run import (
+    check_index,
+    clean_index,
     VERDICT_KINDS,
     BrokenTimelineFile,
     _group_batches,
@@ -20,6 +23,23 @@ from ligaotai.timeline_run import (
     set_timeline_verdict,
 )
 
+
+def _no_picks(user: str) -> str:
+    """查目录那一道的默认回答：每条都说目录里没有（目录挑中不挑中只影响候选，不影响下面这些
+    测试原本要测的东西）。"""
+    ids = re.findall(r"^(R-[0-9]+)", user, flags=re.M)
+    return json.dumps({"items": [{"id": i, "scenes": []} for i in ids]})
+
+
+class FakeBackend(_FakeBackend):
+    """这个文件里的假模型：查目录的调用一律答「没有」，其余交给各测试自己的 handler。"""
+
+    def __init__(self, replies=None, handler=None, delay=0.0):
+        def h(tier, messages):
+            if "目录" in messages[0]["content"]:
+                return _no_picks(messages[1]["content"])
+            return handler(tier, messages)
+        super().__init__(replies, h if handler else None, delay)
 
 def test_A输出检查():
     ids = {"A-01", "A-02"}
@@ -509,3 +529,122 @@ def test_stats的unplaced_untracked_a_capped_refs字段真的有非零值(book):
     assert stats["refs_no_candidate"] == 1
     assert stats["refs_all_before"] == 1
     assert stats["text_missing"] == 0
+
+
+# ---------- 查目录：模型从全书目录里给每条回指挑事情发生的场（10-01） ----------
+
+def test_目录输出检查_只能挑这一段里的编号_每条最多2个():
+    ids, chunk = {"R-01", "R-02"}, {"S-0001", "S-0002", "S-0003"}
+    ok = {"items": [{"id": "R-01", "scenes": ["S-0002"]}, {"id": "R-02", "scenes": []}]}
+    assert check_index(ok, ids, chunk) == []
+    bad = {"items": [{"id": "R-01", "scenes": ["S-0009"]}, {"id": "R-03", "scenes": []}]}
+    probs = check_index(bad, ids, chunk)
+    assert any("R-01" in p and "S-0009" in p for p in probs)
+    assert any("R-02" in p for p in probs) and any("R-03" in p for p in probs)
+    assert any("R-01" in p for p in check_index({"items": [{"id": "R-01", "scenes": ["S-0001", "S-0002", "S-0003"]},
+                                                           {"id": "R-02", "scenes": []}]}, ids, chunk))
+    assert any("R-01" in p for p in check_index({"items": [{"id": "R-01", "scenes": "S-0001"},
+                                                           {"id": "R-02", "scenes": []}]}, ids, chunk))
+    assert check_index([], ids, chunk)
+
+
+def test_目录清理_不合法的丢掉_没答的当没有_最多2个():
+    ids, chunk = {"R-01", "R-02", "R-03"}, {"S-0001", "S-0002", "S-0003"}
+    got = clean_index({"items": [{"id": "R-01", "scenes": ["S-0009", "S-0002", "S-0002", "S-0001", "S-0003"]},
+                                 {"id": "R-02", "scenes": "S-0001"}, "garbage", None]}, ids, chunk)
+    assert got == {"R-01": ["S-0002", "S-0001"], "R-02": [], "R-03": []}
+
+
+def _far_book(book):
+    """S-0001 回指「那日得到焚决之事」；事件那场 S-0003 只有乙一个共同人物、回指也没点名，
+    字面门槛挡在外面（斗破 S-0112→S-0060 的样子）；S-0002 不相干。"""
+    from helpers import seed_book
+    seed_book(book, [
+        {"id": "S-0001", "persons": ["乙", "丙"], "refs": ["那日得到焚决之事"], "text": "乙想起那日得到焚决之事。"},
+        {"id": "S-0002", "persons": ["丁"], "text": "丁赶路。"},
+        {"id": "S-0003", "persons": ["乙"], "text": "乙得到焚决。"},
+    ])
+    write_json(book.threads_path, {"threads": [{"id": "L-001", "offset": 0,
+        "scenes": ["S-0001", "S-0002", "S-0003"],
+        "times": {s: {"t": i} for i, s in enumerate(["S-0001", "S-0002", "S-0003"])}}],
+        "worlds": [], "main_thread": "L-001", "global_order": [], "unassigned": [], "pending": [],
+        "gaps": [], "intersections": []})
+    return book
+
+
+def test_目录挑中的场进候选_字面挡住的C类也能报出来(book):
+    b = _far_book(book)
+    seen = {}
+
+    def h(tier, messages):
+        system, user = messages[0]["content"], messages[1]["content"]
+        if "目录" in system:
+            seen["index"] = user
+            return json.dumps({"items": [{"id": "R-01", "scenes": ["S-0003"]}]})
+        if "回指" in system:
+            seen["refs"] = user
+            return json.dumps({"items": [{"id": "C-01", "happens_in": "S-0003", "reason": "[S-0003]"}]})
+        raise AssertionError(system[:30])
+
+    s = run_timeline(b, LLMClient(AppConfig(), _FakeBackend(handler=h), log_dir=b.logs_dir))
+    data = read_json(b.timeline_path)
+    assert [(c["kind"], c["scenes"]) for c in data["conflicts"]] == [("C", ["S-0001", "S-0003"])]
+    assert data["asked_refs"][0]["candidates"] == ["S-0003"]
+    assert data["stats"]["refs_no_candidate"] == 0 and s["failed"] == 0
+    # 目录里每场一行；回指带着它所在的场
+    for sid in ("S-0001", "S-0002", "S-0003"):
+        assert f"[{sid}]" in seen["index"]
+    assert "R-01 [S-0001] 那日得到焚决之事" in seen["index"]
+
+
+def test_没有目录这一道_同一本书字面候选为空(book):
+    # 对照：目录什么都不挑，S-0003 进不了候选，这条回指没得问——证明上一条测的确实是目录的功劳。
+    b = _far_book(book)
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=lambda t, m: (_ for _ in ()).throw(AssertionError("不该问"))),
+                              log_dir=b.logs_dir))
+    data = read_json(b.timeline_path)
+    assert data["asked_refs"] == [] and data["stats"]["refs_no_candidate"] == 1
+
+
+def test_目录分段问_每段挑的合起来_回指分批(book, monkeypatch):
+    import ligaotai.timeline_run as tr
+    monkeypatch.setattr(tr, "INDEX_CHUNK", 2)
+    monkeypatch.setattr(tr, "INDEX_REF_BATCH", 1)
+    b = _far_book(book)
+    from ligaotai.cards import card_path
+    rec = read_json(card_path(b, "S-0002"))
+    rec["card"]["refs_elsewhere"] = ["丁的旧事"]
+    write_json(card_path(b, "S-0002"), rec)
+    calls = []
+
+    def h(tier, messages):
+        system, user = messages[0]["content"], messages[1]["content"]
+        if "目录" in system:
+            calls.append(user)
+            picks = [s for s in ("S-0002", "S-0003") if f"[{s}] " in user.split("R-01")[0]]
+            return json.dumps({"items": [{"id": "R-01", "scenes": picks}]})
+        if "回指" in system:
+            n = len(re.findall(r"^C-[0-9]+", user, flags=re.M))
+            return json.dumps({"items": [{"id": f"C-{i:02d}", "happens_in": None, "reason": "无"} for i in range(1, n + 1)]})
+        raise AssertionError(system[:30])
+
+    run_timeline(b, LLMClient(AppConfig(), _FakeBackend(handler=h), log_dir=b.logs_dir))
+    assert len(calls) == 4  # 2 段 × 2 条回指（每批 1 条）
+    data = read_json(b.timeline_path)
+    got = {a["ref"]: a["candidates"] for a in data["asked_refs"]}
+    assert got["那日得到焚决之事"][:2] == ["S-0002", "S-0003"]
+
+
+def test_目录调用失败_退回字面候选_照样判_记进failed(book):
+    from ligaotai.llm import LLMError
+    b = _book(book)
+
+    def h(tier, messages):
+        if "目录" in messages[0]["content"]:
+            return LLMError("坏了")
+        return _handler(tier, messages)
+
+    s = run_timeline(b, LLMClient(AppConfig(), _FakeBackend(handler=h), log_dir=b.logs_dir))
+    data = read_json(b.timeline_path)
+    assert [c["kind"] for c in data["conflicts"]] == ["A", "C"]
+    assert s["failed"] >= 1 and data["failed"]
