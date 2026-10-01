@@ -520,7 +520,8 @@ async def _run_entities(book: Book, client: LLMClient, progress: Progress) -> di
         raise pick_error(eg) from None
     finally:
         u = client.usage
-        book.add_usage("entities", u.calls, u.prompt_tokens, u.completion_tokens, u.cost(client.cfg))
+        book.add_usage("entities", u.calls, u.prompt_tokens, u.completion_tokens, u.cost(client.cfg),
+                       cache_hit_tokens=u.cache_hit_tokens)
 
     groups: dict[str, list[dict]] = {}
     conflicts: list[dict] = []

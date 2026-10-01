@@ -96,9 +96,19 @@ def test_add_usage_accumulates(book):
     book.add_usage("cards", calls=1, prompt_tokens=10, completion_tokens=5, cost_usd=0.0001)
     book.add_usage("entities", calls=2, prompt_tokens=50, completion_tokens=50, cost_usd=0.002)
     usage = book.load()["usage"]
-    assert usage["total"] == {"calls": 6, "prompt_tokens": 1060, "completion_tokens": 255, "cost_usd": 0.0033}
+    # 10-01 加了 cache_hit_tokens（缓存命中的输入），没传的按 0 记
+    assert usage["total"] == {"calls": 6, "prompt_tokens": 1060, "completion_tokens": 255, "cost_usd": 0.0033,
+                              "cache_hit_tokens": 0}
     assert usage["by_step"]["cards"]["calls"] == 4
     assert usage["by_step"]["entities"]["cost_usd"] == 0.002
+
+
+def test_add_usage_cache_hit_tokens_and_old_buckets(book):
+    book.update(lambda d: d.__setitem__("usage", {"total": {"calls": 1, "prompt_tokens": 1, "completion_tokens": 1,
+                                                            "cost_usd": 0.0}, "by_step": {}}))  # 旧 book.json 没这个键
+    book.add_usage("cards", calls=1, prompt_tokens=100, completion_tokens=5, cost_usd=0.0, cache_hit_tokens=60)
+    usage = book.load()["usage"]
+    assert usage["total"]["cache_hit_tokens"] == 60 and usage["by_step"]["cards"]["cache_hit_tokens"] == 60
 
 
 def test_threads_paths_and_setting(book):

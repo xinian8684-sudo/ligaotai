@@ -229,7 +229,8 @@ class Book:
         self.update(lambda data: _outdate_after(data, name))
 
     def add_usage(
-        self, step: str, calls: int, prompt_tokens: int, completion_tokens: int, cost_usd: float
+        self, step: str, calls: int, prompt_tokens: int, completion_tokens: int, cost_usd: float,
+        cache_hit_tokens: int = 0,
     ) -> None:
         """把一次运行的模型用量累加进 book.json 的 usage（总计 + 分步骤）。"""
 
@@ -239,13 +240,14 @@ class Book:
                 bucket["calls"] += calls
                 bucket["prompt_tokens"] += prompt_tokens
                 bucket["completion_tokens"] += completion_tokens
+                bucket["cache_hit_tokens"] = bucket.get("cache_hit_tokens", 0) + cache_hit_tokens
                 bucket["cost_usd"] = round(bucket["cost_usd"] + cost_usd, 6)
 
         self.update(fn)
 
 
 def _zero_usage() -> dict:
-    return {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0}
+    return {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0, "cache_hit_tokens": 0}
 
 
 def _outdate_after(data: dict, name: str) -> None:

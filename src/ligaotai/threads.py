@@ -758,7 +758,8 @@ async def _run_threads(book: Book, client: LLMClient, progress: Progress) -> dic
         raise pick_error(eg) from None  # 欠费 / key 失效要让作者看到，不能被「已暂停」盖住
     finally:
         u = client.usage
-        book.add_usage("threads", u.calls, u.prompt_tokens, u.completion_tokens, u.cost(client.cfg))
+        book.add_usage("threads", u.calls, u.prompt_tokens, u.completion_tokens, u.cost(client.cfg),
+                       cache_hit_tokens=u.cache_hit_tokens)
 
     no_card = [u for u in prep.unassigned if u["scene"] not in held]
     unassigned = no_card + [{"scene": s, "reason": MISSED} for s in dict.fromkeys(missing)]

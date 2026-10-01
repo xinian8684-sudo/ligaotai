@@ -763,3 +763,12 @@ def test_跑的时候模型看得到回指场原文(book):
     run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=h), log_dir=b.logs_dir))
     assert "乙想起那日比箭之事。" in seen["user"]
     assert SCENE_TEXT_LIMIT >= 3000
+
+
+
+def test_时间线检查记用量(book):
+    # 10-01 前时间线检查一次都没记进 book.json 的 usage，花了多少钱查不到
+    b = _book(book)
+    run_timeline(b, LLMClient(AppConfig(), FakeBackend(handler=_handler), log_dir=b.logs_dir))
+    u = b.load()["usage"]["by_step"]["timeline"]
+    assert u["calls"] >= 2 and u["prompt_tokens"] == 100 * u["calls"] and u["completion_tokens"] == 20 * u["calls"]

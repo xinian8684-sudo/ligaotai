@@ -428,7 +428,8 @@ async def _run_cards(book: Book, client: LLMClient, progress: Progress, only: li
         raise pick_error(eg) from None
     finally:
         u = client.usage
-        book.add_usage("cards", u.calls, u.prompt_tokens, u.completion_tokens, u.cost(client.cfg))
+        book.add_usage("cards", u.calls, u.prompt_tokens, u.completion_tokens, u.cost(client.cfg),
+                       cache_hit_tokens=u.cache_hit_tokens)
 
     missing = [s.id for s in scenes if not is_fresh(records.get(s.id), s)]
     summary = {

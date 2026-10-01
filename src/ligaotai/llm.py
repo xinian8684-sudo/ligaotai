@@ -48,6 +48,7 @@ class Reply:
     finish_reason: str = "stop"
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cache_hit_tokens: int = 0  # 输入里命中接口缓存的部分（DeepSeek 只收未命中价的五十分之一）
 
 
 class ChatBackend(Protocol):
@@ -59,11 +60,13 @@ class Usage:
     calls: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cache_hit_tokens: int = 0
 
     def add(self, reply: Reply) -> None:
         self.calls += 1
         self.prompt_tokens += reply.prompt_tokens
         self.completion_tokens += reply.completion_tokens
+        self.cache_hit_tokens += reply.cache_hit_tokens
 
     def cost(self, cfg: AppConfig) -> float:
         return (self.prompt_tokens * cfg.price_input + self.completion_tokens * cfg.price_output) / 1_000_000
@@ -250,7 +253,22 @@ class OpenAIBackend:
             finish_reason=choice.finish_reason or "",
             prompt_tokens=usage.prompt_tokens if usage else 0,
             completion_tokens=usage.completion_tokens if usage else 0,
+            cache_hit_tokens=_cache_hit(usage),
         )
+
+
+def _cache_hit(usage) -> int:
+    """输入里命中缓存的 token 数：DeepSeek 写在 prompt_cache_hit_tokens（SDK 不认识的字段，在
+    model_extra 里），OpenAI 式写在 prompt_tokens_details.cached_tokens；都没有就是 0。"""
+    if usage is None:
+        return 0
+    v = getattr(usage, "prompt_cache_hit_tokens", None)
+    if v is None:
+        v = (getattr(usage, "model_extra", None) or {}).get("prompt_cache_hit_tokens")
+    if v is None:
+        details = getattr(usage, "prompt_tokens_details", None)
+        v = getattr(details, "cached_tokens", None) if details is not None else None
+    return v if isinstance(v, int) else 0
 
 
 PING_SYSTEM = "你在做接口连通性测试。只输出一个 json 对象，不要解释。"

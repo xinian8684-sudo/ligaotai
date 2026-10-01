@@ -670,7 +670,8 @@ async def _run_archive(book: Book, client: LLMClient, progress: Progress) -> dic
         map_status = await run.map(contra)
     finally:
         u = client.usage
-        book.add_usage("archive", u.calls, u.prompt_tokens, u.completion_tokens, u.cost(client.cfg))
+        book.add_usage("archive", u.calls, u.prompt_tokens, u.completion_tokens, u.cost(client.cfg),
+                       cache_hit_tokens=u.cache_hit_tokens)
 
     input_changed = run.settle(_try_prepare(book))
     write_index(book, index)

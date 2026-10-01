@@ -19,6 +19,21 @@ def completion(content='{"ok": true}', finish="stop"):
     }
 
 
+def test_reply_reads_cache_hit_tokens():
+    """10-01：按「输入全部没命中缓存」估钱，全本斗破第一段账面 ¥35.7、实付 ¥26。DeepSeek 的
+    usage 里有 prompt_cache_hit_tokens（命中部分只收五十分之一），要记下来；OpenAI 式的
+    prompt_tokens_details.cached_tokens 也认；都没有就是 0。"""
+    cfg = AppConfig(api_key="sk-test-123456")
+    for usage, want in (
+        ({"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10, "prompt_cache_hit_tokens": 5,
+          "prompt_cache_miss_tokens": 2}, 5),
+        ({"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10, "prompt_tokens_details": {"cached_tokens": 4}}, 4),
+        ({"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}, 0),
+    ):
+        backend, _ = make_backend(cfg, body={**completion(), "usage": usage})
+        assert asyncio.run(backend.complete(cfg.batch, MSGS, 100)).cache_hit_tokens == want
+
+
 def make_backend(cfg, status=200, body=None):
     seen = []
 

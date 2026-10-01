@@ -256,7 +256,12 @@ def _read_old_timeline(book: Book) -> dict:
 
 
 def run_timeline(book: Book, client: LLMClient, progress: Progress = _noop) -> dict:
-    return asyncio.run(_run(book, client, progress))
+    try:
+        return asyncio.run(_run(book, client, progress))
+    finally:  # 10-01 前时间线检查不记用量，花了多少查不到
+        u = client.usage
+        book.add_usage("timeline", u.calls, u.prompt_tokens, u.completion_tokens, u.cost(client.cfg),
+                       cache_hit_tokens=u.cache_hit_tokens)
 
 
 def _line_of(book: Book) -> dict[str, str]:
