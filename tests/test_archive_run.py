@@ -1001,6 +1001,22 @@ def test_长线换了分段提示词_档案判过期(book_with_threads, long_mod
     real = ar.prompt_sig
     monkeypatch.setattr(ar, "prompt_sig", lambda name: real(name) + ("x" if name == "archive_thread_part" else ""))
     res = ar.run_archive(b, long_client(b))
-    assert res["threads"] == 2  # 两条线都重写（模型调用命中缓存，不花钱）
+    assert sorted(res["generated"]["threads"]) == ["L-001", "L-002"]  # 两条线都重写（模型调用命中缓存，不花钱）
     idx = ar.load_index(b)
     assert idx["threads"]["L-001"]["sig"] == ar.archive_thread_sig(ar.prepare_inputs(b).thread_text["L-001"])
+
+
+def test_world_batches_同一主语同一属性不拆开_装得下就并批():
+    from ligaotai.archive_input import world_batches
+
+    p = {"head": ["世界编号：W-01　世界名：x"], "notes": [],
+         "attrs": [("兵器", [["- 甲：刀　[S-0001]　原文「甲提刀」", "- 甲：剑　[S-0002]　原文「甲提剑」"],
+                           ["- 乙：枪　[S-0003]　原文「乙提枪」"]])]}
+    head = len("\n".join([*p["head"], "", "## 设定（每条带出处编号）"]))
+    a = sum(len(x) + 1 for x in p["attrs"][0][1][0])
+    b = len(p["attrs"][0][1][1][0]) + 1
+    one = world_batches(p, head + len("兵器") + 5 + a + b)  # 正好装下
+    assert len(one) == 1 and one[0].count("### 兵器") == 1
+    two = world_batches(p, head + len("兵器") + 5 + a + b - 1)  # 差一个字：乙另起一批，甲的两行还在一起
+    assert len(two) == 2
+    assert "甲提刀" in two[0] and "甲提剑" in two[0] and "乙提枪" in two[1] and two[1].count("### 兵器") == 1
