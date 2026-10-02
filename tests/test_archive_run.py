@@ -1142,3 +1142,40 @@ def test_只剩一条开放伏笔_不调合并(book_with_threads):
     c = merge_client(b)
     run_archive(b, c)
     assert "archive/hooks_merge" not in c.calls
+
+
+def test_合并结果跟当前开放伏笔对不上_不用(book_with_threads):
+    from ligaotai.archive import prepare_inputs, run_archive
+
+    b = book_with_threads
+    set_card(b, "S-0001", hooks_planted=["紧箍咒是怎么来的"])
+    run_archive(b, merge_client(b))
+    assert "埋于 [S-0001,S-0002]" in prepare_inputs(b).thread_text["L-001"]
+    data = read_json(b.hooks_pair_path)
+    data["same_sig"] = "别的"  # 比如开放的伏笔变了、合并还没重跑
+    write_json(b.hooks_pair_path, data)
+    text = prepare_inputs(b).thread_text["L-001"]
+    assert "- 紧箍咒是怎么来的：埋于 [S-0001]" in text and "- 紧箍咒的来历：埋于 [S-0002]" in text
+
+
+def test_合并失败_这次不合_下次重合(book_with_threads):
+    from ligaotai.archive import run_archive
+
+    b = book_with_threads
+    set_card(b, "S-0001", hooks_planted=["紧箍咒是怎么来的"])
+    record: list = []
+    base = archive_handler(record)
+
+    def handler(tier, messages):
+        if "合成一组" in messages[0]["content"]:
+            return LLMError("假的失败")
+        return base(tier, messages)
+
+    c = LLMClient(AppConfig(), FakeBackend(handler=handler), log_dir=b.logs_dir)
+    c.calls = record
+    run_archive(b, c)
+    assert read_json(b.hooks_pair_path)["same_failed"] is True
+    c2 = merge_client(b)
+    run_archive(b, c2)
+    assert "archive/hooks_merge" in c2.calls
+    assert read_json(b.hooks_pair_path)["same_failed"] is False
