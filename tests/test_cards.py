@@ -166,6 +166,17 @@ def test_fact_subject_matching_a_card_name_does_not_double_report():
     assert len(problems) == 1 and "张三" in problems[0]
 
 
+def test_clean_card_drops_refs_copied_from_prompt_example():
+    # 10-02 全本斗破：2905 张卡里 6 张把提示词示例「青州城破」抄进 refs_elsewhere，找缺口当真报成缺口
+    data = with_(refs_elsewhere=["青州城破", "青州城破（示例无，不提取）", "赵五当年的旧账"])
+    card, dropped = clean_card(Card.model_validate(data), TEXT)
+    assert card.refs_elsewhere == ["赵五当年的旧账"]
+    assert dropped["refs"] == ["青州城破", "青州城破（示例无，不提取）"]
+    # 原文真写了这件事就留着
+    card, _ = clean_card(Card.model_validate(data), TEXT + "自从青州城破之后，他再没回去。")
+    assert "青州城破" in card.refs_elsewhere
+
+
 def test_clean_card_drops_facts_whose_subject_name_was_dropped():
     data = with_(
         characters=[{"name": "林清", "role": "主要"}, {"name": "孙悟空", "role": "提及"}],

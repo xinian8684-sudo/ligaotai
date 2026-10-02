@@ -239,6 +239,9 @@ def check_card(data: dict, text: str) -> list[str]:
     return problems
 
 
+PROMPT_EXAMPLE_REFS = ("青州城破",)  # prompts/cards.md 里 refs_elsewhere 的示例，改示例要同步改这里
+
+
 def clean_card(card: Card, text: str) -> tuple[Card, dict]:
     body = cards_normalize(text)
 
@@ -288,6 +291,13 @@ def clean_card(card: Card, text: str) -> tuple[Card, dict]:
 
     summary = card.summary[:SUMMARY_LIMIT] if len(card.summary) > SUMMARY_LIMIT else card.summary
 
+    # 提示词示例里的事件被原样抄进来（10-02 全本斗破 2905 张卡里 6 张写了「青州城破」），原文里没有就丢
+    def copied(r: str) -> bool:
+        return any(x in r and not _in_text(x, body) for x in PROMPT_EXAMPLE_REFS)
+
+    kept_refs = [r for r in card.refs_elsewhere if not copied(r)]
+    dropped_refs = [r for r in card.refs_elsewhere if copied(r)]
+
     cleaned = card.model_copy(
         update={
             "facts": kept_facts,
@@ -296,6 +306,7 @@ def clean_card(card: Card, text: str) -> tuple[Card, dict]:
             "organizations": kept_organizations,
             "pov": kept_pov,
             "summary": summary,
+            "refs_elsewhere": kept_refs,
         }
     )
     dropped = {
@@ -303,6 +314,7 @@ def clean_card(card: Card, text: str) -> tuple[Card, dict]:
         "names": dropped_names,
         "attrs": n_attrs,
         "long_values": len(long_values),
+        "refs": dropped_refs,
     }
     return cleaned, dropped
 
