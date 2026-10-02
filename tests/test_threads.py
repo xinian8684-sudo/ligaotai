@@ -1071,6 +1071,18 @@ def test_order_thread_segment_stays_in_one_volume(book):
     assert missing == []
 
 
+def test_order_thread_assign_prompt_carries_volume_state(book):
+    # 10-02 全本斗破：卷说明只写「在哪做什么」，同一宗门前后去两次分不开；卷带上人物当时状态，归卷上限 τ 0.886→0.908
+    def volumes(m):
+        return json.dumps({"volumes": [{"title": "甲", "about": "初到青州", "state": "还是学徒"},
+                                       {"title": "乙", "about": "重返青州", "state": "已是掌门"}]})
+
+    _, _, c = long_of(book, far_items(6), volumes=volumes)
+    assign_user = users(c, "长线归卷")[0]
+    assert "V-01 甲：初到青州（状态：还是学徒）" in assign_user
+    assert "V-02 乙：重返青州（状态：已是掌门）" in assign_user
+
+
 def test_order_thread_unassigned_block_follows_segment_or_is_missing(book):
     items = far_items(6, same_file=("S-0002", "S-0003"))
 
@@ -1108,7 +1120,10 @@ def test_check_volumes():
     assert check_volumes({"volumes": [{"title": "甲"}, {"title": "甲"}]}, 2, 4)  # 重名
     assert check_volumes({"volumes": [{"title": ""}, {"title": "乙"}]}, 2, 4)  # 空标题
     assert check_volumes({}, 2, 4)
-    assert clean_volumes(ok) == [{"id": "V-01", "title": "甲", "about": "a"}, {"id": "V-02", "title": "乙", "about": "b"}]
+    assert clean_volumes(ok) == [{"id": "V-01", "title": "甲", "about": "a", "state": ""},
+                                 {"id": "V-02", "title": "乙", "about": "b", "state": ""}]
+    with_state = {"volumes": [{"title": "甲", "about": "a", "state": " 学徒\n师父在世 "}, {"title": "乙", "state": 3}]}
+    assert [v["state"] for v in clean_volumes(with_state)] == ["学徒 师父在世", "3"]
 
 
 def test_check_assign():

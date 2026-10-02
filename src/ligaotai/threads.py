@@ -363,7 +363,8 @@ async def order_thread(
         t.end = {"state": "待定", "note": ""}
         return []
     vol_ids = {v["id"] for v in vols}
-    vol_text = "\n".join(f"- {v['id']} {v['title']}：{v['about']}" for v in vols)
+    vol_text = "\n".join(f"- {v['id']} {v['title']}：{v['about']}" + (f"（状态：{v['state']}）" if v.get("state") else "")
+                         for v in vols)
     batches = split_by_budget(fallback, cost, max(budget - len(vol_text) - 2000, 1), max_blocks)
     caller.plan(len(batches))
 

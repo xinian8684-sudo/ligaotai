@@ -599,12 +599,14 @@ def score_volumes(data: dict, lo: int, hi: int) -> int:
 
 
 def clean_volumes(data: dict) -> list[dict]:
-    """按模型给的先后编号 V-01、V-02……（编号由程序给，不让模型编）。标题空的跳过。"""
+    """按模型给的先后编号 V-01、V-02……（编号由程序给，不让模型编）。标题空的跳过。
+    state：这一卷人物当时的状态（身份、实力、谁活着、谁跟谁结盟），归卷时分辨同一地点前后几次用；没写就空串。"""
     out = []
     for v in _list(_obj(data).get("volumes")):
         title = text(_obj(v).get("title"))
         if title:
-            out.append({"id": f"V-{len(out) + 1:02d}", "title": title, "about": text(_obj(v).get("about"))})
+            out.append({"id": f"V-{len(out) + 1:02d}", "title": title, "about": text(_obj(v).get("about")),
+                        "state": " ".join(text(_obj(v).get("state")).split())})
     return out
 
 
