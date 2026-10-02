@@ -392,7 +392,7 @@ def _check_body(d, allowed: set[str], headings: list[str]) -> list[str]:
 # 材料超过 LONG_CHARS 就分段。线按 THREAD_PART_CHARS 切段写「来龙去脉 / 主要人物」再合并，缺口和伏笔由程序补；
 # 世界按 WORLD_PART_CHARS 分批写设定集（输出跟输入差不多长，批要小一些），程序按小节合并。
 LONG_CHARS = 150_000
-THREAD_PART_CHARS = 120_000
+THREAD_PART_CHARS = 60_000  # 10-02 实测 12 万字一段输出 6.2 万 token，离 65536 上限只差 3800
 WORLD_PART_CHARS = 60_000
 PART_HEADINGS = ["来龙去脉", "主要人物"]
 MERGE_HEADINGS = ["来龙去脉", "主要人物", "写到哪"]
