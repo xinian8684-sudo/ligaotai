@@ -903,3 +903,104 @@ def test_一条线一个世界都没有时地图不跑也不花钱(book):
     assert asyncio.run(run.map({})) == "blocked"
     assert index["map"]["outdated"] is True
     assert any("一条线一个世界都没有" in b for b in index["map"]["blocked_by"])
+
+
+# ---------- 长书：材料太长就分段写（10-02 全本斗破主线档案材料 90 万字、世界 82 万字） ----------
+
+
+def long_handler(record: list):
+    """长线分段 / 合并的假回复；其余（世界、矛盾、地图）交给 archive_handler。"""
+    base = archive_handler(record)
+
+    def handler(tier, messages):
+        system, user = messages[0]["content"], messages[1]["content"]
+        if "只写这一段" in system:
+            ids = re.findall(r"^(S-\d{4})｜", user, re.M)
+            record.append(f"archive/part/{ids[0]}")
+            return json.dumps({"body": f"## 来龙去脉\n段 {ids[0]} [{ids[0]}]\n\n## 主要人物\n- 孙悟空：x [{ids[0]}]"},
+                              ensure_ascii=False)
+        if "各段档案" in system:
+            tid = re.search(r"线编号：(L-\d+)", user).group(1)
+            sid = _SID.search(user.split("各段档案", 1)[1]).group(0)
+            record.append(f"archive/merge/{tid}")
+            return json.dumps({"body": f"# {tid}\n- 所属世界：W-01\n- 一句话：测试 [{sid}]\n\n## 来龙去脉\n合 [{sid}]\n\n"
+                                       f"## 主要人物\n- 孙悟空：主角 [{sid}]\n\n## 写到哪\n- 最后一块：[{sid}]"},
+                              ensure_ascii=False)
+        return base(tier, messages)
+
+    return handler
+
+
+@pytest.fixture
+def long_mode(monkeypatch):
+    import ligaotai.archive as ar
+    monkeypatch.setattr(ar, "LONG_CHARS", 10)  # 全部走长书
+    monkeypatch.setattr(ar, "THREAD_PART_CHARS", 1)  # 每块自成一段
+    monkeypatch.setattr(ar, "WORLD_PART_CHARS", 1)  # 每个主语自成一批
+
+
+def long_client(book):
+    record: list = []
+    c = LLMClient(AppConfig(), FakeBackend(handler=long_handler(record)), log_dir=book.logs_dir)
+    c.calls = record
+    return c
+
+
+def test_长线分段写再合并_缺口伏笔由程序补(book_with_threads, long_mode):
+    from ligaotai.archive import run_archive
+
+    b = book_with_threads
+    c = long_client(b)
+    run_archive(b, c)
+    assert sorted(t for t in c.calls if t.startswith("archive/part/")) == [
+        "archive/part/S-0001", "archive/part/S-0002", "archive/part/S-0003", "archive/part/S-0004", "archive/part/S-0005"]
+    assert sorted(t for t in c.calls if t.startswith("archive/merge/")) == ["archive/merge/L-001", "archive/merge/L-002"]
+    merge_user = next(x["messages"][1]["content"] for x in c.backend.calls
+                      if "各段档案" in x["messages"][0]["content"] and "线编号：L-001" in x["messages"][1]["content"])
+    assert "### 第 1 段" in merge_user and "### 第 3 段" in merge_user and "状态：待定" in merge_user
+    body = (b.thread_archive_dir / "L-001.md").read_text(encoding="utf-8")
+    assert "## 来龙去脉\n合 [S-0001]" in body
+    assert "## 缺口\n- 大闹天宫：提到于 [S-0002]，位置大约在 [S-0001] 之后、[S-0003] 之前" in body
+    assert "## 开放的伏笔\n- 紧箍咒的来历：埋于 [S-0002]，至今没回收" in body
+    assert "## 缺口\n（没有）" in (b.thread_archive_dir / "L-002.md").read_text(encoding="utf-8")
+
+
+def test_长世界分批写设定集_程序按小节合并(book_with_threads, long_mode):
+    from ligaotai.archive import run_archive
+
+    b = book_with_threads
+    c = long_client(b)
+    run_archive(b, c)
+    worlds = [x["messages"][1]["content"] for x in c.backend.calls if "设定集" in x["messages"][0]["content"]
+              and "全书地图" not in x["messages"][0]["content"]]
+    assert len(worlds) == 3  # 兵器·孙悟空 / 居所·敖广 / 位置·花果山 各一批
+    assert sum("设定笔记原文" in w for w in worlds) == 1  # 笔记只放第一批
+    weapon = next(w for w in worlds if "### 兵器" in w)
+    assert "如意金箍棒" in weapon and "降妖宝杖" in weapon  # 同一主语同一属性的几行没拆开
+    body = (b.world_archive_dir / "W-01.md").read_text(encoding="utf-8")
+    assert body.count("# W-01 测试世界") == 1
+    assert [ln for ln in body.splitlines() if ln.startswith("## ")] == ["## 位置", "## 兵器", "## 居所"]  # 属性按名字排序，跟原来一样
+    assert "（多个说法，见矛盾 C-001）" in body  # 合并后照样回填
+
+
+def test_长书档案什么都没变就一次都不调(book_with_threads, long_mode):
+    from ligaotai.archive import run_archive
+
+    b = book_with_threads
+    run_archive(b, long_client(b))
+    c2 = long_client(b)
+    res = run_archive(b, c2)
+    assert c2.calls == [] and res["map"] == "reused"
+
+
+def test_长线换了分段提示词_档案判过期(book_with_threads, long_mode, monkeypatch):
+    import ligaotai.archive as ar
+
+    b = book_with_threads
+    ar.run_archive(b, long_client(b))
+    real = ar.prompt_sig
+    monkeypatch.setattr(ar, "prompt_sig", lambda name: real(name) + ("x" if name == "archive_thread_part" else ""))
+    res = ar.run_archive(b, long_client(b))
+    assert res["threads"] == 2  # 两条线都重写（模型调用命中缓存，不花钱）
+    idx = ar.load_index(b)
+    assert idx["threads"]["L-001"]["sig"] == ar.archive_thread_sig(ar.prepare_inputs(b).thread_text["L-001"])

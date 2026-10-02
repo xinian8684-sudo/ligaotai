@@ -264,12 +264,14 @@ class Inputs:
     thread_scope: dict[str, set[str]] = field(default_factory=dict)
     world_text: dict[str, str] = field(default_factory=dict)
     world_scope: dict[str, set[str]] = field(default_factory=dict)
+    thread_parts: dict[str, dict] = field(default_factory=dict)  # 长线分段写档案用（archive_input.thread_parts）
+    world_parts: dict[str, dict] = field(default_factory=dict)  # 长世界分批写设定集用（archive_input.world_parts）
     contra: dict = field(default_factory=dict)  # cands / skipped / batches / stats / sig
     aliases: dict[str, str] = field(default_factory=dict)  # {原文名: 规范名}，回填时把别名对回规范名
 
     def sigs(self) -> dict:
         return {
-            "threads": {tid: thread_sig(t) for tid, t in self.thread_text.items()},
+            "threads": {tid: archive_thread_sig(t) for tid, t in self.thread_text.items()},
             "worlds": {wid: world_sig(t) for wid, t in self.world_text.items()},
             "contradictions": self.contra["sig"],
             # 只进地图输入、不进任何一份档案的东西（不归任何线的缺口等）：也得算进指纹，
@@ -321,6 +323,8 @@ def prepare_inputs(book: Book) -> Inputs:
     for t in threads:
         text = ai.thread_input(t, cards, cmap, [g for g in gaps if g.get("thread") == t["id"]], times, unit)
         inp.thread_text[t["id"]] = text
+        inp.thread_parts[t["id"]] = ai.thread_parts(t, cards, cmap, [g for g in gaps if g.get("thread") == t["id"]],
+                                                    times, unit)
         # 缺口「提到于」的场景可能在别的线里；材料里给了模型的编号都算合法引用，不然白白重试
         inp.thread_scope[t["id"]] = set(_ids(t.get("scenes"))) | set(_ANY_SCENE.findall(text))
 
@@ -332,6 +336,7 @@ def prepare_inputs(book: Book) -> Inputs:
         notes = [{"id": s, "text": _note_text(book, s)} for s in _ids(w.get("notes"))]
         text = ai.world_input(w, rows, notes, [t for t in threads if t.get("world") == w["id"]])
         inp.world_text[w["id"]] = text
+        inp.world_parts[w["id"]] = ai.world_parts(w, rows, notes, [t for t in threads if t.get("world") == w["id"]])
         inp.world_scope[w["id"]] = set(sids) | set(_ANY_SCENE.findall(text))
 
     # 矛盾只比对归进了世界 / 线的块：版本组里的非主版本、没分配的块不参与（否则同一场景的两个版本会被当成矛盾）
@@ -383,6 +388,30 @@ def _check_body(d, allowed: set[str], headings: list[str]) -> list[str]:
     return check_archive(_body(d), allowed, headings)
 
 
+# 长书（10-02 全本斗破：主线档案材料 90 万字、世界 82 万字，一次调用装不下也写不完）：
+# 材料超过 LONG_CHARS 就分段。线按 THREAD_PART_CHARS 切段写「来龙去脉 / 主要人物」再合并，缺口和伏笔由程序补；
+# 世界按 WORLD_PART_CHARS 分批写设定集（输出跟输入差不多长，批要小一些），程序按小节合并。
+LONG_CHARS = 150_000
+THREAD_PART_CHARS = 120_000
+WORLD_PART_CHARS = 60_000
+PART_HEADINGS = ["来龙去脉", "主要人物"]
+MERGE_HEADINGS = ["来龙去脉", "主要人物", "写到哪"]
+
+
+def is_long(text: str) -> bool:
+    return len(text) > LONG_CHARS
+
+
+def long_thread_sig(text: str) -> str:
+    """长线档案的签名：分段 / 合并两份提示词改了也要重写。"""
+    return _digest(thread_sig(text), prompt_sig("archive_thread_part"), prompt_sig("archive_thread_merge"))
+
+
+def archive_thread_sig(text: str) -> str:
+    """一条线档案该记的签名：短线照旧 thread_sig，长线换成 long_thread_sig。比对是否过期的地方都用它。"""
+    return long_thread_sig(text) if is_long(text) else thread_sig(text)
+
+
 async def _gather(coros) -> list:
     """并行跑，一个出错**不掐断**别的：作者点暂停时，已经发出去的调用让它跑完进缓存（钱已经花了），
     各自停在下一个进度检查点，不再开新调用。全部结束后再抛（欠费 / key 失效优先，别被「已暂停」盖住）。"""
@@ -408,7 +437,7 @@ class _Run:
     async def archive(self, kind: str, oid: str) -> None:
         inp, book = self.inp, self.book
         if kind == "threads":
-            text, sig, prompt = inp.thread_text[oid], thread_sig(inp.thread_text[oid]), "archive_thread"
+            text, sig, prompt = inp.thread_text[oid], archive_thread_sig(inp.thread_text[oid]), "archive_thread"
             path, rel, scope, headings = (book.thread_archive_dir / f"{oid}.md", f"档案/支线/{oid}.md",
                                           inp.thread_scope[oid], THREAD_HEADINGS)
             tag = f"thread/{oid}"
@@ -421,16 +450,29 @@ class _Run:
         if _fresh(entry, sig, path):
             self.reused[kind].append(oid)
             # 按签名跳过、没真调模型：这一项对应的缓存条目也占住位置，别被 prune_cache 清掉（C1）
-            self.caller.keep(prompt, {"body": text})
+            # 长书的分段条目也占住；合并那条的输入要等分段结果才知道，占不住，重跑时多付一次合并（便宜）
+            if not is_long(text):
+                self.caller.keep(prompt, {"body": text})
+            elif kind == "threads":
+                p = inp.thread_parts[oid]
+                segs = ai.split_rows(p["rows"], THREAD_PART_CHARS)
+                for k, rows in enumerate(segs, 1):
+                    self.caller.keep("archive_thread_part", {"body": ai.thread_part_input(p["head"], rows, k, len(segs))})
+            else:
+                for t in ai.world_batches(inp.world_parts[oid], WORLD_PART_CHARS):
+                    self.caller.keep("archive_world", {"body": t})
             return
-        self.caller.plan(1)
-        got = await self.caller.call(
-            prompt, {"body": text},
-            check=lambda d: _check_body(d, scope, headings),
-            clean=_body,
-            usable=lambda md: bool((md or "").strip()),
-            tag=tag,
-        )
+        if is_long(text):
+            got = await (self._long_thread(oid, tag, scope) if kind == "threads" else self._long_world(oid, tag))
+        else:
+            self.caller.plan(1)
+            got = await self.caller.call(
+                prompt, {"body": text},
+                check=lambda d: _check_body(d, scope, headings),
+                clean=_body,
+                usable=lambda md: bool((md or "").strip()),
+                tag=tag,
+            )
         if not got:
             # 失败：旧文件（如果有）留着给作者看，但标过期；新签名不记，下次一定重跑
             if isinstance(entry, dict):
@@ -450,6 +492,51 @@ class _Run:
         self.index[kind][oid] = new
         self.generated[kind].append(oid)
         self._save_index()
+
+    async def _long_thread(self, oid: str, tag: str, scope: set[str]) -> str | None:
+        """长线：分段写来龙去脉 / 主要人物 → 合并成整条线（含写到哪）→ 程序补缺口、伏笔两节。哪一步失败都返回 None。"""
+        p = self.inp.thread_parts[oid]
+        segs = ai.split_rows(p["rows"], THREAD_PART_CHARS)
+        self.caller.plan(len(segs) + 1)
+
+        async def part(k: int, rows: list[str]) -> str | None:
+            text = ai.thread_part_input(p["head"], rows, k, len(segs))
+            ids = set(_ANY_SCENE.findall(text))
+            return await self.caller.call(
+                "archive_thread_part", {"body": text},
+                check=lambda d: _check_body(d, ids, PART_HEADINGS), clean=_body,
+                usable=lambda md: bool((md or "").strip()), tag=f"{tag}/part{k}",
+            )
+
+        bodies = await _gather(part(k, rows) for k, rows in enumerate(segs, 1))
+        if not all(bodies):
+            return None
+        merged = await self.caller.call(
+            "archive_thread_merge", {"body": ai.thread_merge_input(p, bodies)},
+            check=lambda d: _check_body(d, scope, MERGE_HEADINGS), clean=_body,
+            usable=lambda md: bool((md or "").strip()), tag=f"{tag}/merge",
+        )
+        if not merged:
+            return None
+        return merged.rstrip() + "\n\n" + ai.thread_tail(p) + "\n"
+
+    async def _long_world(self, oid: str, tag: str) -> str | None:
+        """长世界：设定条目分批（同一主语同一属性不拆开），每批照原提示词写一份小设定集，程序按小节合并。"""
+        texts = ai.world_batches(self.inp.world_parts[oid], WORLD_PART_CHARS)
+        self.caller.plan(len(texts))
+
+        async def one(k: int, text: str) -> str | None:
+            ids = set(_ANY_SCENE.findall(text))
+            return await self.caller.call(
+                "archive_world", {"body": text},
+                check=lambda d: _check_body(d, ids, []), clean=_body,
+                usable=lambda md: bool((md or "").strip()), tag=f"{tag}/part{k}",
+            )
+
+        bodies = await _gather(one(k, t) for k, t in enumerate(texts, 1))
+        if not all(bodies):
+            return None
+        return ai.merge_world_bodies(bodies)
 
     def _read_contradictions(self) -> dict | None:
         """读上一轮的 矛盾.json。坏了先备份一份再当没有（里面可能有作者的裁决，不能直接盖掉）。"""
@@ -559,7 +646,7 @@ class _Run:
         out = []
         inp, book = self.inp, self.book
         for tid, text in inp.thread_text.items():
-            if not _fresh(self.index["threads"].get(tid), thread_sig(text), book.thread_archive_dir / f"{tid}.md"):
+            if not _fresh(self.index["threads"].get(tid), archive_thread_sig(text), book.thread_archive_dir / f"{tid}.md"):
                 out.append(tid)
         for wid, text in inp.world_text.items():
             if not _fresh(self.index["worlds"].get(wid), world_sig(text), book.world_archive_dir / f"{wid}.md"):

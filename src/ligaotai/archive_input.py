@@ -52,34 +52,71 @@ def thread_input(thread: dict, cards: dict[str, dict], cmap: dict, gaps: list[di
     `cards` 传全书的卡片（不只是这条线的），因为 open_hooks 判断伏笔是否回收要看全书。
     `thread['world']` 写进正文第一行——线换了所属世界，这里的文本就会变（配合渲染文本
     做签名，换世界档案会自动被标过期，不用额外维护一个「世界」字段的签名）。"""
-    scenes = list(thread.get("scenes") or [])
-    lines = [f"线编号：{thread.get('id','')}　线名：{thread.get('name','')}　"
-             f"所属世界：{thread.get('world','')}", "", "## 按顺序的场景"]
-    for sid in scenes:
-        card = cards.get(sid)
-        if not card:
-            continue
-        lines.append(card_line(sid, card, cmap) + _time_bit(sid, times, unit))
-
-    end = thread.get("end") or {}
-    lines += ["", "## 写到哪",
-              f"状态：{end.get('state','待定')}　最后一块：[{end.get('last','')}]",
-              f"断点说明：{end.get('note','') or '（没有）'}"]
-
-    lines += ["", "## 缺口（提到过、但书里找不到对应场景的事件）"]
-    if gaps:
-        for g in gaps:
-            where = "、".join(f"[{s}]" for s in (g.get("mentioned_in") or []))
-            span = "".join([f"在 [{g['after']}] 之后" if g.get("after") else "",
-                            f"、[{g['before']}] 之前" if g.get("before") else ""])
-            lines.append(f"- {g.get('event','')}：提到于 {where}{('，位置大约' + span) if span else ''}")
-    else:
-        lines.append("（没有）")
-
-    hooks = open_hooks(scenes, cards, {r for c in cards.values() for r in (c.get("hooks_resolved") or [])})
-    lines += ["", "## 埋了还没回收的伏笔（程序算的，照着写就行，别自己另找）"]
-    lines += [f"- {h['hook']}：埋于 [{h['scene']}]" for h in hooks] or ["（没有）"]
+    p = thread_parts(thread, cards, cmap, gaps, times, unit)
+    lines = [p["head"], "", "## 按顺序的场景", *p["rows"]]
+    lines += ["", "## 写到哪", *p["end"]]
+    lines += ["", "## 缺口（提到过、但书里找不到对应场景的事件）", *(p["gaps"] or ["（没有）"])]
+    lines += ["", "## 埋了还没回收的伏笔（程序算的，照着写就行，别自己另找）", *(p["hooks"] or ["（没有）"])]
     return "\n".join(lines)
+
+
+def thread_parts(thread: dict, cards: dict[str, dict], cmap: dict, gaps: list[dict],
+                 times: dict[str, dict], unit: str) -> dict:
+    """thread_input 的各块：head 第一行、rows 场景行、end 写到哪、gaps 缺口行、hooks 伏笔行（后两样没有时是空列表）。
+    长线分段写档案（write_long_thread）也用它。"""
+    scenes = list(thread.get("scenes") or [])
+    rows = [card_line(sid, cards[sid], cmap) + _time_bit(sid, times, unit) for sid in scenes if cards.get(sid)]
+    end = thread.get("end") or {}
+    gap_rows = []
+    for g in gaps:
+        where = "、".join(f"[{s}]" for s in (g.get("mentioned_in") or []))
+        span = "".join([f"在 [{g['after']}] 之后" if g.get("after") else "",
+                        f"、[{g['before']}] 之前" if g.get("before") else ""])
+        gap_rows.append(f"- {g.get('event','')}：提到于 {where}{('，位置大约' + span) if span else ''}")
+    hooks = open_hooks(scenes, cards, {r for c in cards.values() for r in (c.get("hooks_resolved") or [])})
+    return {
+        "head": f"线编号：{thread.get('id','')}　线名：{thread.get('name','')}　所属世界：{thread.get('world','')}",
+        "rows": rows,
+        "end": [f"状态：{end.get('state','待定')}　最后一块：[{end.get('last','')}]",
+                f"断点说明：{end.get('note','') or '（没有）'}"],
+        "gaps": gap_rows,
+        "hooks": [f"- {h['hook']}：埋于 [{h['scene']}]" for h in hooks],
+    }
+
+
+def split_rows(rows: list[str], max_chars: int) -> list[list[str]]:
+    """按顺序切段，每段字数（含换行）不超过 max_chars；单独一行就超的自成一段。"""
+    out: list[list[str]] = []
+    total = 0
+    for r in rows:
+        n = len(r) + 1
+        if out and total + n <= max_chars:
+            out[-1].append(r)
+            total += n
+        else:
+            out.append([r])
+            total = n
+    return out
+
+
+def thread_part_input(head: str, rows: list[str], k: int, n: int) -> str:
+    return "\n".join([head, "", f"## 按顺序的场景（全线太长，这是第 {k} 段，共 {n} 段）", *rows])
+
+
+def thread_merge_input(p: dict, bodies: list[str]) -> str:
+    lines = [p["head"], "", "## 各段档案（按先后）"]
+    for k, b in enumerate(bodies, 1):
+        lines += [f"### 第 {k} 段", b.strip(), ""]
+    lines += ["## 写到哪", *p["end"]]
+    return "\n".join(lines)
+
+
+def thread_tail(p: dict) -> str:
+    """长线档案的「缺口」「开放的伏笔」两节：列表本来就是程序算的，由程序照着写（全本斗破主线 6898 条伏笔，
+    让模型照抄写不完）。格式跟 archive_thread 模板一致。"""
+    gaps = p["gaps"] or ["（没有）"]
+    hooks = [f"{h}，至今没回收" for h in p["hooks"]] or ["（没有）"]
+    return "\n".join(["## 缺口", *gaps, "", "## 开放的伏笔", *hooks])
 
 
 def world_input(world: dict, rows: list[FactRow], notes: list[dict],
@@ -89,24 +126,81 @@ def world_input(world: dict, rows: list[FactRow], notes: list[dict],
     `threads` 传这个世界下的线列表——线搬到别的世界后，两边的 `threads` 都会变，
     渲染文本跟着变，签名自然跟着变。`notes` 是调用方已经把 `world['notes']`
     里的场景编号解析成 {"id", "text"} 之后的结果，这里只管渲染。"""
-    lines = [f"世界编号：{world.get('id','')}　世界名：{world.get('name','')}",
-             f"判定依据：{world.get('reason','')}", "", "## 这个世界下的线"]
-    lines += [f"- {t.get('id','')} {t.get('name','')}" for t in threads] or ["（没有）"]
+    p = world_parts(world, rows, notes, threads)
+    lines = [*p["head"], "", "## 设定（每条带出处编号）"]
+    for attr, groups in p["attrs"]:
+        lines.append(f"### {attr}")
+        lines += [ln for g in groups for ln in g]
+    if p["notes"]:
+        lines += ["", "## 这个世界下的设定笔记原文", *p["notes"]]
+    return "\n".join(lines)
 
-    lines += ["", "## 设定（每条带出处编号）"]
+
+def world_parts(world: dict, rows: list[FactRow], notes: list[dict], threads: list[dict]) -> dict:
+    """world_input 的各块：head 开头几行、attrs [(属性, [同一主语的几行, ...])]、notes 笔记行。"""
+    head = [f"世界编号：{world.get('id','')}　世界名：{world.get('name','')}",
+            f"判定依据：{world.get('reason','')}", "", "## 这个世界下的线"]
+    head += [f"- {t.get('id','')} {t.get('name','')}" for t in threads] or ["（没有）"]
     by_attr: dict[str, list[FactRow]] = {}
     for r in rows:
         by_attr.setdefault(r.attribute, []).append(r)
+    attrs = []
     for attr in sorted(by_attr):
-        lines.append(f"### {attr}")
+        groups: dict[str, list[str]] = {}
         for r in sorted(by_attr[attr], key=lambda r: (r.subject, r.scene)):
-            lines.append(f"- {r.subject}：{r.value}　[{r.scene}]　原文「{r.quote}」")
+            groups.setdefault(r.subject, []).append(f"- {r.subject}：{r.value}　[{r.scene}]　原文「{r.quote}」")
+        attrs.append((attr, list(groups.values())))
+    return {"head": head, "attrs": attrs, "notes": [f"[{n['id']}] {n.get('text','')}" for n in notes]}
 
-    if notes:
-        lines += ["", "## 这个世界下的设定笔记原文"]
-        for n in notes:
-            lines.append(f"[{n['id']}] {n.get('text','')}")
-    return "\n".join(lines)
+
+def world_batches(p: dict, max_chars: int) -> list[str]:
+    """长世界分批写设定集：按属性、再按主语装批，同一主语同一属性的几行不拆开（「多个说法」要在一批里看全）。
+    笔记原文放第一批。每批都带开头几行，模型照模板写出完整的小设定集，再由 merge_world_bodies 合并。"""
+    head = "\n".join([*p["head"], "", "## 设定（每条带出处编号）"])
+    batches: list[list[str]] = []
+    size = max_chars  # 让第一组就开新批
+    for attr, groups in p["attrs"]:
+        cur_attr = None
+        for g in groups:
+            n = sum(len(x) + 1 for x in g)
+            if batches and size + n <= max_chars:
+                if cur_attr != attr:
+                    batches[-1].append(f"### {attr}")
+                    size += len(attr) + 5
+                    cur_attr = attr
+                batches[-1] += g
+                size += n
+            else:
+                batches.append([f"### {attr}", *g])
+                size = len(head) + len(attr) + 5 + n
+                cur_attr = attr
+    if not batches:
+        batches = [[]]
+    out = ["\n".join([head, *b]) for b in batches]
+    if p["notes"]:
+        out[0] += "\n\n## 这个世界下的设定笔记原文\n" + "\n".join(p["notes"])
+    return out
+
+
+def merge_world_bodies(bodies: list[str]) -> str:
+    """几批设定集合成一份：开头（第一个「## 」之前）用第一批的，同名小节按批的先后接起来。"""
+    head, order, sections = "", [], {}
+    for k, b in enumerate(bodies):
+        parts = re.split(r"(?m)^(?=## )", b.strip())
+        if k == 0 and parts and not parts[0].startswith("## "):
+            head = parts[0].strip()
+        for sec in parts:
+            if not sec.startswith("## "):
+                continue
+            title, _, rest = sec.partition("\n")
+            if title not in sections:
+                order.append(title)
+                sections[title] = []
+            if rest.strip():
+                sections[title].append(rest.strip())
+    out = [head] if head else []
+    out += [title + "\n" + "\n".join(sections[title]) for title in order]
+    return "\n\n".join(out) + "\n"
 
 
 def map_input(world_files: list[Path], thread_files: list[Path], contradictions: list[dict],
