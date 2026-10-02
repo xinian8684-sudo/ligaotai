@@ -23,6 +23,7 @@ from datetime import datetime
 from . import archive_input as ai
 from . import hanfold
 from . import contradictions as cd
+from . import hooks_pair as hp
 from . import verdicts as vd
 from .book import Book, now_iso
 from .cards import load_cards, pick_error
@@ -320,11 +321,15 @@ def prepare_inputs(book: Book) -> Inputs:
         # 同一个叫法在不同类型下指向不同规范名：说不清，记空串，回填时不用它
         inp.aliases[name] = canon if inp.aliases.get(name, canon) == canon else ""
 
+    # 伏笔配对（_run_archive 开头先跑、落盘）：配出来后文已交代的伏笔不列进开放的伏笔；还没配过就照旧字面比
+    order = hp.story_order(data, cards)
+    closed = hp.closed_hooks(hp.load_fresh(book, order, cards), order)
+
     for t in threads:
-        text = ai.thread_input(t, cards, cmap, [g for g in gaps if g.get("thread") == t["id"]], times, unit)
+        text = ai.thread_input(t, cards, cmap, [g for g in gaps if g.get("thread") == t["id"]], times, unit, closed)
         inp.thread_text[t["id"]] = text
         inp.thread_parts[t["id"]] = ai.thread_parts(t, cards, cmap, [g for g in gaps if g.get("thread") == t["id"]],
-                                                    times, unit)
+                                                    times, unit, closed)
         # 缺口「提到于」的场景可能在别的线里；材料里给了模型的编号都算合法引用，不然白白重试
         inp.thread_scope[t["id"]] = set(_ids(t.get("scenes"))) | set(_ANY_SCENE.findall(text))
 
@@ -739,12 +744,24 @@ def run_archive(book: Book, client: LLMClient, progress: Progress = _noop) -> di
 
 
 async def _run_archive(book: Book, client: LLMClient, progress: Progress) -> dict:
+    # 缓存路径必须是档案自己的：归线缓存是花过钱的结果，prune 时会被清掉
+    caller = Caller(book, client, progress, cache_path=book.archive_cache_path, tag_prefix="archive")
+    # 先配伏笔：线档案的「开放的伏笔」要用配对结果，必须在算输入之前落盘
+    data = read_json(book.threads_path, None)
+    if isinstance(data, dict):
+        cards = {sid: r["card"] for sid, r in load_cards(book).items() if isinstance(r.get("card"), dict)}
+        try:
+            await hp.run_pairing(book, caller, hp.story_order(data, cards), cards)
+        except BaseException:
+            # 暂停 / 欠费 / key 失效：配对花掉的也要记账（下面主流程的 finally 走不到）
+            u = client.usage
+            book.add_usage("archive", u.calls, u.prompt_tokens, u.completion_tokens, u.cost(client.cfg),
+                           cache_hit_tokens=u.cache_hit_tokens)
+            raise
     inp = prepare_inputs(book)
     index = load_index(book)
     removed = reconcile(index, set(inp.thread_text), set(inp.world_text))
     write_index(book, index)
-    # 缓存路径必须是档案自己的：归线缓存是花过钱的结果，prune 时会被清掉
-    caller = Caller(book, client, progress, cache_path=book.archive_cache_path, tag_prefix="archive")
     run = _Run(book, caller, inp, index)
     try:
         _, _, contra = await _gather([

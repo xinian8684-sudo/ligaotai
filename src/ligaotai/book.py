@@ -141,6 +141,11 @@ class Book:
         return self.root / "全书地图.md"
 
     @property
+    def hooks_pair_path(self) -> Path:
+        """伏笔配对（步骤 7 开头由模型查目录配出来）：哪条埋下的伏笔在后文哪一场交代了。"""
+        return self.root / "伏笔配对.json"
+
+    @property
     def archive_cache_path(self) -> Path:
         """步骤 7 每次模型调用的缓存。"""
         return self.root / "档案缓存.json"

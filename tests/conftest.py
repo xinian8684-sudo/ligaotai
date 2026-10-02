@@ -196,7 +196,10 @@ def _make_archive_client(book, overrides: dict | None = None, on_call=None):
 
     def handler(tier, messages):
         system, user = messages[0]["content"], messages[1]["content"]
-        if "全书地图" in system:
+        if "得到交代" in system:  # 伏笔配对：默认一条都没交代
+            ids = re.findall(r"^(H-\d+)", user, re.M)
+            tag, out = "hooks", json.dumps({"items": [{"id": i, "scenes": []} for i in ids]})
+        elif "全书地图" in system:
             sid = _SID.search(user).group(0)
             tag, out = "map", json.dumps({"body": f"# 全书地图\n\n## 全书概况\n讲了个故事 [{sid}]。"},
                                         ensure_ascii=False)
@@ -263,7 +266,7 @@ def cancelling_client(book_with_threads):
 
     def progress(done, total, message=""):
         n["k"] += 1
-        if n["k"] > 5:
+        if n["k"] > 7:  # 伏笔配对报两次进度，再加四件开工各一次、第一份做完
             raise JobCancelled("已暂停")
 
     client.progress = progress

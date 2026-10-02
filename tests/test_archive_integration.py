@@ -28,10 +28,10 @@ def test_从场景卡跑到地图(book_with_threads, fake_client):
     # ---- 编排结果：数字对得上这本小书的真实结构（2 条线、1 个世界、1 组候选矛盾）----
     assert res["threads"] == 2 and res["worlds"] == 1
     assert res["contradictions"] == 1 and res["严重"] == 1
-    assert res["calls"] == 5  # L-001、L-002、W-01、矛盾一批、地图
+    assert res["calls"] == 6  # 伏笔配对、L-001、L-002、W-01、矛盾一批、地图
     assert b.step("archive")["status"] == "done"
     assert sorted(fake_client.calls) == sorted([
-        "archive/thread/L-001", "archive/thread/L-002", "archive/world/W-01",
+        "archive/hooks", "archive/thread/L-001", "archive/thread/L-002", "archive/world/W-01",
         "archive/contradictions/C-000", "archive/map",
     ])
 
@@ -84,8 +84,8 @@ def test_缓存命中第二次不花钱(book_with_threads, fake_client, make_arc
     """产物删掉但 index.json 和档案自己的缓存还在：重跑应该整轮命中缓存，一次模型都不调。"""
     b = book_with_threads
     run_archive(b, fake_client)
-    assert fake_client.model_calls == 5
-    assert len(read_json(b.archive_cache_path)) == 5
+    assert fake_client.model_calls == 6
+    assert len(read_json(b.archive_cache_path)) == 6
 
     b.map_path.unlink()  # 只删产物，不动 index.json / 档案自己的缓存文件
     c2 = make_archive_client(b)
@@ -118,7 +118,7 @@ def test_暂停能取消(book_with_threads, cancelling_client, make_archive_clie
     c2 = make_archive_client(b)
     run_archive(b, c2)
     assert not set(written) & set(c2.calls), "已经落盘的档案不该重调"
-    assert cancelling_client.model_calls + c2.model_calls == 5
+    assert cancelling_client.model_calls + c2.model_calls == 6
     assert b.step("archive")["status"] == "done"
 
 

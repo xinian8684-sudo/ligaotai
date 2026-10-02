@@ -127,7 +127,11 @@ def archive_handler(record: list, overrides: dict | None = None, on_call=None):
 
     def handler(tier, messages):
         system, user = messages[0]["content"], messages[1]["content"]
-        if "全书地图" in system:  # 地图的 system 里也提到「设定集」「支线档案」，要先认
+        if "得到交代" in system:  # 伏笔配对：默认一条都没交代（开放的伏笔照旧全列）
+            tag = "hooks"
+            ids = re.findall(r"^(H-\d+)", user, re.M)
+            out = json.dumps({"items": [{"id": i, "scenes": []} for i in ids]})
+        elif "全书地图" in system:  # 地图的 system 里也提到「设定集」「支线档案」，要先认
             sid = _SID.search(user).group(0)
             tag = "map"
             out = json.dumps({"body": f"# 全书地图\n\n## 全书概况\n测试 [{sid}]"}, ensure_ascii=False)
@@ -194,9 +198,9 @@ def test_四件都产出(book_with_threads, fake_client):
     assert res["contradictions"] == 1 and res["严重"] == 1
     assert b.step("archive")["status"] == "done"
     assert sorted(fake_client.calls) == sorted(
-        ["archive/thread/L-001", "archive/thread/L-002", "archive/world/W-01",
+        ["archive/hooks", "archive/thread/L-001", "archive/thread/L-002", "archive/world/W-01",
          "archive/contradictions/C-000", "archive/map"])
-    assert b.load()["usage"]["by_step"]["archive"]["calls"] == 5
+    assert b.load()["usage"]["by_step"]["archive"]["calls"] == 6  # 含伏笔配对
 
 
 def test_地图在三件都完成之后才跑(book_with_threads, fake_client):
@@ -406,14 +410,14 @@ def test_档案用自己的缓存_不碰归线缓存(book_with_threads, fake_cli
     before = b.threads_cache_path.read_bytes()
     run_archive(b, fake_client)
     assert b.threads_cache_path.read_bytes() == before
-    assert len(read_json(b.archive_cache_path)) == 5
+    assert len(read_json(b.archive_cache_path)) == 6
 
     # 第二次跑：什么都没变，全部按签名跳过（0 次调用）；跳过的条目也不该被 prune 清掉——
     # 花过钱买的缓存不能因为「这一轮没真调用」就被当垃圾扫掉（C1）
     c2 = make_client(b)
     run_archive(b, c2)
     assert c2.calls == []
-    assert len(read_json(b.archive_cache_path)) == 5
+    assert len(read_json(b.archive_cache_path)) == 6
 
 
 def test_空转一次之后标过期重跑_命中缓存不花钱(book_with_threads, fake_client):
@@ -426,7 +430,7 @@ def test_空转一次之后标过期重跑_命中缓存不花钱(book_with_threa
 
     b = book_with_threads
     run_archive(b, fake_client)
-    assert len(read_json(b.archive_cache_path)) == 5
+    assert len(read_json(b.archive_cache_path)) == 6
 
     c2 = make_client(b)
     run_archive(b, c2)
@@ -456,7 +460,7 @@ def test_暂停后重跑_做完的不重复花钱(book_with_threads):
 
     def progress(done, total, message=""):
         n["k"] += 1
-        if n["k"] > 5:  # 四件开工各报一次进度之后，第一份做完时作者点了暂停
+        if n["k"] > 7:  # 伏笔配对两次 + 四件开工各报一次进度之后，第一份做完时作者点了暂停
             raise JobCancelled("已暂停")
 
     with pytest.raises(JobCancelled):
@@ -469,7 +473,7 @@ def test_暂停后重跑_做完的不重复花钱(book_with_threads):
     c2 = make_client(b)
     run_archive(b, c2)
     assert not set(written) & set(c2.calls), "已经落盘的档案不该重调"
-    assert len(c1.calls) + len(c2.calls) == 5
+    assert len(c1.calls) + len(c2.calls) == 6
     assert b.step("archive")["status"] == "done"
 
 
@@ -570,7 +574,9 @@ def mutating(book, change, when=lambda tag: True):
 
 @pytest.fixture
 def mutating_client(book_with_threads):
-    return mutating(book_with_threads, lambda d: d["threads"][1].__setitem__("name", "龙宫夜宴"))
+    # 伏笔配对在算输入之前跑，那时改了不算「途中」：等它之后的第一次调用再改
+    return mutating(book_with_threads, lambda d: d["threads"][1].__setitem__("name", "龙宫夜宴"),
+                    when=lambda tag: tag != "archive/hooks")
 
 
 def test_跑的途中上游变了记outdated(book_with_threads, mutating_client):
@@ -1020,3 +1026,72 @@ def test_world_batches_同一主语同一属性不拆开_装得下就并批():
     two = world_batches(p, head + len("兵器") + 5 + a + b - 1)  # 差一个字：乙另起一批，甲的两行还在一起
     assert len(two) == 2
     assert "甲提刀" in two[0] and "甲提剑" in two[0] and "乙提枪" in two[1] and two[1].count("### 兵器") == 1
+
+
+# ---------- 伏笔配对（10-02：字面配对两本斗破一条没配上，开放的伏笔全本 6898 条） ----------
+
+
+def hooks_client(book, picks):
+    """伏笔配对按 picks {伏笔原话: [交代场]} 回答，其余同 archive_handler。"""
+    record: list = []
+    base = archive_handler(record)
+
+    def handler(tier, messages):
+        system, user = messages[0]["content"], messages[1]["content"]
+        if "得到交代" in system:
+            record.append("archive/hooks")
+            items = []
+            for m in re.finditer(r"^(H-\d+) \[(S-\d{4})\] (.+)$", user, re.M):
+                sc = picks.get(m.group(3))
+                if isinstance(sc, Exception):
+                    return sc
+                items.append({"id": m.group(1), "scenes": sc or []})
+            return json.dumps({"items": items}, ensure_ascii=False)
+        return base(tier, messages)
+
+    c = LLMClient(AppConfig(), FakeBackend(handler=handler), log_dir=book.logs_dir)
+    c.calls = record
+    return c
+
+
+def thread_user(client, tid):
+    return next(x["messages"][1]["content"] for x in client.backend.calls
+                if "这条线的档案" in x["messages"][0]["content"] and f"线编号：{tid}" in x["messages"][1]["content"])
+
+
+def test_伏笔配到后面的场_不算开放(book_with_threads):
+    from ligaotai.archive import run_archive
+
+    b = book_with_threads
+    c = hooks_client(b, {"紧箍咒的来历": ["S-0003"]})  # 埋在 S-0002，S-0003 在它后面
+    run_archive(b, c)
+    user = thread_user(c, "L-001")
+    assert "紧箍咒的来历" not in user.split("## 埋了还没回收的伏笔")[1]
+    pairs = read_json(b.hooks_pair_path)["pairs"]
+    assert pairs == [{"scene": "S-0002", "hook": "紧箍咒的来历", "resolved_in": ["S-0003"]}]
+
+
+def test_伏笔配到前面的场或自己_照样算开放(book_with_threads):
+    from ligaotai.archive import run_archive
+
+    b = book_with_threads
+    c = hooks_client(b, {"紧箍咒的来历": ["S-0001", "S-0002"]})  # 前面一场 + 埋下那场自己
+    run_archive(b, c)
+    assert "- 紧箍咒的来历：埋于 [S-0002]" in thread_user(c, "L-001")
+
+
+def test_伏笔配对某批失败_这次照开放列_下次重配(book_with_threads):
+    from ligaotai.archive import run_archive
+
+    b = book_with_threads
+    c = hooks_client(b, {"紧箍咒的来历": LLMError("假的失败")})
+    res = run_archive(b, c)
+    assert "- 紧箍咒的来历：埋于 [S-0002]" in thread_user(c, "L-001")
+    assert read_json(b.hooks_pair_path)["failed"] is True
+    assert any("hooks" in str(f.get("call", f)) for f in res["failed"])
+    c2 = hooks_client(b, {"紧箍咒的来历": ["S-0003"]})
+    run_archive(b, c2)
+    assert "archive/hooks" in c2.calls
+    assert read_json(b.hooks_pair_path)["failed"] is False
+    # 配对变了 → L-001 的输入变了 → L-001 档案重写
+    assert "archive/thread/L-001" in c2.calls
