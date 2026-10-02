@@ -442,13 +442,36 @@ def _time_of(times, s: str):
     return v.get("t") if isinstance(v, dict) else None
 
 
-def thread_block(t: ThreadDraft, items: dict[str, Item], main: bool = False) -> str:
+def short_line(line: str) -> str:
+    """一块的一行只留「编号｜类型｜摘要」，去掉人物 / 地点 / 世界线索等字段（长书对齐、找缺口放不下时用）。"""
+    return "｜".join(line.split("｜")[:3])
+
+
+def thread_block(t: ThreadDraft, items: dict[str, Item], main: bool = False, *, short: bool = False,
+                 shown: list[str] | None = None) -> str:
+    """shown：只列这些块（等距抽样后的，按线内顺序），标题里注明抽了多少。"""
+    rows_of = t.scenes if shown is None else shown
     head = f"## {t.key} {_one_line(t.name)}" + ("（主线）" if main else "")
-    rows = [
-        f"[{_num(_time_of(t.times, s))}] {items[s].line if s in items else s}"
-        for s in t.scenes
-    ]
+    if len(rows_of) < len(t.scenes):
+        head += f"（太长，等距列出 {len(t.scenes)} 块中的 {len(rows_of)} 块）"
+    rows = []
+    for s in rows_of:
+        line = items[s].line if s in items else s
+        rows.append(f"[{_num(_time_of(t.times, s))}] {short_line(line) if short else line}")
     return "\n".join([head, *rows])
+
+
+def _row_cost(t: ThreadDraft, items: dict[str, Item]) -> dict[str, int]:
+    """压短后每块那一行占多少字（含时间前缀和换行），抽样按它算。"""
+    return {s: len(f"[{_num(_time_of(t.times, s))}] {short_line(items[s].line) if s in items else s}") + 1
+            for s in t.scenes}
+
+
+def _sampled_block(t: ThreadDraft, items: dict[str, Item], main: bool, budget: int) -> str:
+    """压短后整条线放得下就全列，放不下就等距抽样到放得下（标题算在预算里）。"""
+    head = len(f"## {t.key} {_one_line(t.name)}（主线）（太长，等距列出 {len(t.scenes)} 块中的 {len(t.scenes)} 块）")
+    shown = _sample_to_budget(list(t.scenes), _row_cost(t, items), max(budget - head - 1, 1))
+    return thread_block(t, items, main, short=True, shown=shown)
 
 
 async def stage_align(
@@ -462,20 +485,43 @@ async def stage_align(
         return offsets, []
     text = "\n\n".join(thread_block(t, items, t.key == main) for t in threads)
     if len(text) > budget:
-        caller.failed.append({"call": "align", "error": "输入太大，跳过跨线对齐"})
-        return offsets, []
-    members = {t.key: set(t.scenes) for t in threads}
-    ids = set(members)
-    caller.plan(1)
-    got = await caller.call(
-        "threads_align", {"unit": unit or "年", "main": main, "threads": text},
-        lambda d: check_align(d, ids, main, members), "align",
-        score=lambda d: score_align(d, ids, main, members),
-        clean=lambda d: clean_align(d, ids, main, members),
-    )
-    if got is None:
-        return offsets, []
-    return got
+        text = "\n\n".join(thread_block(t, items, t.key == main, short=True) for t in threads)
+    if len(text) <= budget:
+        batches = [(threads, text)]
+    else:
+        # 压短还放不下（10-02 全本斗破主线 2891 块 65 万字）：支线按一半预算分批，每批配一份等距抽样的主线
+        main_t = next(t for t in threads if t.key == main)
+        side = [t for t in threads if t.key != main]
+        side_text = {t.key: thread_block(t, items, short=True) for t in side}
+        groups = split_by_budget([t.key for t in side], {k: len(v) + 2 for k, v in side_text.items()}, budget // 2)
+        batches = []
+        for g in groups:
+            g_text = "\n\n".join(side_text[k] for k in g)
+            if len(g_text) > budget // 2:
+                caller.failed.append({"call": "align", "error": f"支线 {'、'.join(g)} 太长，跳过跨线对齐"})
+                continue
+            m_text = _sampled_block(main_t, items, True, budget - len(g_text) - 2)
+            batches.append(([main_t, *(t for t in side if t.key in g)], m_text + "\n\n" + g_text))
+    caller.plan(len(batches))
+
+    async def one(k: int, group: list[ThreadDraft], body: str):
+        members = {t.key: set(t.scenes) for t in group}
+        ids = set(members)
+        return await caller.call(
+            "threads_align", {"unit": unit or "年", "main": main, "threads": body},
+            lambda d: check_align(d, ids, main, members), "align" if len(batches) == 1 else f"align/{k}",
+            score=lambda d: score_align(d, ids, main, members),
+            clean=lambda d: clean_align(d, ids, main, members),
+        )
+
+    cross: list[dict] = []
+    for got in await _all(one(k, g, b) for k, (g, b) in enumerate(batches, 1)):
+        if got is None:
+            continue
+        offs, inter = got
+        offsets.update({k: v for k, v in offs.items() if k != main})
+        cross += inter
+    return offsets, cross
 
 
 async def stage_interleave(
@@ -533,22 +579,46 @@ async def stage_gaps(
     if not refs or not threads:
         return []
     text = "\n\n".join(thread_block(t, items) for t in threads)
-    ref_text = "\n".join(f"- {r}｜{s}" for r, s in refs)
-    if len(text) + len(ref_text) > budget:
-        caller.failed.append({"call": f"gaps-{world_key}", "error": "输入太大，跳过找缺口"})
-        return []
-    ref_scenes = {s for _, s in refs}
+    ref_rows = [f"- {r}｜{s}" for r, s in refs]
+    ref_len = len("\n".join(ref_rows))
+    if len(text) + ref_len > budget:
+        text = "\n\n".join(thread_block(t, items, short=True) for t in threads)
+    if len(text) + ref_len <= budget:
+        ref_batches = [list(range(len(refs)))]
+    else:
+        # 压短还放不下（10-02 全本斗破：线 65 万字 + 出处 5419 条）：线最多占四分之三预算（超了就每条线
+        # 按字数比例等距抽样），剩下的给出处分批，每批都看同一份线
+        if len(text) > budget * 3 // 4:
+            total = sum(sum(_row_cost(t, items).values()) for t in threads) or 1
+            text = "\n\n".join(
+                _sampled_block(t, items, False, budget * 3 // 4 * sum(_row_cost(t, items).values()) // total)
+                for t in threads)
+        room = budget - len(text)
+        if room <= 0:
+            caller.failed.append({"call": f"gaps-{world_key}", "error": "输入太大，跳过找缺口"})
+            return []
+        ref_batches = split_by_budget(list(range(len(refs))), {i: len(ref_rows[i]) + 1 for i in range(len(refs))},
+                                      room)
+        if any(sum(len(ref_rows[i]) + 1 for i in b) > room for b in ref_batches):
+            caller.failed.append({"call": f"gaps-{world_key}", "error": "输入太大，跳过找缺口"})
+            return []
     lines = {t.key: list(t.scenes) for t in threads}
-    caller.plan(1)
-    got = await caller.call(
-        "threads_gaps", {"world": _one_line(world_name), "threads": text, "refs": ref_text},
-        lambda d: check_gaps(d, ref_scenes, lines), f"gaps-{world_key}",
-        score=lambda d: score_gaps(d, ref_scenes, lines),
-        clean=lambda d: clean_gaps(d, ref_scenes, lines),
-    )
-    if got is None:
-        return []
-    return [{"world": world_key, **g} for g in got]
+    caller.plan(len(ref_batches))
+
+    async def one(k: int, idx: list[int]):
+        ref_scenes = {refs[i][1] for i in idx}
+        tag = f"gaps-{world_key}" if len(ref_batches) == 1 else f"gaps-{world_key}/{k}"
+        return await caller.call(
+            "threads_gaps", {"world": _one_line(world_name), "threads": text, "refs": "\n".join(ref_rows[i] for i in idx)},
+            lambda d: check_gaps(d, ref_scenes, lines), tag,
+            score=lambda d: score_gaps(d, ref_scenes, lines),
+            clean=lambda d: clean_gaps(d, ref_scenes, lines),
+        )
+
+    out: list[dict] = []
+    for got in await _all(one(k, b) for k, b in enumerate(ref_batches, 1)):
+        out += [{"world": world_key, **g} for g in got or []]
+    return out
 
 
 # --- 编号、主线、旧文件 ---

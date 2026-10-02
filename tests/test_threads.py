@@ -845,6 +845,124 @@ def test_stage_gaps(book):
     assert [f["call"] for f in caller.failed] == ["gaps-W-01"]
 
 
+# --- 长书：对齐 / 找缺口超预算时先压短每行，还放不下就抽样主线、分批（10-02 全本斗破 65 万字被整个跳过） ---
+
+from ligaotai.threads import short_line  # noqa: E402
+
+EXTRA = "｜人物：" + "张三、李四、王五、" * 6  # 每块后面一长串人物，压短时要整段去掉
+
+
+def long_items(n, prefix="S", start=1):
+    out = {}
+    for i in range(start, start + n):
+        sid = f"{prefix}-{i:04d}"
+        out[sid] = Item(sid, "a.txt", i, "正文", f"{sid}｜正文｜摘要{sid}{EXTRA}")
+    return out
+
+
+def test_short_line_keeps_id_kind_summary():
+    assert short_line(f"S-0001｜正文｜摘要{EXTRA}｜地点：青州") == "S-0001｜正文｜摘要"
+    assert short_line("S-0001｜正文") == "S-0001｜正文"
+
+
+def test_thread_block_short_and_sampled():
+    items = long_items(4)
+    t = ThreadDraft("L-001", "W-01", "甲", scenes=list(items))
+    block = thread_block(t, items, main=True, short=True, shown=["S-0001", "S-0003"])
+    assert block == ("## L-001 甲（主线）（太长，等距列出 4 块中的 2 块）\n"
+                     "[?] S-0001｜正文｜摘要S-0001\n[?] S-0003｜正文｜摘要S-0003")
+
+
+def long_align(book, threads, main, items, budget, **handlers):
+    c = client(book, **handlers)
+    caller = Caller(book, c, lambda *a: None, cache_path=book.threads_cache_path)
+    return asyncio.run(stage_align(caller, threads, main, items, "年", budget)), c, caller
+
+
+def test_stage_align_over_budget_uses_short_lines(book):
+    items = long_items(6)
+    a = ThreadDraft("L-001", "W-01", "甲", scenes=["S-0001", "S-0002", "S-0003", "S-0004"])
+    b = ThreadDraft("L-002", "W-01", "乙", scenes=["S-0005", "S-0006"])
+    full = len("\n\n".join(thread_block(t, items, t.key == "L-001") for t in (a, b)))
+    (offsets, _), c, caller = long_align(book, [a, b], "L-001", items, full - 1)
+    sent = users(c, "跨线对齐")
+    assert len(sent) == 1 and "人物：" not in sent[0] and "S-0004｜正文｜摘要S-0004" in sent[0]
+    assert "等距" not in sent[0]  # 压短就放得下，主线不用抽样
+    assert offsets == {"L-001": 0, "L-002": 0} and caller.failed == []
+
+
+def test_stage_align_samples_main_and_batches_side_threads(book):
+    items = {**long_items(40), **long_items(6, start=41)}
+    main = ThreadDraft("L-001", "W-01", "甲", scenes=[f"S-{i:04d}" for i in range(1, 41)])
+    b = ThreadDraft("L-002", "W-01", "乙", scenes=["S-0041", "S-0042", "S-0043"])
+    c3 = ThreadDraft("L-003", "W-01", "丙", scenes=["S-0044", "S-0045", "S-0046"])
+    side = len(thread_block(b, items, short=True))
+    budget = side * 3  # 一批只放得下一条支线（预算一半给支线），主线 40 块要抽样
+    (offsets, cross), c, caller = long_align(book, [main, b, c3], "L-001", items, budget)
+    sent = users(c, "跨线对齐")
+    assert len(sent) == 2
+    assert all("等距列出 40 块中的" in s and len(s) <= budget for s in sent)
+    assert ("## L-002" in sent[0]) != ("## L-002" in sent[1]) and ("## L-003" in sent[0]) != ("## L-003" in sent[1])
+    assert offsets == {"L-001": 0, "L-002": 0, "L-003": 0} and caller.failed == []
+
+
+def test_stage_align_merges_batches(book):
+    items = {**long_items(40), **long_items(6, start=41)}
+    main = ThreadDraft("L-001", "W-01", "甲", scenes=[f"S-{i:04d}" for i in range(1, 41)])
+    b = ThreadDraft("L-002", "W-01", "乙", scenes=["S-0041", "S-0042", "S-0043"])
+    c3 = ThreadDraft("L-003", "W-01", "丙", scenes=["S-0044", "S-0045", "S-0046"])
+
+    def reply(m):
+        u = m[1]["content"]
+        tid, sc, off = ("L-002", "S-0041", 3) if "## L-002" in u else ("L-003", "S-0044", 7)
+        return json.dumps({"threads": [{"id": "L-001", "offset": 0}, {"id": tid, "offset": off}],
+                           "intersections": [{"thread": tid, "scene": sc, "main_scene": "S-0001", "reason": "同一场",
+                                              "same_time": True}]}, ensure_ascii=False)
+
+    budget = len(thread_block(b, items, short=True)) * 3
+    (offsets, cross), _, _ = long_align(book, [main, b, c3], "L-001", items, budget, align=reply)
+    assert offsets == {"L-001": 0, "L-002": 3, "L-003": 7}
+    assert sorted(x["thread"] for x in cross) == ["L-002", "L-003"]
+
+
+def long_gaps(book, items, threads, budget, **handlers):
+    c = client(book, **handlers)
+    caller = Caller(book, c, lambda *a: None, cache_path=book.threads_cache_path)
+    got = asyncio.run(stage_gaps(caller, "W-01", "人间", threads, list(items), items, budget))
+    return got, c, caller
+
+
+def test_stage_gaps_over_budget_uses_short_lines(book):
+    items = long_items(6)
+    items["S-0006"].refs = ["青州城破"]
+    a = ThreadDraft("L-001", "W-01", "甲", scenes=list(items))
+    full = len(thread_block(a, items)) + len("- 青州城破｜S-0006")
+    _, c, caller = long_gaps(book, items, [a], full - 1)
+    sent = users(c, "找缺口")
+    assert len(sent) == 1 and "人物：" not in sent[0] and "- 青州城破｜S-0006" in sent[0] and caller.failed == []
+
+
+def test_stage_gaps_batches_refs(book):
+    items = long_items(6)
+    refs = {f"S-{i:04d}": [f"没写的事{i}号" * 3] for i in range(1, 7)}
+    for s, rs in refs.items():
+        items[s].refs = rs
+    a = ThreadDraft("L-001", "W-01", "甲", scenes=list(items))
+
+    def reply(m):
+        u = m[1]["content"]
+        got = [s for s in refs if f"｜{s}" in u.split("提到但没写的事件")[1]]
+        return json.dumps({"gaps": [{"event": f"缺{s}", "mentioned_in": [s], "thread": "L-001", "after": None,
+                                     "before": None} for s in got]}, ensure_ascii=False)
+
+    short = len(thread_block(a, items, short=True))
+    got, c, caller = long_gaps(book, items, [a], short + 120, gaps=reply)
+    sent = users(c, "找缺口")
+    assert len(sent) >= 2 and all("人物：" not in s for s in sent)
+    assert sorted(g["mentioned_in"][0] for g in got) == sorted(refs)  # 每条出处恰好进了一批
+    assert caller.failed == []
+
+
 # --- 编号、主线、旧文件 ---
 
 from ligaotai.threads import (
