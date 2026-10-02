@@ -143,7 +143,8 @@ def clean_index(data, ids: set[str], chunk: set[str]) -> dict[str, list[str]]:
 
 A_BATCH = 20  # A 类一批几条
 C_BATCH = 10  # C 类一批几条（每条带 8 个候选摘要，比 A 长）
-INDEX_CHUNK = 300  # 目录一段放几场（每场一行约 70 字，300 场两万来字）；书再长就分段问
+INDEX_MAX_CHARS = 400_000  # 目录一段最多几字。10-02：前 100 章目录后面掺 2700 多场干扰（30 万字）一次给全，
+# 5 处 C 植入照样 5/5、没有一条挑到干扰场；原来按 300 场分段，全本斗破要 10 段 × 136 批 = 1360 次
 INDEX_REF_BATCH = 40  # 查目录一次问几条回指
 SUMMARY_LIMIT = 200  # 候选摘要总长上限（summary + events），够看清场里发生了什么，别无限长
 
@@ -284,7 +285,7 @@ async def _index_picks(caller: Caller, seq: list[str], cards: dict) -> dict[tupl
     书长就把目录分段，每段把回指分批问一遍，各段挑的按段的先后合起来。某一批失败了，
     那一批的回指在那一段就当没挑（记进 failed），还有字面候选兜底。"""
     refs = tl.ref_items(seq, cards)
-    chunks = tl.index_chunks(seq, INDEX_CHUNK)
+    chunks = tl.index_chunks(seq, cards, INDEX_MAX_CHARS)
     batches = [refs[i:i + INDEX_REF_BATCH] for i in range(0, len(refs), INDEX_REF_BATCH)]
     caller.plan(len(chunks) * len(batches))
 
@@ -297,8 +298,14 @@ async def _index_picks(caller: Caller, seq: list[str], cards: dict) -> dict[tupl
                                 clean=lambda d: clean_index(d, ids, cset))
         return {key: (got or {}).get(f"R-{i:02d}") or [] for i, key in enumerate(batch, 1)}
 
-    jobs = [(ci, bi, chunk, batch) for ci, chunk in enumerate(chunks) for bi, batch in enumerate(batches)]
-    results = await asyncio.gather(*(one(n, chunk, batch) for n, (_, _, chunk, batch) in enumerate(jobs)))
+    jobs = [(chunk, batch) for chunk in chunks for batch in batches]
+    # 同一段目录的各批开头一字不差（系统提示 + 目录在前）：先单独问每段的第一批，接口缓存住这段开头，
+    # 其余再一起发。10-02 七批同时发，164 万输入只命中 9 万；全本 136 批每批 22 万，没命中要多花约 ¥30
+    first = [n for n, (_, b) in enumerate(jobs) if b is batches[0]] if batches else []
+    head = await asyncio.gather(*(one(n, *jobs[n]) for n in first))
+    rest = await asyncio.gather(*(one(n, *jobs[n]) for n in range(len(jobs)) if n not in set(first)))
+    by_n = dict(zip(first, head)) | dict(zip([n for n in range(len(jobs)) if n not in set(first)], rest))
+    results = [by_n[n] for n in range(len(jobs))]
     picks: dict[tuple[str, str], list[str]] = {}
     for got in results:  # jobs 按段的先后排，合起来就是段序
         for key, sc in got.items():

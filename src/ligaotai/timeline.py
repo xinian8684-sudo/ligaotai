@@ -211,8 +211,19 @@ def index_line(cards: dict, sid: str) -> str:
     return f"[{sid}] {text[:INDEX_LINE]}"
 
 
-def index_chunks(seq: list[str], size: int) -> list[list[str]]:
-    return [seq[i:i + size] for i in range(0, len(seq), size)]
+def index_chunks(seq: list[str], cards: dict, max_chars: int) -> list[list[str]]:
+    """目录按字数分段（每场一行 index_line，加换行），一段不超过 max_chars；单独一行就超的自成一段。"""
+    out: list[list[str]] = []
+    total = 0
+    for s in seq:
+        n = len(index_line(cards, s)) + 1
+        if out and total + n <= max_chars:
+            out[-1].append(s)
+            total += n
+        else:
+            out.append([s])
+            total = n
+    return out
 
 
 def name_snippets(text: str, names: list[str], width: int = 40, limit: int = 3) -> list[str]:

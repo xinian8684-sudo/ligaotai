@@ -385,8 +385,11 @@ def test_目录一行_编号加摘要截短_空白压掉():
 
 def test_目录分段():
     seq = [f"S-{i:04d}" for i in range(7)]
-    assert index_chunks(seq, 3) == [seq[0:3], seq[3:6], seq[6:7]]
-    assert index_chunks([], 3) == []
+    cards = _rcards({s: ([], [], "摘要") for s in seq})  # 每行「[S-0000] 摘要」11 字，加换行 12
+    assert index_chunks(seq, cards, 36) == [seq[0:3], seq[3:6], seq[6:7]]
+    assert index_chunks(seq, cards, 35) == [seq[0:2], seq[2:4], seq[4:6], seq[6:7]]
+    assert index_chunks(seq, cards, 5) == [[s] for s in seq]  # 一行就超的自成一段
+    assert index_chunks([], cards, 36) == []
 
 
 from ligaotai.timeline import name_snippets

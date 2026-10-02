@@ -622,7 +622,7 @@ def test_没有目录这一道_同一本书字面候选为空(book):
 
 def test_目录分段问_每段挑的合起来_回指分批(book, monkeypatch):
     import ligaotai.timeline_run as tr
-    monkeypatch.setattr(tr, "INDEX_CHUNK", 2)
+    monkeypatch.setattr(tr, "INDEX_MAX_CHARS", 1)  # 每场自成一段
     monkeypatch.setattr(tr, "INDEX_REF_BATCH", 1)
     b = _far_book(book)
     from ligaotai.cards import card_path
@@ -643,10 +643,46 @@ def test_目录分段问_每段挑的合起来_回指分批(book, monkeypatch):
         raise AssertionError(system[:30])
 
     run_timeline(b, LLMClient(AppConfig(), _FakeBackend(handler=h), log_dir=b.logs_dir))
-    assert len(calls) == 4  # 2 段 × 2 条回指（每批 1 条）
+    assert len(calls) == 6  # 3 段 × 2 条回指（每批 1 条）
     data = read_json(b.timeline_path)
     got = {a["ref"]: a["candidates"] for a in data["asked_refs"]}
     assert got["那日得到焚决之事"][:2] == ["S-0002", "S-0003"]
+
+
+def test_目录每段先单独问第一批_接口缓存住开头再并发其余(book, monkeypatch):
+    # 10-02：七批同时发，164 万输入只命中缓存 9 万；先问一批再并发，后面各批的开头（系统提示 + 目录）才能命中
+    import ligaotai.timeline_run as tr
+    monkeypatch.setattr(tr, "INDEX_REF_BATCH", 1)
+    b = _far_book(book)
+    from ligaotai.cards import card_path
+    for sid, refs in (("S-0002", ["丁的旧事"]), ("S-0003", ["乙的旧事"])):
+        rec = read_json(card_path(b, sid))
+        rec["card"]["refs_elsewhere"] = refs
+        write_json(card_path(b, sid), rec)
+    events = []
+
+    class Logged(_FakeBackend):
+        async def complete(self, tier, messages, max_tokens):
+            idx = "目录" in messages[0]["content"]
+            if idx:
+                events.append(("start", self.active))
+            try:
+                return await super().complete(tier, messages, max_tokens)
+            finally:
+                if idx:
+                    events.append(("end", self.active))
+
+    def h(tier, messages):
+        if "目录" in messages[0]["content"]:
+            return _no_picks(messages[1]["content"])
+        n = len(re.findall(r"^C-[0-9]+", messages[1]["content"], flags=re.M))
+        return json.dumps({"items": [{"id": f"C-{i:02d}", "happens_in": None, "reason": "无"} for i in range(1, n + 1)]})
+
+    backend = Logged(handler=h, delay=0.01)
+    run_timeline(b, LLMClient(AppConfig(), backend, log_dir=b.logs_dir))
+    assert [e for e, _ in events].count("start") == 3  # 一段目录 × 3 条回指（每批 1 条）
+    assert events[0] == ("start", 0) and events[1][0] == "end"  # 第一批单独问完，别的才开始
+    assert max(a for e, a in events if e == "start") >= 1  # 其余两批是并发的
 
 
 def test_目录调用失败_退回字面候选_照样判_记进failed(book):
