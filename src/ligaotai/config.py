@@ -32,7 +32,7 @@ def _batch_tier() -> TierConfig:
 
 
 def _synth_tier() -> TierConfig:
-    return TierConfig(thinking="on", effort="high", max_tokens=32768)
+    return TierConfig(thinking="on", effort="high", max_tokens=65536)
 
 
 class AppConfig(BaseModel):

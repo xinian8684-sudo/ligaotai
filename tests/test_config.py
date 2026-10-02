@@ -20,7 +20,7 @@ def test_model_defaults():
     cfg = AppConfig()
     assert cfg.api_base == "https://api.deepseek.com"
     assert (cfg.batch.model, cfg.batch.thinking, cfg.batch.json_mode) == ("deepseek-flash", "off", True)
-    assert (cfg.synth.thinking, cfg.synth.effort, cfg.synth.max_tokens) == ("on", "high", 32768)
+    assert (cfg.synth.thinking, cfg.synth.effort, cfg.synth.max_tokens) == ("on", "high", 65536)
     assert cfg.concurrency == 8
 
 

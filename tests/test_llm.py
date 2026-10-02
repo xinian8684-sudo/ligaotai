@@ -210,7 +210,7 @@ def test_synth_tier():
     fb = FakeBackend(['{"a": 1}'])
     run(make(fb).chat_json("synth", "s", "u", ok, tag="t"))
     assert fb.calls[0]["tier"].thinking == "on"
-    assert fb.calls[0]["max_tokens"] == 32768
+    assert fb.calls[0]["max_tokens"] == 65536
 
 
 def test_unknown_tier():
