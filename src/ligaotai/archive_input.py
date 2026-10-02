@@ -21,21 +21,30 @@ def _loose(s: str) -> str:
 
 
 def open_hooks(scenes: list[str], cards: dict[str, dict], all_resolved: set[str],
-               closed: set[tuple[str, str]] | None = None) -> list[dict]:
+               closed: set[tuple[str, str]] | None = None,
+               same: dict[tuple[str, str], int] | None = None) -> list[dict]:
     """这条线埋下、但全书 hooks_resolved 里没有语义相近项的伏笔。
 
     `all_resolved` 是调用方算好的全书 hooks_resolved 集合（不是只看这条线），
     因为一个伏笔可能在另一条线的场景里被回收。
-    `closed`：伏笔配对（hooks_pair）配出来、后文已交代的 (场景, 原话)，这些也不算开放。"""
+    `closed`：伏笔配对（hooks_pair）配出来、后文已交代的 (场景, 原话)，这些也不算开放。
+    `same`：(场景, 原话) → 组号，同一个悬念的几种说法只列第一条，scenes 里记上这条线里全部出处。"""
     resolved = {_loose(r) for r in all_resolved}
-    out, seen = [], set()
+    out, seen, by_group = [], set(), {}
     for sid in scenes:
         for h in (cards.get(sid) or {}).get("hooks_planted") or []:
             key = _loose(h)
             if not key or key in resolved or key in seen or (closed and (sid, h.strip()) in closed):
                 continue
             seen.add(key)
-            out.append({"hook": h, "scene": sid})
+            g = (same or {}).get((sid, h.strip()))
+            if g is not None and g in by_group:
+                if sid not in by_group[g]["scenes"]:
+                    by_group[g]["scenes"].append(sid)
+                continue
+            out.append({"hook": h, "scene": sid, "scenes": [sid]})
+            if g is not None:
+                by_group[g] = out[-1]
     return out
 
 
@@ -48,13 +57,14 @@ def _time_bit(sid: str, times: dict[str, dict], unit: str) -> str:
 
 
 def thread_input(thread: dict, cards: dict[str, dict], cmap: dict, gaps: list[dict],
-                 times: dict[str, dict], unit: str, closed: set[tuple[str, str]] | None = None) -> str:
+                 times: dict[str, dict], unit: str, closed: set[tuple[str, str]] | None = None,
+                 same: dict[tuple[str, str], int] | None = None) -> str:
     """一条线的输入：按线内顺序的卡片行 + 断点 + 这条线的缺口 + 开放的伏笔。
 
     `cards` 传全书的卡片（不只是这条线的），因为 open_hooks 判断伏笔是否回收要看全书。
     `thread['world']` 写进正文第一行——线换了所属世界，这里的文本就会变（配合渲染文本
     做签名，换世界档案会自动被标过期，不用额外维护一个「世界」字段的签名）。"""
-    p = thread_parts(thread, cards, cmap, gaps, times, unit, closed)
+    p = thread_parts(thread, cards, cmap, gaps, times, unit, closed, same)
     lines = [p["head"], "", "## 按顺序的场景", *p["rows"]]
     lines += ["", "## 写到哪", *p["end"]]
     lines += ["", "## 缺口（提到过、但书里找不到对应场景的事件）", *(p["gaps"] or ["（没有）"])]
@@ -63,7 +73,8 @@ def thread_input(thread: dict, cards: dict[str, dict], cmap: dict, gaps: list[di
 
 
 def thread_parts(thread: dict, cards: dict[str, dict], cmap: dict, gaps: list[dict],
-                 times: dict[str, dict], unit: str, closed: set[tuple[str, str]] | None = None) -> dict:
+                 times: dict[str, dict], unit: str, closed: set[tuple[str, str]] | None = None,
+                 same: dict[tuple[str, str], int] | None = None) -> dict:
     """thread_input 的各块：head 第一行、rows 场景行、end 写到哪、gaps 缺口行、hooks 伏笔行（后两样没有时是空列表）。
     长线分段写档案（write_long_thread）也用它。"""
     scenes = list(thread.get("scenes") or [])
@@ -75,14 +86,14 @@ def thread_parts(thread: dict, cards: dict[str, dict], cmap: dict, gaps: list[di
         span = "".join([f"在 [{g['after']}] 之后" if g.get("after") else "",
                         f"、[{g['before']}] 之前" if g.get("before") else ""])
         gap_rows.append(f"- {g.get('event','')}：提到于 {where}{('，位置大约' + span) if span else ''}")
-    hooks = open_hooks(scenes, cards, {r for c in cards.values() for r in (c.get("hooks_resolved") or [])}, closed)
+    hooks = open_hooks(scenes, cards, {r for c in cards.values() for r in (c.get("hooks_resolved") or [])}, closed, same)
     return {
         "head": f"线编号：{thread.get('id','')}　线名：{thread.get('name','')}　所属世界：{thread.get('world','')}",
         "rows": rows,
         "end": [f"状态：{end.get('state','待定')}　最后一块：[{end.get('last','')}]",
                 f"断点说明：{end.get('note','') or '（没有）'}"],
         "gaps": gap_rows,
-        "hooks": [f"- {h['hook']}：埋于 [{h['scene']}]" for h in hooks],
+        "hooks": [f"- {h['hook']}：埋于 [{','.join(h['scenes'])}]" for h in hooks],
     }
 
 

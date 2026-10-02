@@ -130,3 +130,107 @@ async def run_pairing(book: Book, caller: Caller, order: list[str], cards: dict)
                       for s, h in hooks]}
     write_json(book.hooks_pair_path, data)
     return data
+
+
+# --- 合并同一个悬念的多种说法（配对之后，只看还开放的） ---
+
+MERGE_MAX_CHARS = 150_000  # 一次给多少字的开放伏笔；超了按故事顺序分段，各段分别合（跨段的同一悬念合不上）
+
+
+def open_items(pairing: dict | None, order: list[str], cards: dict) -> list[tuple[str, str]]:
+    closed = closed_hooks(pairing, order) or set()
+    return [k for k in hook_items(order, cards) if k not in closed]
+
+
+def merge_signature(items: list[tuple[str, str]]) -> str:
+    system, user = load_prompt("archive_hooks_merge")
+    blob = json.dumps([items, system.template, user.template], ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def _groups(data) -> list | None:
+    g = data.get("groups") if isinstance(data, dict) else None
+    return g if isinstance(g, list) else None
+
+
+def check_merge(data, ids: set[str]) -> list[str]:
+    groups = _groups(data)
+    if groups is None:
+        return ['输出要是 {"groups": [[编号, 编号], ...]} 的形状']
+    problems, seen = [], set()
+    for g in groups:
+        if not isinstance(g, list) or not all(isinstance(x, str) for x in g):
+            problems.append("每一组要是编号的列表")
+            continue
+        bad = [x for x in g if x not in ids]
+        if bad:
+            problems.append("这些编号不在我给你的列表里：" + "、".join(bad[:5]))
+        again = [x for x in g if x in seen]
+        if again:
+            problems.append("这些编号出现在不止一组里：" + "、".join(again[:5]))
+        seen.update(g)
+    return problems
+
+
+def clean_merge(data, ids: set[str]) -> list[list[str]]:
+    """只留编号对得上的；一个编号只算第一次出现的那组；不到两条的组丢掉。"""
+    out, seen = [], set()
+    for g in _groups(data) or []:
+        if not isinstance(g, list):
+            continue
+        keep = [x for x in dict.fromkeys(g) if isinstance(x, str) and x in ids and x not in seen]
+        seen.update(keep)
+        if len(keep) >= 2:
+            out.append(keep)
+    return out
+
+
+def same_groups(pairing: dict | None, order: list[str], cards: dict) -> dict[tuple[str, str], int] | None:
+    """(场景, 原话) → 组号；合并结果跟当前开放的伏笔对不上（签名变了）就当没有。"""
+    if not isinstance(pairing, dict) or pairing.get("same_sig") != merge_signature(open_items(pairing, order, cards)):
+        return None
+    out = {}
+    for n, g in enumerate(pairing.get("same") or []):
+        for k in g:
+            if isinstance(k, list) and len(k) == 2:
+                out[(k[0], k[1])] = n
+    return out
+
+
+async def run_merge(book: Book, caller: Caller, order: list[str], cards: dict, pairing: dict) -> dict:
+    """把还开放的伏笔里同一个悬念的几条合成一组，结果写回 伏笔配对.json（same / same_sig）。
+    签名没变就沿用；某段失败那段当不合并，标 same_failed，下次重合。"""
+    items = open_items(pairing, order, cards)
+    sig = merge_signature(items)
+    rows = [f"K-{i:04d} [{s}] {h}" for i, (s, h) in enumerate(items, 1)]
+    chunks: list[list[int]] = []
+    size = MERGE_MAX_CHARS
+    for i, r in enumerate(rows):
+        if chunks and size + len(r) + 1 <= MERGE_MAX_CHARS:
+            chunks[-1].append(i)
+            size += len(r) + 1
+        else:
+            chunks.append([i])
+            size = len(r) + 1
+    chunks = [c for c in chunks if len(c) >= 2]
+
+    if pairing.get("same_sig") == sig and not pairing.get("same_failed"):
+        for c in chunks:
+            caller.keep("archive_hooks_merge", {"hooks": "\n".join(rows[i] for i in c)})
+        return pairing
+
+    if chunks:
+        caller.plan(len(chunks))
+    failed_before = len(caller.failed)
+
+    async def one(k: int, c: list[int]) -> list[list[str]]:
+        ids = {rows[i].split(" ", 1)[0] for i in c}
+        got = await caller.call("archive_hooks_merge", {"hooks": "\n".join(rows[i] for i in c)},
+                                lambda d: check_merge(d, ids), f"hooks_merge/{k}", clean=lambda d: clean_merge(d, ids))
+        return got or []
+
+    groups = [g for gs in await asyncio.gather(*(one(k, c) for k, c in enumerate(chunks, 1))) for g in gs]
+    data = {**pairing, "same_sig": sig, "same_failed": len(caller.failed) > failed_before,
+            "same": [[list(items[int(x[2:]) - 1]) for x in g] for g in groups]}
+    write_json(book.hooks_pair_path, data)
+    return data

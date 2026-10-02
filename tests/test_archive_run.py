@@ -127,7 +127,9 @@ def archive_handler(record: list, overrides: dict | None = None, on_call=None):
 
     def handler(tier, messages):
         system, user = messages[0]["content"], messages[1]["content"]
-        if "得到交代" in system:  # 伏笔配对：默认一条都没交代（开放的伏笔照旧全列）
+        if "合成一组" in system:  # 伏笔合并：默认不合并
+            tag, out = "hooks_merge", '{"groups": []}'
+        elif "得到交代" in system:  # 伏笔配对：默认一条都没交代（开放的伏笔照旧全列）
             tag = "hooks"
             ids = re.findall(r"^(H-\d+)", user, re.M)
             out = json.dumps({"items": [{"id": i, "scenes": []} for i in ids]})
@@ -1095,3 +1097,48 @@ def test_伏笔配对某批失败_这次照开放列_下次重配(book_with_thre
     assert read_json(b.hooks_pair_path)["failed"] is False
     # 配对变了 → L-001 的输入变了 → L-001 档案重写
     assert "archive/thread/L-001" in c2.calls
+
+
+def merge_client(book, merge_all=True):
+    """配对一律答「没交代」；合并把列出的全部编号合成一组（merge_all=False 就不合）。"""
+    record: list = []
+    base = archive_handler(record)
+
+    def handler(tier, messages):
+        system, user = messages[0]["content"], messages[1]["content"]
+        if "合成一组" in system:
+            record.append("archive/hooks_merge")
+            ids = re.findall(r"^(K-\d+)", user, re.M)
+            return json.dumps({"groups": [ids] if merge_all else []})
+        return base(tier, messages)
+
+    c = LLMClient(AppConfig(), FakeBackend(handler=handler), log_dir=book.logs_dir)
+    c.calls = record
+    return c
+
+
+def test_同一个悬念的几种说法_档案里合成一行(book_with_threads):
+    from ligaotai.archive import run_archive
+
+    b = book_with_threads
+    set_card(b, "S-0001", hooks_planted=["紧箍咒是怎么来的"])  # S-0002 已有「紧箍咒的来历」
+    c = merge_client(b)
+    run_archive(b, c)
+    assert "archive/hooks_merge" in c.calls
+    user = thread_user(c, "L-001")
+    tail = user.split("## 埋了还没回收的伏笔")[1]
+    assert "- 紧箍咒是怎么来的：埋于 [S-0001,S-0002]" in tail and "紧箍咒的来历" not in tail
+    same = read_json(b.hooks_pair_path)["same"]
+    assert same == [[["S-0001", "紧箍咒是怎么来的"], ["S-0002", "紧箍咒的来历"]]]
+    c2 = merge_client(b)
+    run_archive(b, c2)
+    assert c2.calls == []  # 配对、合并都沿用
+
+
+def test_只剩一条开放伏笔_不调合并(book_with_threads):
+    from ligaotai.archive import run_archive
+
+    b = book_with_threads
+    c = merge_client(b)
+    run_archive(b, c)
+    assert "archive/hooks_merge" not in c.calls

@@ -196,7 +196,9 @@ def _make_archive_client(book, overrides: dict | None = None, on_call=None):
 
     def handler(tier, messages):
         system, user = messages[0]["content"], messages[1]["content"]
-        if "得到交代" in system:  # 伏笔配对：默认一条都没交代
+        if "合成一组" in system:  # 伏笔合并：默认不合并
+            tag, out = "hooks_merge", '{"groups": []}'
+        elif "得到交代" in system:  # 伏笔配对：默认一条都没交代
             ids = re.findall(r"^(H-\d+)", user, re.M)
             tag, out = "hooks", json.dumps({"items": [{"id": i, "scenes": []} for i in ids]})
         elif "全书地图" in system:

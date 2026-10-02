@@ -7,7 +7,7 @@ def test_开放伏笔是埋了没回收的():
         "S-0002": {"hooks_planted": [], "hooks_resolved": ["老人的身份"]},
     }
     got = open_hooks(["S-0001", "S-0002"], cards, all_resolved={"老人的身份"})
-    assert got == [{"hook": "令牌来历不明", "scene": "S-0001"}]
+    assert got == [{"hook": "令牌来历不明", "scene": "S-0001", "scenes": ["S-0001"]}]
 
 
 def test_开放伏笔按语义相近去重():
@@ -118,3 +118,16 @@ def test_世界的输入每条设定带原文摘录():
     text = world_input({"id": "W-01", "name": "取经路", "reason": ""}, rows, notes=[], threads=[])
     line = next(x for x in text.splitlines() if "金箍棒" in x and "S-0001" in x)
     assert "悟空掣出如意金箍棒" in line
+
+
+def test_同一个悬念的几种说法合成一条_出处都记上():
+    cards = {"S-0001": {"hooks_planted": ["薰儿的身份不明", "令牌来历"]},
+             "S-0002": {"hooks_planted": ["薰儿究竟是什么身份"]},
+             "S-0003": {"hooks_planted": ["薰儿背景成谜"]}}
+    same = {("S-0001", "薰儿的身份不明"): 0, ("S-0002", "薰儿究竟是什么身份"): 0, ("S-0003", "薰儿背景成谜"): 0}
+    got = open_hooks(["S-0001", "S-0002", "S-0003"], cards, set(), same=same)
+    assert got == [{"hook": "薰儿的身份不明", "scene": "S-0001", "scenes": ["S-0001", "S-0002", "S-0003"]},
+                   {"hook": "令牌来历", "scene": "S-0001", "scenes": ["S-0001"]}]
+    # 只有这条线里的出处：S-0003 不在这条线
+    got = open_hooks(["S-0002", "S-0001"], cards, set(), same=same)
+    assert got[0] == {"hook": "薰儿究竟是什么身份", "scene": "S-0002", "scenes": ["S-0002", "S-0001"]}

@@ -323,13 +323,15 @@ def prepare_inputs(book: Book) -> Inputs:
 
     # 伏笔配对（_run_archive 开头先跑、落盘）：配出来后文已交代的伏笔不列进开放的伏笔；还没配过就照旧字面比
     order = hp.story_order(data, cards)
-    closed = hp.closed_hooks(hp.load_fresh(book, order, cards), order)
+    pairing = hp.load_fresh(book, order, cards)
+    closed = hp.closed_hooks(pairing, order)
+    same = hp.same_groups(pairing, order, cards)  # 同一个悬念的几种说法合成一条
 
     for t in threads:
-        text = ai.thread_input(t, cards, cmap, [g for g in gaps if g.get("thread") == t["id"]], times, unit, closed)
+        text = ai.thread_input(t, cards, cmap, [g for g in gaps if g.get("thread") == t["id"]], times, unit, closed, same)
         inp.thread_text[t["id"]] = text
         inp.thread_parts[t["id"]] = ai.thread_parts(t, cards, cmap, [g for g in gaps if g.get("thread") == t["id"]],
-                                                    times, unit, closed)
+                                                    times, unit, closed, same)
         # 缺口「提到于」的场景可能在别的线里；材料里给了模型的编号都算合法引用，不然白白重试
         inp.thread_scope[t["id"]] = set(_ids(t.get("scenes"))) | set(_ANY_SCENE.findall(text))
 
@@ -751,7 +753,9 @@ async def _run_archive(book: Book, client: LLMClient, progress: Progress) -> dic
     if isinstance(data, dict):
         cards = {sid: r["card"] for sid, r in load_cards(book).items() if isinstance(r.get("card"), dict)}
         try:
-            await hp.run_pairing(book, caller, hp.story_order(data, cards), cards)
+            order = hp.story_order(data, cards)
+            pairing = await hp.run_pairing(book, caller, order, cards)
+            await hp.run_merge(book, caller, order, cards, pairing)
         except BaseException:
             # 暂停 / 欠费 / key 失效：配对花掉的也要记账（下面主流程的 finally 走不到）
             u = client.usage
