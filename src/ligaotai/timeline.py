@@ -62,6 +62,26 @@ def is_death(attribute: str, value: str) -> bool:
 
 
 MAX_LATER = 5  # A 类每人最多查死后多少场（防主角被误判「已死」时嫌疑爆炸）
+NEAR_LATER = 2  # 其中紧挨着死亡的几场，剩下的在死后全程均匀抽。10-03 全本斗破：只查最近 5 场时，
+# 云山、魂殿殿主死后排反了 66、41 场一条没报——最近那几场原书本来就在死后，排反的那些散在后面
+
+
+def pick_later(later: list[str], n: int = MAX_LATER, near: int = NEAR_LATER) -> list[str]:
+    """死后出场的场里挑 n 场去问：最近 near 场，加上其余的里均匀抽 n - near 场（保持故事顺序）。"""
+    if len(later) <= n:
+        return list(later)
+    rest = later[near:]
+    k = n - near
+    return later[:near] + [rest[int((i + 0.5) * len(rest) / k)] for i in range(k)]
+
+
+def _subject_is_killer(value: str, names: list[str]) -> bool:
+    """「墨冉死于萧炎之手」记在萧炎名下：subject 是动手的人不是死的人（卡片提示词写了也照犯，
+    10-03 全本斗破萧炎因此被当成第 243 章就死了）。subject 的任一叫法在值里以动手方出现就算。"""
+    for n in names:
+        if n and any(p in value for p in (f"于{n}", f"被{n}", f"{n}之手", f"{n}所", f"{n}杀", f"{n}击", f"{n}斩")):
+            return True
+    return False
 
 
 def _canon(name: str, cmap: dict) -> str:
@@ -91,13 +111,16 @@ def death_suspects(seq: list[str], pos: dict[str, int], cards: dict, cmap: dict)
             if not isinstance(f, dict) or not is_death(f.get("attribute", ""), f.get("value", "")):
                 continue
             who = _canon(f.get("subject", ""), cmap)
+            names = [who] + [n for (t, n), c in cmap.items() if t == "person" and c == who]
+            if _subject_is_killer(str(f.get("value") or ""), names):
+                continue
             if who and who not in first:
                 first[who] = (pos[sid], sid, str(f.get("quote") or f.get("value") or ""))
     out, capped = [], 0
     for who, (p, dsid, quote) in sorted(first.items(), key=lambda kv: (kv[1][0], kv[0])):
         later = [s for s in seq[p + 1:] if who in persons_of(_card(cards, s), cmap)]
         capped += max(0, len(later) - MAX_LATER)
-        out += [{"who": who, "death": dsid, "death_quote": quote, "later": s} for s in later[:MAX_LATER]]
+        out += [{"who": who, "death": dsid, "death_quote": quote, "later": s} for s in pick_later(later)]
     return out, capped
 
 

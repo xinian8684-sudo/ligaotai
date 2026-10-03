@@ -537,7 +537,7 @@ def test_stats的unplaced_untracked_a_capped_refs字段真的有非零值(book):
     assert stats["placed"] == 11        # S-0001..S-0011，S-0012 unplaced、S-0013 untracked 都不算
     assert stats["unplaced"] == 1
     assert stats["untracked"] == 1
-    assert stats["a_suspects"] == 5     # MAX_LATER=5，7 次后来出现只留最近 5 个
+    assert stats["a_suspects"] == 5     # MAX_LATER=5，7 次后来出现只问 5 个（最近 2 + 均匀 3）
     assert stats["a_capped"] == 2       # 超掉的 2 个记在这
     assert stats["refs_asked"] == 0     # 两条回指一条没候选、一条候选全在前面，都没问到模型
     assert stats["refs_no_candidate"] == 1

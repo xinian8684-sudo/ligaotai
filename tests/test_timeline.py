@@ -135,14 +135,33 @@ def test_A嫌疑_死后出现在人物名单里_别名归一_取最早的死亡(
     assert capped == 0
 
 
-def test_A嫌疑_每人最多取离死亡最近的5场():
+def test_A嫌疑_每人5场_最近2场加死后全程均匀抽3场():
     seq = [f"S-{i:04d}" for i in range(1, 10)]
     pos = {s: i for i, s in enumerate(seq)}
     spec = {s: (["甲"], []) for s in seq}
     spec["S-0001"] = (["甲"], [("甲", "生死", "已死", "甲已死")])
     got, capped = death_suspects(seq, pos, _cards(spec), {})
-    assert [x["later"] for x in got] == ["S-0002", "S-0003", "S-0004", "S-0005", "S-0006"]
+    # 死后 8 场 S-0002..S-0009：最近 S-0002、S-0003；其余 6 场 S-0004..S-0009 均匀取第 1、3、5 个
+    assert [x["later"] for x in got] == ["S-0002", "S-0003", "S-0005", "S-0007", "S-0009"]
     assert capped == 3
+
+
+def test_A嫌疑_不到5场就全查():
+    from ligaotai.timeline import pick_later
+    assert pick_later(["a", "b", "c"]) == ["a", "b", "c"]
+    assert pick_later(list("abcdef")) == ["a", "b", "c", "e", "f"]  # 其余 4 个 c..f 取第 0、2、3 个：int(0.5*4/3)=0, int(1.5*4/3)=2, int(2.5*4/3)=3
+
+
+def test_A嫌疑_死于某人之手记在动手的人名下_不算他死():
+    seq = ["S-0001", "S-0002"]
+    pos = {"S-0001": 0, "S-0002": 1}
+    cmap = {("person", "炎子"): "萧炎", ("person", "萧炎"): "萧炎"}
+    for v in ("墨冉死于萧炎之手", "墨冉被炎子斩杀", "墨冉为萧炎所斩", "萧炎击杀墨冉致死"):
+        cards = _cards({"S-0001": (["萧炎"], [("萧炎", "生死", v, "q")]), "S-0002": (["萧炎"], [])})
+        assert death_suspects(seq, pos, cards, cmap) == ([], 0), v
+    for v in ("萧炎被墨冉斩杀", "萧炎死于墨冉之手", "已死"):  # 他自己是死的那个
+        cards = _cards({"S-0001": (["萧炎"], [("萧炎", "生死", v, "q")]), "S-0002": (["萧炎"], [])})
+        assert len(death_suspects(seq, pos, cards, cmap)[0]) == 1, v
 
 
 def test_A嫌疑_死亡场不在故事顺序里就不查():
